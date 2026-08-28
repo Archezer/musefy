@@ -1,0 +1,25 @@
+[project]
+name = "music-recommendation-system"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+    "scikit-learn>=1.9.0",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.28.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cuda" }
+torchvision = { index = "pytorch-cuda" }
+torchaudio = { index = "pytorch-cuda" }
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu126"

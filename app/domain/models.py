@@ -1,0 +1,42 @@
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import Enum
+
+
+class InteractionType(str, Enum):
+    PLAY = "play"
+    LIKE = "like"
+    SAVE = "save"
+    SKIP = "skip"
+    REPEAT = "repeat"
+
+    @property
+    def weight(self) -> float:
+        weights = {
+            InteractionType.PLAY: 1.0,
+            InteractionType.LIKE: 4.0,
+            InteractionType.SAVE: 5.0,
+            InteractionType.SKIP: -2.0,
+            InteractionType.REPEAT: 2.0,
+        }
+
+        return weights[self]
+
+
+@dataclass(frozen=True)
+class Track:
+    id: str
+    title: str
+    artist: str
+    genres: tuple[str, ...] = ()
+    duration_seconds: int | None = None
+
+ 
+@dataclass(frozen=True)
+class Interaction:
+    user_id: str
+    track_id: str
+    interaction_type: InteractionType
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
