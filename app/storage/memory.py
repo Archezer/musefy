@@ -14,6 +14,9 @@ class InMemoryMusicStore:
         
         self.tracks[track.id] = track
 
+    def get_track(self, track_id: str) -> Track | None:
+        return self.tracks.get(track_id)
+
     def add_interaction(self, interaction: Interaction) -> None:
         if interaction.track_id not in self.tracks:
             raise ValueError(

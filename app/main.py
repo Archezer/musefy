@@ -1,10 +1,22 @@
 from app.domain.models import Interaction, InteractionType, Track
 from app.recommenders.popularity import MostPopularRecommender
-from app.storage.memory import InMemoryMusicStore
+from app.services.recommendations import RecommendationService
+from app.storage.database import (
+    create_database,
+    create_session,
+)
+from app.storage.repository import SQLAlchemyMusicStore
 
 
-def build_store() -> InMemoryMusicStore:
-    store = InMemoryMusicStore()
+def build_store() -> SQLAlchemyMusicStore:
+    create_database()
+
+    store = SQLAlchemyMusicStore(
+        create_session
+    )
+
+    if store.list_tracks():
+        return store
 
     tracks = [
         Track(
@@ -67,19 +79,26 @@ def build_store() -> InMemoryMusicStore:
 def main() -> None:
     store =  build_store()
     recommender = MostPopularRecommender(store)
+    recommendation_service = RecommendationService(recommender)
 
-    recommendations = recommender.recommend(
-        user_id='user-1',
-        limit=3
+    recommendations = recommendation_service.get_recommendations(
+        user_id="user-1",
+        limit=3,
     )
 
     print("Recommendations for user-1:")
 
-    for position, track in enumerate(recommendations, start=1):
+    for position, recommendation in enumerate(
+        recommendations,
+        start=1,
+    ):
+        track = recommendation.track
+
         print(
             f"{position}. {track.artist} — {track.title}"
         )
-
-
+        print(f"   Score: {recommendation.score}")
+        print(f"   Reason: {recommendation.reason}")
+        
 if __name__ == '__main__':
     main()

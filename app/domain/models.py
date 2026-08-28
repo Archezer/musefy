@@ -29,7 +29,10 @@ class Track:
     title: str
     artist: str
     genres: tuple[str, ...] = ()
-    duration_seconds: int | None = None
+    duration_ms: int | None = None
+    source: str = "local_upload"
+    source_url: str | None = None
+    local_path: str | None = None
 
  
 @dataclass(frozen=True)
@@ -40,3 +43,10 @@ class Interaction:
     created_at: datetime = field(
         default_factory=lambda: datetime.now(UTC)
     )
+
+
+@dataclass(frozen=True)
+class Recommendation:
+    track: Track
+    score: float
+    reason: str

@@ -1,20 +1,21 @@
 from collections import defaultdict
 
-from app.domain.models import Track
-from app.storage.memory import InMemoryMusicStore
+from app.domain.models import Recommendation
+from app.recommenders.protocols import Recommender
+from app.storage.protocols import MusicStore
 
 
-class MostPopularRecommender:
-    def __init__(self, store: InMemoryMusicStore) -> None:
+class MostPopularRecommender(Recommender):
+    def __init__(self, store: MusicStore) -> None:
         self.store = store
 
     def recommend(
-            self,
-            user_id: str,
-            limit: int = 10,
-    ) -> list[Track]:
+        self,
+        user_id: str,
+        limit: int = 10,
+    ) -> list[Recommendation]:
         if limit <= 0:
-            raise ValueError("Limit must be greater than 0")
+            raise ValueError("Recommendation limit must be positive")
 
         interactions = self.store.list_interactions()
 
@@ -45,4 +46,22 @@ class MostPopularRecommender:
             )
         )
 
-        return candidate_tracks[:limit]
+        recommendations = []
+
+        for track in candidate_tracks[:limit]:
+            score = track_scores[track.id]
+
+            if score > 0:
+                reason = "Popular among users"
+            else:
+                reason = "Not enough interaction data"
+
+            recommendations.append(
+                Recommendation(
+                    track=track,
+                    score=score,
+                    reason=reason,
+                )
+            )
+
+        return recommendations
