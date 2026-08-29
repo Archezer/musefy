@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from mutagen import File
-from mutagen import MutagenError
+from mutagen import File, MutagenError
 
 
 @dataclass(frozen=True)
@@ -48,6 +47,6 @@ def _read_first_tag(
     if not values:
         return None
 
-    value = values[0].strip
+    value = values[0].strip()
 
     return value or None

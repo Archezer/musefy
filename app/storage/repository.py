@@ -6,8 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.domain.models import Interaction, InteractionType, Track
-from app.storage.models import InteractionRecord, TrackRecord
+from app.domain.models import (
+    Interaction,
+    InteractionType,
+    Track,
+    User,
+)
+from app.storage.models import (
+    InteractionRecord,
+    TrackRecord,
+    UserRecord,
+)
 
 
 class SQLAlchemyMusicStore:
@@ -16,6 +25,35 @@ class SQLAlchemyMusicStore:
         session_factory: Callable[[], Session]
     ) -> None:
         self.session_factory = session_factory
+
+    def add_user(self, user: User) -> None:
+        record = UserRecord(
+            id=user.id,
+            display_name=user.display_name,
+            created_at=user.created_at,
+        )
+
+        with self.session_factory() as session:
+            session.add(record)
+
+            try:
+                session.commit()
+            except IntegrityError as error:
+                session.rollback()
+
+                raise ValueError(
+                    f"User already exists: {user.id}"
+                ) from error
+
+
+    def get_user(self, user_id: str) -> User | None:
+        with self.session_factory() as session:
+            record = session.get(UserRecord, user_id)
+
+            if record is None:
+                return None
+
+            return self._to_user(record)
 
     def add_track(self, track: Track) -> None:
         record = TrackRecord(
@@ -50,6 +88,22 @@ class SQLAlchemyMusicStore:
 
             return self._to_track(record)
 
+    def update_track(self, track: Track) -> None:
+        with self.session_factory() as session:
+            record = session.get(TrackRecord, track.id)
+
+            if record is None:
+                raise ValueError(
+                    f"Track does not exist: {track.id}"
+                )
+
+            record.title = track.title
+            record.artist = track.artist
+            record.genres_json = json.dumps(track.genres)
+            record.local_path = track.local_path
+
+            session.commit()
+
     def list_tracks(self) -> list[Track]:
         statement = select(TrackRecord).order_by(
             TrackRecord.artist,
@@ -65,25 +119,30 @@ class SQLAlchemyMusicStore:
         ]
 
     def add_interaction(self, interaction: Interaction) -> None:
-        record = InteractionRecord(
-            user_id=interaction.user_id,
-            track_id=interaction.track_id,
-            interaction_type=interaction.interaction_type.value,
-            created_at=interaction.created_at,
-        )
 
         with self.session_factory() as session:
-            session.add(record)
+            user = session.get(UserRecord, interaction.user_id)
+            track = session.get(TrackRecord, interaction.track_id)
 
-            try:
-                session.commit()
-            except IntegrityError as error:
-                session.rollback()
-
+            if user is None:
                 raise ValueError(
-                    "Cannot create interaction for unknown track: "
-                    f"{interaction.track_id}"
-                ) from error
+                    f"User does not exist: {interaction.user_id}"
+                )
+
+            if track is None:
+                raise ValueError(
+                    f"Track does not exist: {interaction.track_id}"
+                )
+
+            record = InteractionRecord(
+                user_id=interaction.user_id,
+                track_id=interaction.track_id,
+                interaction_type=interaction.interaction_type.value,
+                created_at=interaction.created_at,
+            )
+
+            session.add(record)
+            session.commit()
 
     def list_interactions(self) -> list[Interaction]:
         statement = select(InteractionRecord).order_by(
@@ -126,5 +185,18 @@ class SQLAlchemyMusicStore:
             interaction_type=InteractionType(
                 record.interaction_type
             ),
+            created_at=created_at,
+        )
+
+    @staticmethod
+    def _to_user(record: UserRecord) -> User:
+        created_at = record.created_at
+
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+
+        return User(
+            id=record.id,
+            display_name=record.display_name,
             created_at=created_at,
         )

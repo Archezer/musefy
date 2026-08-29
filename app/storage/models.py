@@ -13,6 +13,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class UserRecord(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    display_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    interactions: Mapped[list["InteractionRecord"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
 class TrackRecord(Base):
     __tablename__ = "tracks"
 
@@ -54,7 +72,12 @@ class InteractionRecord(Base):
         primary_key=True,
         autoincrement=True,
     )
-    user_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        )
+    )
     track_id: Mapped[str] = mapped_column(
         ForeignKey(
             "tracks.id",
@@ -67,5 +90,8 @@ class InteractionRecord(Base):
     )
 
     track: Mapped[TrackRecord] = relationship(
+        back_populates="interactions"
+    )
+    user: Mapped[UserRecord] = relationship(
         back_populates="interactions"
     )

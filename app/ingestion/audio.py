@@ -1,10 +1,18 @@
 import hashlib
+import shutil
 from pathlib import Path
 
 from app.domain.models import Track
+from app.ingestion.filenames import (
+    add_collision_suffix,
+    build_library_filename,
+)
 from app.ingestion.metadata import read_audio_metadata
+from app.storage.paths import (
+    LIBRARY_DIR,
+    ensure_storage_directories,
+)
 from app.storage.protocols import MusicStore
-
 
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp3",
@@ -41,7 +49,7 @@ class AudioIngestionService:
             or metadata.title
             or fallback_title
             or file_path.stem
-        )   
+        )
 
         resolved_artist = (
             artist
@@ -49,9 +57,18 @@ class AudioIngestionService:
             or "Unknown Artist"
         )
 
+        content_id = self._build_track_id(file_path)
+
         resolved_track_id = (
             track_id
-            or self._build_track_id(file_path)
+            or content_id
+        )
+
+        internal_path = self._copy_to_library(
+            file_path=file_path,
+            content_id=content_id,
+            artist=resolved_artist,
+            title=resolved_title,
         )
 
         track = Track(
@@ -62,12 +79,53 @@ class AudioIngestionService:
             duration_ms=metadata.duration_ms,
             source=source,
             source_url=source_url,
-            local_path=str(file_path.resolve()),
+            local_path=str(internal_path),
         )
 
         self.store.add_track(track)
 
         return track
+
+    @staticmethod
+    def _copy_to_library(
+        file_path: Path,
+        content_id: str,
+        artist: str,
+        title: str,
+    ) -> Path:
+        ensure_storage_directories()
+
+        source_path = file_path.resolve()
+
+        file_name = build_library_filename(
+            artist=artist,
+            title=title,
+            suffix=file_path.suffix,
+            track_id=content_id,
+        )
+
+        destination_path = (
+            LIBRARY_DIR / file_name
+        ).resolve()
+
+        if destination_path.exists():
+            destination_path = (
+                add_collision_suffix(
+                    destination_path,
+                    content_id,
+                )
+            )
+
+        if (
+            source_path != destination_path
+            and not destination_path.exists()
+        ):
+            shutil.copy2(
+                source_path,
+                destination_path,
+            )
+
+        return destination_path
 
     @staticmethod
     def _validate_file(file_path: Path) -> None:

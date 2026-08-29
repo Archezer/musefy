@@ -1,12 +1,9 @@
-from pathlib import Path
-
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-DATABASE_PATH = Path("data/music.db")
-DATABASE_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True,
+from app.storage.paths import (
+    DATABASE_PATH,
+    ensure_storage_directories,
 )
 
 DATABASE_URL = (
@@ -35,6 +32,8 @@ SessionFactory = sessionmaker(
 
 
 def create_database() -> None:
+    ensure_storage_directories()
+
     from app.storage.models import Base
 
     Base.metadata.create_all(engine)

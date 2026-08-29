@@ -9,6 +9,7 @@ dependencies = [
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
+    "pyside6>=6.11.2",
     "pytest>=9.1.1",
     "ruff>=0.16.4",
     "scikit-learn>=1.9.0",

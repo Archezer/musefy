@@ -34,7 +34,16 @@ class Track:
     source_url: str | None = None
     local_path: str | None = None
 
- 
+
+@dataclass(frozen=True)
+class User:
+    id: str
+    display_name: str
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+
+
 @dataclass(frozen=True)
 class Interaction:
     user_id: str

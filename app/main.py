@@ -1,4 +1,9 @@
-from app.domain.models import Interaction, InteractionType, Track
+from app.domain.models import (
+    Interaction,
+    InteractionType,
+    Track,
+    User,
+)
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.recommendations import RecommendationService
 from app.storage.database import (
@@ -14,6 +19,25 @@ def build_store() -> SQLAlchemyMusicStore:
     store = SQLAlchemyMusicStore(
         create_session
     )
+
+    seed_users = [
+        User(
+            id="user-1",
+            display_name="Alex",
+        ),
+        User(
+            id="user-2",
+            display_name="Mira",
+        ),
+        User(
+            id="user-3",
+            display_name="Nikita",
+        ),
+    ]
+
+    for user in seed_users:
+        if store.get_user(user.id) is None:
+            store.add_user(user)
 
     if store.list_tracks():
         return store
