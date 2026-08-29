@@ -92,3 +92,29 @@ target/
 
 data/inbox/
 data/library/
+
+# Local temporary data
+data/temp/
+data/cache/
+data/logs/
+
+# Runtime files
+*.log
+*.part
+*.ytdl
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Secrets
+.env.*
+!.env.example

@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog,
@@ -19,14 +20,41 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.domain.models import InteractionType
+from app.domain.models import InteractionType, Track
 from app.ingestion.audio import AudioIngestionService
 from app.ingestion.metadata import read_audio_metadata
 from app.services.interactions import InteractionService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
+from app.services.youtube_import import YouTubeImportService
+from app.sources.youtube import YouTubeCandidate
 from app.storage.protocols import MusicStore
-from app.ui.dialogs import TrackMetadataDialog
+from app.ui.dialogs import (
+    TrackMetadataDialog,
+    YouTubeSearchDialog,
+)
+
+
+class YouTubeTaskThread(QThread):
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        task: Callable[[], object],
+        parent: QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self.task = task
+
+    def run(self) -> None:
+        try:
+            result = self.task()
+        except (OSError, RuntimeError, ValueError) as error:
+            message = str(error) or error.__class__.__name__
+            self.error_occurred.emit(message)
+        else:
+            self.result_ready.emit(result)
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +65,7 @@ class MainWindow(QMainWindow):
         interaction_service: InteractionService,
         recommendation_service: RecommendationService,
         track_management_service: TrackManagementService,
+        youtube_import_service: YouTubeImportService,
         user_id: str,
     ) -> None:
         super().__init__()
@@ -48,8 +77,10 @@ class MainWindow(QMainWindow):
         self.track_management_service = (
             track_management_service
         )
+        self.youtube_import_service = youtube_import_service
         self.user_id = user_id
         self.current_track_id: str | None = None
+        self._youtube_thread: YouTubeTaskThread | None = None
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(0.7)
@@ -76,6 +107,13 @@ class MainWindow(QMainWindow):
         import_button = QPushButton("Import track")
         import_button.clicked.connect(self._import_track)
 
+        youtube_button = QPushButton(
+            "Add from YouTube"
+        )
+        youtube_button.clicked.connect(
+            self._import_from_youtube
+        )
+
         self.edit_button = QPushButton("Edit track")
         self.edit_button.clicked.connect(
             self._edit_selected_track
@@ -86,6 +124,7 @@ class MainWindow(QMainWindow):
         refresh_button.clicked.connect(self._refresh_content)
 
         toolbar.addWidget(import_button)
+        toolbar.addWidget(youtube_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(refresh_button)
         toolbar.addStretch()
@@ -366,6 +405,160 @@ class MainWindow(QMainWindow):
                 f"{track.artist} — {track.title}"
             ),
         )
+
+    def _import_from_youtube(self) -> None:
+        dialog = YouTubeSearchDialog(self)
+        dialog.search_requested.connect(
+            lambda query: self._start_youtube_search(
+                dialog,
+                query,
+            )
+        )
+        dialog.import_requested.connect(
+            lambda candidate, channel_id: (
+                self._start_youtube_import(
+                    dialog,
+                    candidate,
+                    channel_id,
+                )
+            )
+        )
+
+        dialog.exec()
+
+    def _start_youtube_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        query: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Searching YouTube...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.youtube_import_service.search(query),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_youtube_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidate: YouTubeCandidate,
+        channel_id: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Downloading and importing...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.youtube_import_service.download_and_import(
+                candidate,
+                allowed_channel_id=channel_id,
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_youtube_thread(
+        self,
+        thread: YouTubeTaskThread,
+        dialog: YouTubeSearchDialog,
+    ) -> None:
+        self._youtube_thread = thread
+        thread.finished.connect(
+            lambda: self._finish_youtube_thread(dialog)
+        )
+        thread.start()
+
+    def _finish_youtube_thread(
+        self,
+        dialog: YouTubeSearchDialog,
+    ) -> None:
+        if self._youtube_thread is not None:
+            self._youtube_thread.deleteLater()
+            self._youtube_thread = None
+
+        if dialog.isVisible():
+            dialog.set_busy(False, dialog.status_label.text())
+
+    def _handle_youtube_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, list):
+            self._handle_youtube_error(
+                dialog,
+                "YouTube search returned an invalid result.",
+            )
+            return
+
+        candidates = [
+            candidate
+            for candidate in result
+            if isinstance(candidate, YouTubeCandidate)
+        ]
+        dialog.set_candidates(candidates)
+
+    def _handle_youtube_import_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, Track):
+            self._handle_youtube_error(
+                dialog,
+                "YouTube import returned an invalid result.",
+            )
+            return
+
+        track = result
+        dialog.accept()
+        self._load_library()
+        self._load_recommendations()
+
+        QMessageBox.information(
+            self,
+            "YouTube import completed",
+            (
+                f"Added to Library:\n"
+                f"{track.artist} — {track.title}"
+            ),
+        )
+
+    @staticmethod
+    def _handle_youtube_error(
+        dialog: YouTubeSearchDialog,
+        message: str,
+    ) -> None:
+        dialog.show_error(message)
 
     def _edit_selected_track(self) -> None:
         if self.current_track_id is None:

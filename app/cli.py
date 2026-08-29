@@ -4,6 +4,11 @@ from pathlib import Path
 from app.domain.models import InteractionType
 from app.ingestion.audio import AudioIngestionService
 from app.services.interactions import InteractionService
+from app.services.youtube_import import YouTubeImportService
+from app.sources.youtube import (
+    YouTubeCandidate,
+    YouTubeSearchProvider,
+)
 from app.storage.database import (
     create_database,
     create_session,
@@ -69,6 +74,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Interaction type",
     )
 
+    youtube_search_command = commands.add_parser(
+        "youtube-search",
+        help="Search five YouTube videos",
+    )
+
+    youtube_search_command.add_argument(
+        "query",
+        help="Video title or search query",
+    )
+
+    youtube_import_command = commands.add_parser(
+        "youtube-import",
+        help="Select and import a YouTube video",
+    )
+
+    youtube_import_command.add_argument(
+        "query",
+        help="Video title or search query",
+    )
+
+    youtube_import_command.add_argument(
+        "--allowed-channel-id",
+        required=True,
+        help="Only this YouTube channel is allowed",
+    )
+
     return parser
 
 
@@ -131,6 +162,155 @@ def record_interaction(
     )
 
 
+def search_youtube(
+    arguments: argparse.Namespace,
+) -> None:
+    provider = YouTubeSearchProvider()
+
+    try:
+        candidates = provider.search(
+            arguments.query,
+            max_results=5,
+        )
+    except (
+        RuntimeError,
+        ValueError,
+    ) as error:
+        raise SystemExit(str(error)) from error
+
+    print_youtube_candidates(candidates)
+
+
+def import_youtube_track(
+    arguments: argparse.Namespace,
+) -> None:
+    provider = YouTubeSearchProvider()
+
+    try:
+        candidates = provider.search(
+            arguments.query,
+            max_results=5,
+        )
+    except (
+        RuntimeError,
+        ValueError,
+    ) as error:
+        raise SystemExit(str(error)) from error
+
+    print_youtube_candidates(candidates)
+    selected_candidate = choose_youtube_candidate(
+        candidates
+    )
+
+    allowed_channel_id = (
+        arguments.allowed_channel_id.strip()
+    )
+
+    if (
+        selected_candidate.channel_id
+        != allowed_channel_id
+    ):
+        raise SystemExit(
+            "Selected video is not from "
+            "the allowed channel."
+        )
+
+    try:
+        create_database()
+
+        store = SQLAlchemyMusicStore(create_session)
+        ingestion_service = AudioIngestionService(store)
+        import_service = YouTubeImportService(
+            ingestion_service,
+            provider=provider,
+        )
+        track = import_service.download_and_import(
+            selected_candidate,
+            allowed_channel_id=allowed_channel_id,
+        )
+    except (
+        PermissionError,
+        RuntimeError,
+        ValueError,
+        FileNotFoundError,
+    ) as error:
+        raise SystemExit(str(error)) from error
+
+    print("YouTube track imported successfully:")
+    print(f"ID: {track.id}")
+    print(f"Title: {track.title}")
+    print(f"Artist: {track.artist}")
+    print(
+        f"Duration: "
+        f"{format_duration(track.duration_ms)}"
+    )
+    print(f"Local path: {track.local_path}")
+
+
+def print_youtube_candidates(
+    candidates: list[YouTubeCandidate],
+) -> None:
+    if not candidates:
+        print("No videos found")
+        return
+
+    for index, candidate in enumerate(
+        candidates,
+        start=1,
+    ):
+        print(
+            f"{index}. {candidate.title}"
+        )
+        print(
+            f"   Channel: "
+            f"{candidate.channel_title}"
+        )
+        print(
+            f"   Channel ID: "
+            f"{candidate.channel_id or 'Unknown'}"
+        )
+        print(
+            f"   Duration: "
+            f"{format_duration(candidate.duration_ms)}"
+        )
+        print(
+            f"   URL: {candidate.url}"
+        )
+        print()
+
+
+def choose_youtube_candidate(
+    candidates: list[YouTubeCandidate],
+) -> YouTubeCandidate:
+    if not candidates:
+        raise SystemExit(
+            "No videos available for selection"
+        )
+
+    while True:
+        value = input(
+            "Select video number: "
+        ).strip()
+
+        try:
+            selected_index = int(value)
+        except ValueError:
+            print(
+                "Please enter a valid number."
+            )
+            continue
+
+        if not 1 <= selected_index <= len(
+            candidates
+        ):
+            print(
+                "Selected number is out of range."
+            )
+            continue
+
+        return candidates[selected_index - 1]
+
+
 def parse_genres(value: str) -> tuple[str, ...]:
     return tuple(
         genre.strip().lower()
@@ -157,6 +337,10 @@ def main() -> None:
         import_track(arguments)
     elif arguments.command == "interact":
         record_interaction(arguments)
+    elif arguments.command == "youtube-search":
+        search_youtube(arguments)
+    elif arguments.command == "youtube-import":
+        import_youtube_track(arguments)
 
 
 if __name__ == "__main__":

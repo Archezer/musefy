@@ -8,6 +8,7 @@ from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
+from app.services.youtube_import import YouTubeImportService
 from app.storage.database import (
     create_database,
     create_session,
@@ -27,6 +28,9 @@ def main() -> None:
     ingestion_service = AudioIngestionService(store)
     interaction_service = InteractionService(store)
     track_management_service = TrackManagementService(store)
+    youtube_import_service = YouTubeImportService(
+        ingestion_service
+    )
 
     recommender = MostPopularRecommender(store)
     recommendation_service = RecommendationService(
@@ -41,6 +45,7 @@ def main() -> None:
         interaction_service=interaction_service,
         recommendation_service=recommendation_service,
         track_management_service=track_management_service,
+        youtube_import_service=youtube_import_service,
         user_id=CURRENT_USER_ID,
     )
     window.show()
