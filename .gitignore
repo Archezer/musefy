@@ -93,6 +93,13 @@ target/
 data/inbox/
 data/library/
 
+# Large ML model binaries (keep metadata and label maps tracked)
+data/models/**/*.onnx
+data/models/**/*.pt
+data/models/**/*.pth
+data/models/**/*.bin
+data/models/**/*.safetensors
+
 # Local temporary data
 data/temp/
 data/cache/
