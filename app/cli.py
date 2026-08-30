@@ -94,12 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Video title or search query",
     )
 
-    youtube_import_command.add_argument(
-        "--allowed-channel-id",
-        required=True,
-        help="Only this YouTube channel is allowed",
-    )
-
     return parser
 
 
@@ -202,19 +196,6 @@ def import_youtube_track(
         candidates
     )
 
-    allowed_channel_id = (
-        arguments.allowed_channel_id.strip()
-    )
-
-    if (
-        selected_candidate.channel_id
-        != allowed_channel_id
-    ):
-        raise SystemExit(
-            "Selected video is not from "
-            "the allowed channel."
-        )
-
     try:
         create_database()
 
@@ -226,7 +207,6 @@ def import_youtube_track(
         )
         track = import_service.download_and_import(
             selected_candidate,
-            allowed_channel_id=allowed_channel_id,
         )
     except (
         PermissionError,
@@ -266,12 +246,12 @@ def print_youtube_candidates(
             f"{candidate.channel_title}"
         )
         print(
-            f"   Channel ID: "
-            f"{candidate.channel_id or 'Unknown'}"
-        )
-        print(
             f"   Duration: "
             f"{format_duration(candidate.duration_ms)}"
+        )
+        print(
+            f"   Views: "
+            f"{format_views(candidate.view_count)}"
         )
         print(
             f"   URL: {candidate.url}"
@@ -327,6 +307,13 @@ def format_duration(duration_ms: int | None) -> str:
     minutes, seconds = divmod(total_seconds, 60)
 
     return f"{minutes}:{seconds:02d}"
+
+
+def format_views(view_count: int | None) -> str:
+    if view_count is None:
+        return "Unknown"
+
+    return f"{view_count:,}"
 
 
 def main() -> None:

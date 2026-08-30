@@ -118,3 +118,7 @@ desktop.ini
 # Secrets
 .env.*
 !.env.example
+
+# YouTube session data
+data/youtube_cookies.txt
+.uv-cache/

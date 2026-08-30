@@ -19,6 +19,7 @@ SUPPORTED_AUDIO_EXTENSIONS = {
     ".wav",
     ".flac",
     ".m4a",
+    ".mp4",
     ".ogg",
     ".opus",
 }

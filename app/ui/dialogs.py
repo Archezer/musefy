@@ -122,7 +122,7 @@ class TrackMetadataDialog(QDialog):
 
 class YouTubeSearchDialog(QDialog):
     search_requested = Signal(str)
-    import_requested = Signal(object, str)
+    import_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -142,22 +142,7 @@ class YouTubeSearchDialog(QDialog):
         )
         form_layout.addRow("Search:", self.query_edit)
 
-        self.channel_id_edit = QLineEdit()
-        self.channel_id_edit.setPlaceholderText(
-            "UC..."
-        )
-        form_layout.addRow(
-            "Allowed channel ID:",
-            self.channel_id_edit,
-        )
-
         layout.addLayout(form_layout)
-        layout.addWidget(
-            QLabel(
-                "Only a selected video from this channel "
-                "can be downloaded."
-            )
-        )
 
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(
@@ -216,20 +201,11 @@ class YouTubeSearchDialog(QDialog):
 
     def _request_import(self) -> None:
         candidate = self.selected_candidate()
-        channel_id = self.channel_id_edit.text().strip()
 
         if candidate is None:
             return
 
-        if not channel_id:
-            QMessageBox.warning(
-                self,
-                "Download failed",
-                "Allowed channel ID must not be empty.",
-            )
-            return
-
-        self.import_requested.emit(candidate, channel_id)
+        self.import_requested.emit(candidate)
 
     def _handle_selection_changed(self) -> None:
         self.import_button.setEnabled(
@@ -285,7 +261,6 @@ class YouTubeSearchDialog(QDialog):
         self._busy = busy
         self.search_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)
-        self.channel_id_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
         self._handle_selection_changed()
@@ -306,10 +281,13 @@ class YouTubeSearchDialog(QDialog):
         duration = YouTubeSearchDialog._format_duration(
             candidate.duration_ms
         )
+        views = YouTubeSearchDialog._format_views(
+            candidate.view_count
+        )
 
         return (
             f"{index}. {candidate.title}\n"
-            f"{candidate.channel_title} · {duration}"
+            f"{candidate.channel_title} · {duration} · {views}"
         )
 
     @staticmethod
@@ -323,3 +301,12 @@ class YouTubeSearchDialog(QDialog):
         minutes, seconds = divmod(total_seconds, 60)
 
         return f"{minutes}:{seconds:02d}"
+
+    @staticmethod
+    def _format_views(
+        view_count: int | None,
+    ) -> str:
+        if view_count is None:
+            return "Unknown views"
+
+        return f"{view_count:,} views"

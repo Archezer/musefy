@@ -343,7 +343,7 @@ class MainWindow(QMainWindow):
             "",
             (
                 "Audio files "
-                "(*.mp3 *.wav *.flac *.m4a *.ogg *.opus)"
+                "(*.mp3 *.wav *.flac *.m4a *.mp4 *.ogg *.opus)"
             ),
         )
 
@@ -415,11 +415,10 @@ class MainWindow(QMainWindow):
             )
         )
         dialog.import_requested.connect(
-            lambda candidate, channel_id: (
+            lambda candidate: (
                 self._start_youtube_import(
                     dialog,
                     candidate,
-                    channel_id,
                 )
             )
         )
@@ -458,7 +457,6 @@ class MainWindow(QMainWindow):
         self,
         dialog: YouTubeSearchDialog,
         candidate: YouTubeCandidate,
-        channel_id: str,
     ) -> None:
         if self._youtube_thread is not None:
             return
@@ -468,7 +466,6 @@ class MainWindow(QMainWindow):
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.download_and_import(
                 candidate,
-                allowed_channel_id=channel_id,
             ),
             self,
         )

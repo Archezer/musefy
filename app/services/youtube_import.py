@@ -30,25 +30,13 @@ class YouTubeImportService:
     def download_and_import(
         self,
         candidate: YouTubeCandidate,
-        *,
-        allowed_channel_id: str,
     ) -> Track:
-        normalized_channel_id = (
-            allowed_channel_id.strip()
-        )
-
-        if not normalized_channel_id:
-            raise ValueError(
-                "Allowed channel ID must not be empty"
-            )
-
         with TemporaryDirectory(
             prefix="music-recommendation-youtube-"
         ) as temporary_directory:
             downloaded_path = self.provider.download(
                 candidate,
                 Path(temporary_directory),
-                allowed_channel_id=normalized_channel_id,
             )
 
             return self.ingestion_service.ingest(
