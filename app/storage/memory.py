@@ -37,6 +37,19 @@ class InMemoryMusicStore:
 
         self.tracks[track.id] = track
 
+    def delete_track(self, track_id: str) -> None:
+        if track_id not in self.tracks:
+            raise ValueError(
+                f"Track does not exist: {track_id}"
+            )
+
+        del self.tracks[track_id]
+        self.interactions = [
+            interaction
+            for interaction in self.interactions
+            if interaction.track_id != track_id
+        ]
+
     def add_interaction(self, interaction: Interaction) -> None:
         if interaction.track_id not in self.tracks:
             raise ValueError(

@@ -6,6 +6,7 @@ from app.domain.models import (
     User,
 )
 from app.recommenders.popularity import (
+    ARTIST_PREFERENCE_FACTOR,
     MostPopularRecommender,
 )
 from app.services.interactions import InteractionService
@@ -68,6 +69,7 @@ def test_like_increases_recommendation_score(store):
     assert (
         recommendations[0].score
         == InteractionType.LIKE.weight
+        * (1 + ARTIST_PREFERENCE_FACTOR)
     )
 
 
@@ -119,4 +121,5 @@ def test_save_increases_recommendation_score(store):
     assert (
         recommendations[0].score
         == InteractionType.SAVE.weight
+        * (1 + ARTIST_PREFERENCE_FACTOR)
     )

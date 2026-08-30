@@ -46,3 +46,10 @@ class YouTubeImportService:
                 source="youtube",
                 source_url=candidate.url,
             )
+
+    def download_and_import_url(
+        self,
+        url: str,
+    ) -> Track:
+        candidate = self.provider.candidate_from_url(url)
+        return self.download_and_import(candidate)

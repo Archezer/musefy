@@ -5,6 +5,7 @@ import socket
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import yt_dlp
@@ -23,6 +24,13 @@ SUPPORTED_DOWNLOAD_EXTENSIONS = {
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_COOKIES_FILE = PROJECT_ROOT / "data" / "youtube_cookies.txt"
+SUPPORTED_YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
 
 
 @dataclass(frozen=True)
@@ -54,45 +62,55 @@ class YouTubeSearchProvider:
                 "max_results must be between 1 and 50"
             )
 
-        options = _youtube_options()
-        options.update(
-            {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": True,
-            }
-        )
-
         search_query = (
             f"ytsearch{max_results}:"
             f"{normalized_query}"
         )
 
-        try:
-            with _dns_fallback(), yt_dlp.YoutubeDL(
-                options
-            ) as downloader:
-                result = downloader.extract_info(
-                    search_query,
-                    download=False,
-                )
-        except DownloadError as error:
-            error_text = str(error).lower()
+        auth_sources = _authentication_sources()
+        last_error: DownloadError | None = None
 
-            if (
-                "sign in to confirm" in error_text
-                or "not a bot" in error_text
-            ):
+        for auth_source in auth_sources:
+            options = _youtube_options(auth_source=auth_source)
+            options.update(
+                {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "extract_flat": True,
+                }
+            )
+
+            try:
+                with _dns_fallback(), yt_dlp.YoutubeDL(
+                    options
+                ) as downloader:
+                    result = downloader.extract_info(
+                        search_query,
+                        download=False,
+                    )
+                break
+            except DownloadError as error:
+                last_error = error
+                if (
+                    auth_source != auth_sources[-1]
+                    and _is_authentication_error(str(error))
+                ):
+                    continue
+
+                if _is_authentication_error(str(error)):
+                    raise RuntimeError(
+                        _youtube_authentication_message()
+                    ) from error
+
                 raise RuntimeError(
-                    "YouTube requires authentication. Export fresh "
-                    "YouTube cookies to "
-                    f"{DEFAULT_COOKIES_FILE} and try again."
+                    "YouTube search failed"
                 ) from error
-
+        else:
+            assert last_error is not None
             raise RuntimeError(
-                "YouTube search failed"
-            ) from error
+                _youtube_authentication_message()
+            ) from last_error
 
         candidates = []
 
@@ -136,6 +154,108 @@ class YouTubeSearchProvider:
 
         return candidates
 
+    def candidate_from_url(
+        self,
+        url: str,
+    ) -> YouTubeCandidate:
+        normalized_url = url.strip()
+        _validate_youtube_url(normalized_url)
+
+        auth_sources = _authentication_sources()
+        clients = _youtube_clients(auth_sources)
+
+        result = None
+        last_error: DownloadError | None = None
+
+        for auth_source in auth_sources:
+            for client in clients:
+                options = _youtube_options(
+                    client=client,
+                    auth_source=auth_source,
+                )
+                options.update(
+                    {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "skip_download": True,
+                        "noplaylist": True,
+                    }
+                )
+
+                try:
+                    with _dns_fallback(), yt_dlp.YoutubeDL(
+                        options
+                    ) as downloader:
+                        result = downloader.extract_info(
+                            normalized_url,
+                            download=False,
+                        )
+                    break
+                except DownloadError as error:
+                    last_error = error
+
+                    if (
+                        client != clients[-1]
+                        or auth_source != auth_sources[-1]
+                    ):
+                        continue
+
+                    if _is_authentication_error(str(error)):
+                        break
+
+                    raise RuntimeError(
+                        "YouTube URL extraction failed"
+                    ) from error
+
+            if result is not None:
+                break
+
+        if result is None:
+            video_id = _extract_video_id(normalized_url)
+
+            if video_id is not None:
+                return YouTubeCandidate(
+                    video_id=video_id,
+                    title=f"YouTube video {video_id}",
+                    channel_title="Unknown channel",
+                    duration_ms=None,
+                    view_count=None,
+                    url=normalized_url,
+                )
+
+            assert last_error is not None
+            raise RuntimeError(
+                _youtube_authentication_message()
+            ) from last_error
+
+        video_id = result.get("id")
+
+        if not video_id:
+            raise RuntimeError(
+                "The YouTube URL did not contain a video."
+            )
+
+        duration = result.get("duration")
+
+        return YouTubeCandidate(
+            video_id=video_id,
+            title=result.get("title", "Unknown title"),
+            channel_title=(
+                result.get("channel")
+                or result.get(
+                    "uploader",
+                    "Unknown channel",
+                )
+            ),
+            duration_ms=(
+                round(duration * 1000)
+                if duration is not None
+                else None
+            ),
+            view_count=result.get("view_count"),
+            url=normalized_url,
+        )
+
     def download(
         self,
         candidate: YouTubeCandidate,
@@ -163,53 +283,53 @@ class YouTubeSearchProvider:
             "overwrites": False,
         }
 
-        cookie_file = _find_cookie_file()
-        clients = ["web_embedded"]
-
-        if cookie_file is not None:
-            # A cookie file allows the regular web client to access videos
-            # that are not available through the embedded client.
-            clients = ["web", "web_embedded"]
+        auth_sources = _authentication_sources()
+        clients = _youtube_clients(auth_sources)
 
         last_error: DownloadError | None = None
+        download_succeeded = False
 
-        for client in clients:
-            options = _youtube_options(client=client)
-            options.update(base_options)
+        for auth_source in auth_sources:
+            for client in clients:
+                options = _youtube_options(
+                    client=client,
+                    auth_source=auth_source,
+                )
+                options.update(base_options)
 
-            try:
-                with _dns_fallback(), yt_dlp.YoutubeDL(
-                    options
-                ) as downloader:
-                    downloader.download(
-                        [candidate.url]
-                    )
+                try:
+                    with _dns_fallback(), yt_dlp.YoutubeDL(
+                        options
+                    ) as downloader:
+                        downloader.download(
+                            [candidate.url]
+                        )
+                    download_succeeded = True
+                    break
+                except PermissionError:
+                    raise
+                except DownloadError as error:
+                    last_error = error
+
+                    if (
+                        client != clients[-1]
+                        or auth_source != auth_sources[-1]
+                    ):
+                        continue
+
+                    if _is_authentication_error(str(error)):
+                        break
+
+                    raise RuntimeError(
+                        "YouTube download failed"
+                    ) from error
+
+            if download_succeeded:
                 break
-            except PermissionError:
-                raise
-            except DownloadError as error:
-                last_error = error
-                error_text = str(error).lower()
-
-                if (
-                    "sign in to confirm" in error_text
-                    or "not a bot" in error_text
-                    or "login_required" in error_text
-                ):
-                    continue
-
-                raise RuntimeError(
-                    "YouTube download failed"
-                ) from error
         else:
             assert last_error is not None
-            cookie_hint = (
-                " Export fresh YouTube cookies to "
-                f"{DEFAULT_COOKIES_FILE} and try again."
-            )
             raise RuntimeError(
-                "YouTube requires a browser session for this video."
-                + cookie_hint
+                _youtube_authentication_message()
             ) from last_error
 
         downloaded_files = [
@@ -300,7 +420,11 @@ def _dns_fallback():
         socket.getaddrinfo = original_getaddrinfo
 
 
-def _youtube_options(*, client: str = "web_embedded") -> dict:
+def _youtube_options(
+    *,
+    client: str = "web_embedded",
+    auth_source: str = "auto",
+) -> dict:
     options = {
         "extractor_args": {
             "youtube": {
@@ -309,10 +433,16 @@ def _youtube_options(*, client: str = "web_embedded") -> dict:
         },
     }
 
-    cookie_file = _find_cookie_file()
+    if auth_source == "auto":
+        auth_source = _authentication_sources()[0]
 
-    if cookie_file is not None:
-        options["cookiefile"] = str(cookie_file)
+    if auth_source == "browser":
+        options["cookiesfrombrowser"] = ("firefox",)
+    elif auth_source == "file":
+        cookie_file = _find_cookie_file()
+
+        if cookie_file is not None:
+            options["cookiefile"] = str(cookie_file)
 
     node_path = os.environ.get("YTDLP_NODE_PATH")
     node_path = node_path or shutil.which("node")
@@ -340,6 +470,69 @@ def _youtube_options(*, client: str = "web_embedded") -> dict:
     return options
 
 
+def _authentication_sources() -> tuple[str, ...]:
+    sources: list[str] = []
+
+    if _firefox_profile_exists():
+        sources.append("browser")
+
+    if _find_cookie_file() is not None:
+        sources.append("file")
+
+    return tuple(sources) or ("none",)
+
+
+def _youtube_clients(
+    auth_sources: tuple[str, ...],
+) -> list[str]:
+    if auth_sources == ("none",):
+        return ["web_embedded"]
+
+    return ["web", "web_embedded"]
+
+
+def _firefox_profile_exists() -> bool:
+    app_data = os.environ.get("APPDATA")
+
+    if not app_data:
+        return False
+
+    return (
+        Path(app_data)
+        / "Mozilla"
+        / "Firefox"
+        / "Profiles"
+    ).is_dir()
+
+
+def _is_authentication_error(error_text: str) -> bool:
+    normalized_text = error_text.lower()
+
+    markers = (
+        "sign in to confirm",
+        "not a bot",
+        "login_required",
+        "could not copy firefox cookie database",
+        "failed to load cookies",
+    )
+
+    return any(marker in normalized_text for marker in markers)
+
+
+def _youtube_authentication_message() -> str:
+    if _firefox_profile_exists():
+        return (
+            "YouTube requires a Firefox session. Close Firefox completely "
+            "and try again, or refresh the YouTube cookies file at "
+            f"{DEFAULT_COOKIES_FILE}."
+        )
+
+    return (
+        "YouTube requires authentication. Export fresh YouTube cookies "
+        f"to {DEFAULT_COOKIES_FILE} and try again."
+    )
+
+
 def _find_cookie_file() -> Path | None:
     configured_path = os.environ.get("YTDLP_COOKIES_FILE")
 
@@ -353,5 +546,49 @@ def _find_cookie_file() -> Path | None:
     for candidate in candidates:
         if candidate is not None and candidate.is_file():
             return candidate
+
+    return None
+
+
+def _validate_youtube_url(url: str) -> None:
+    parsed_url = urlparse(url)
+    hostname = (parsed_url.hostname or "").lower()
+
+    if (
+        parsed_url.scheme not in {"http", "https"}
+        or hostname not in SUPPORTED_YOUTUBE_HOSTS
+    ):
+        raise ValueError(
+            "URL must be a valid YouTube video URL."
+        )
+
+
+def _extract_video_id(url: str) -> str | None:
+    parsed_url = urlparse(url)
+    hostname = (parsed_url.hostname or "").lower()
+
+    if hostname == "youtu.be":
+        video_id = parsed_url.path.strip("/").split("/")[0]
+        return video_id or None
+
+    query_video_id = parse_qs(
+        parsed_url.query
+    ).get("v", [None])[0]
+
+    if query_video_id:
+        return query_video_id
+
+    path_parts = [
+        part
+        for part in parsed_url.path.split("/")
+        if part
+    ]
+
+    for marker in ("shorts", "embed", "live"):
+        if marker in path_parts:
+            marker_index = path_parts.index(marker)
+
+            if marker_index + 1 < len(path_parts):
+                return path_parts[marker_index + 1]
 
     return None

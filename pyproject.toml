@@ -8,6 +8,7 @@ dependencies = [
     "aiogram>=3.30,<4",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
+    "onnxruntime>=1.29.0",
     "pandas>=3.0.5",
     "pyside6>=6.11.2",
     "pytest>=9.1.1",
@@ -17,7 +18,9 @@ dependencies = [
     "telethon>=1.44.0",
     "torch>=2.13.0",
     "torchaudio>=2.11.0",
+    "torchcodec>=0.16.0",
     "torchvision>=0.28.0",
+    "transformers>=4.40,<5",
     "yt-dlp[default]>=2026.8.19",
 ]
 

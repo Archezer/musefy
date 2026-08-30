@@ -104,6 +104,18 @@ class SQLAlchemyMusicStore:
 
             session.commit()
 
+    def delete_track(self, track_id: str) -> None:
+        with self.session_factory() as session:
+            record = session.get(TrackRecord, track_id)
+
+            if record is None:
+                raise ValueError(
+                    f"Track does not exist: {track_id}"
+                )
+
+            session.delete(record)
+            session.commit()
+
     def list_tracks(self) -> list[Track]:
         statement = select(TrackRecord).order_by(
             TrackRecord.artist,

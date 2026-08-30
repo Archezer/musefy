@@ -21,6 +21,9 @@ class MusicStore(Protocol):
     def update_track(self, track: Track) -> None:
         ...
 
+    def delete_track(self, track_id: str) -> None:
+        ...
+
     def add_interaction(self, interaction: Interaction) -> None:
         ...
 

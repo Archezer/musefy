@@ -123,6 +123,7 @@ class TrackMetadataDialog(QDialog):
 class YouTubeSearchDialog(QDialog):
     search_requested = Signal(str)
     import_requested = Signal(object)
+    url_import_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -142,6 +143,12 @@ class YouTubeSearchDialog(QDialog):
         )
         form_layout.addRow("Search:", self.query_edit)
 
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText(
+            "https://www.youtube.com/watch?v=..."
+        )
+        form_layout.addRow("Direct URL:", self.url_edit)
+
         layout.addLayout(form_layout)
 
         self.search_button = QPushButton("Search")
@@ -151,6 +158,12 @@ class YouTubeSearchDialog(QDialog):
 
         search_layout = QHBoxLayout()
         search_layout.addWidget(self.search_button)
+
+        self.url_button = QPushButton("Download URL")
+        self.url_button.clicked.connect(
+            self._request_url_import
+        )
+        search_layout.addWidget(self.url_button)
         search_layout.addStretch()
         layout.addLayout(search_layout)
 
@@ -207,6 +220,19 @@ class YouTubeSearchDialog(QDialog):
 
         self.import_requested.emit(candidate)
 
+    def _request_url_import(self) -> None:
+        url = self.url_edit.text().strip()
+
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Download failed",
+                "YouTube URL must not be empty.",
+            )
+            return
+
+        self.url_import_requested.emit(url)
+
     def _handle_selection_changed(self) -> None:
         self.import_button.setEnabled(
             not self._busy
@@ -260,7 +286,9 @@ class YouTubeSearchDialog(QDialog):
     ) -> None:
         self._busy = busy
         self.search_button.setEnabled(not busy)
+        self.url_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)
+        self.url_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
         self._handle_selection_changed()

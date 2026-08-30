@@ -120,12 +120,19 @@ class MainWindow(QMainWindow):
         )
         self.edit_button.setEnabled(False)
 
+        self.delete_button = QPushButton("Delete track")
+        self.delete_button.clicked.connect(
+            self._delete_selected_track
+        )
+        self.delete_button.setEnabled(False)
+
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self._refresh_content)
 
         toolbar.addWidget(import_button)
         toolbar.addWidget(youtube_button)
         toolbar.addWidget(self.edit_button)
+        toolbar.addWidget(self.delete_button)
         toolbar.addWidget(refresh_button)
         toolbar.addStretch()
 
@@ -323,6 +330,7 @@ class MainWindow(QMainWindow):
         if not selected_items:
             self.current_track_id = None
             self.edit_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
             return
 
         title_item = selected_items[0]
@@ -331,6 +339,7 @@ class MainWindow(QMainWindow):
             Qt.ItemDataRole.UserRole
         )
         self.edit_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
 
         self.statusBar().showMessage(
             f"Selected track: {title_item.text()}"
@@ -422,6 +431,12 @@ class MainWindow(QMainWindow):
                 )
             )
         )
+        dialog.url_import_requested.connect(
+            lambda url: self._start_youtube_url_import(
+                dialog,
+                url,
+            )
+        )
 
         dialog.exec()
 
@@ -466,6 +481,37 @@ class MainWindow(QMainWindow):
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.download_and_import(
                 candidate,
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_youtube_url_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        url: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Downloading YouTube URL...")
+
+        thread = YouTubeTaskThread(
+            lambda: (
+                self.youtube_import_service
+                .download_and_import_url(url)
             ),
             self,
         )
@@ -633,6 +679,67 @@ class MainWindow(QMainWindow):
                 f"{updated_track.artist} — "
                 f"{updated_track.title}"
             ),
+        )
+
+    def _delete_selected_track(self) -> None:
+        if self.current_track_id is None:
+            QMessageBox.warning(
+                self,
+                "No track selected",
+                "Select a track first.",
+            )
+            return
+
+        track = self.store.get_track(
+            self.current_track_id
+        )
+
+        if track is None:
+            QMessageBox.warning(
+                self,
+                "Delete failed",
+                "Track was not found.",
+            )
+            return
+
+        confirmation = QMessageBox.question(
+            self,
+            "Delete track",
+            (
+                f"Delete {track.artist} — {track.title}?\n\n"
+                "The audio file, track record, and interactions "
+                "will be removed."
+            ),
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        if self.media_player.playbackState() != (
+            QMediaPlayer.PlaybackState.StoppedState
+        ):
+            self.media_player.stop()
+
+        try:
+            self.track_management_service.delete_track(
+                self.current_track_id
+            )
+        except (FileNotFoundError, OSError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Delete failed",
+                str(error),
+            )
+            return
+
+        self.current_track_id = None
+        self._load_library()
+        self._load_recommendations()
+        self.statusBar().showMessage(
+            f"Deleted: {track.artist} — {track.title}"
         )
 
     def _play_selected_track(self) -> None:

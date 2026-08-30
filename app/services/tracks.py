@@ -97,9 +97,39 @@ class TrackManagementService:
 
         return updated_track
 
+    def delete_track(self, track_id: str) -> None:
+        normalized_track_id = track_id.strip()
+
+        if not normalized_track_id:
+            raise ValueError(
+                "Track ID must not be empty"
+            )
+
+        current_track = self.store.get_track(
+            normalized_track_id
+        )
+
+        if current_track is None:
+            raise ValueError(
+                f"Track does not exist: "
+                f"{normalized_track_id}"
+            )
+
+        file_path = self._get_managed_file_path(
+            current_track,
+            require_exists=False,
+        )
+
+        self.store.delete_track(normalized_track_id)
+
+        if file_path is not None and file_path.exists():
+            file_path.unlink()
+
     @staticmethod
     def _get_managed_file_path(
         track: Track,
+        *,
+        require_exists: bool = True,
     ) -> Path | None:
         if not track.local_path:
             return None
@@ -109,10 +139,13 @@ class TrackManagementService:
         ).resolve()
 
         if not file_path.exists():
-            raise FileNotFoundError(
-                f"Track file does not exist: "
-                f"{file_path}"
-            )
+            if require_exists:
+                raise FileNotFoundError(
+                    f"Track file does not exist: "
+                    f"{file_path}"
+                )
+
+            return None
 
         library_root = LIBRARY_DIR.resolve()
 

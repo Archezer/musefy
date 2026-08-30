@@ -14,6 +14,8 @@ from app.storage.protocols import MusicStore
 DEFAULT_REPLAY_COOLDOWN = 30
 DEFAULT_EXPLORATION_POOL_SIZE = 30
 EXPLORATION_TEMPERATURE = 2.0
+ARTIST_PREFERENCE_FACTOR = 0.5
+GENRE_PREFERENCE_FACTOR = 0.5
 
 PLAYBACK_INTERACTION_TYPES = frozenset(
     {
@@ -125,6 +127,90 @@ class MostPopularRecommender(Recommender):
         return selected_tracks
 
 
+    def _get_user_genre_scores(
+            self,
+            user_id: str,
+            interactions: list[Interaction],
+    ) -> dict[str, float]:
+        genre_scores: dict[str, float] = defaultdict(float)
+
+        for interaction in interactions:
+            if interaction.user_id != user_id:
+                continue
+
+            track = self.store.get_track(
+                interaction.track_id
+            )
+
+            if track is None:
+                continue
+
+            for genre in track.genres:
+                normalized_genre = genre.strip().casefold()
+
+                if not normalized_genre:
+                    continue
+
+                genre_scores[normalized_genre] += (
+                    interaction.interaction_type.weight
+                    * GENRE_PREFERENCE_FACTOR
+                )
+
+        return genre_scores
+
+
+    def _get_user_artist_scores(
+            self,
+            user_id: str,
+            interactions: list[Interaction]
+    ) -> dict[str, float]:
+        artist_scores: dict[str, float] = defaultdict(float)
+
+        for interaction in interactions:
+            if interaction.user_id != user_id:
+                continue
+
+            track = self.store.get_track(
+                interaction.track_id
+            )
+
+            if track is None:
+                continue
+
+            artist_scores[track.artist] += (
+                interaction.interaction_type.weight
+                * ARTIST_PREFERENCE_FACTOR
+            )
+
+        return artist_scores
+
+    def _get_last_played_at(
+        self,
+        user_id: str,
+        interactions: list[Interaction]
+    ) -> dict[str, float]:
+        last_played_at: dict[str, float] = {}
+
+        for interaction in interactions:
+            if (
+                interaction.user_id == user_id
+                and interaction.interaction_type
+                in PLAYBACK_INTERACTION_TYPES
+            ):
+                played_at = (
+                    interaction.created_at.timestamp()
+                )
+
+                last_played_at[interaction.track_id] = max(
+                    last_played_at.get(
+                        interaction.track_id,
+                        float("-inf"),
+                    ),
+                    played_at,
+                )
+
+        return last_played_at
+
 
     def recommend(
         self,
@@ -160,6 +246,45 @@ class MostPopularRecommender(Recommender):
             track_scores[interaction.track_id] += (
                 interaction.interaction_type.weight
             )
+
+        user_artist_scores = (
+            self._get_user_artist_scores(
+                user_id=user_id,
+                interactions=interactions,
+            )
+        )
+
+        for track in self.store.list_tracks():
+            track_scores[track.id] += (
+                user_artist_scores.get(
+                    track.artist,
+                    0.0,
+                )
+            )
+
+        user_genre_scores = (
+            self._get_user_genre_scores(
+                user_id=user_id,
+                interactions=interactions,
+            )
+        )
+
+        for track in self.store.list_tracks():
+            genres = {
+                genre.strip().casefold()
+                for genre in track.genres
+                if genre.strip()
+            }
+
+            if not genres:
+                continue
+
+            genre_bonus = sum(
+                user_genre_scores.get(genre, 0.0)
+                for genre in genres
+            ) / len(genres)
+
+            track_scores[track.id] += genre_bonus
 
         latest_user_interactions = {}
 
@@ -205,13 +330,40 @@ class MostPopularRecommender(Recommender):
             if track.id not in excluded_track_ids
         ]
 
-        candidate_tracks.sort(
-            key=lambda track: (
-                -track_scores[track.id],
-                track.artist,
-                track.title,
-            )
+        fallback_used = not candidate_tracks
+
+        if fallback_used:
+            candidate_tracks = [
+                track
+                for track in self.store.list_tracks()
+                if track.id not in skipped_track_ids
+            ]
+
+        last_played_at = self._get_last_played_at(
+            user_id=user_id,
+            interactions=interactions,
         )
+
+        if fallback_used:
+            candidate_tracks.sort(
+                key=lambda track: (
+                    last_played_at.get(
+                        track.id,
+                        float("-inf"),
+                    ),
+                    -track_scores[track.id],
+                    track.artist,
+                    track.title,
+                )
+            )
+        else:
+            candidate_tracks.sort(
+                key=lambda track: (
+                    -track_scores[track.id],
+                    track.artist,
+                    track.title,
+                )
+            )
 
         selected_tracks = (
             self._select_with_exploration(
@@ -226,7 +378,30 @@ class MostPopularRecommender(Recommender):
         for track in selected_tracks:
             score = track_scores[track.id]
 
-            if score > 0:
+            artist_bonus = user_artist_scores.get(
+                track.artist,
+                0.0
+            )
+            
+            genres = {
+                genre.strip().casefold()
+                for genre in track.genres
+                if genre.strip()
+            }
+
+            genre_bonus = sum(
+                user_genre_scores.get(genre, 0.0)
+                for genre in genres
+            )
+
+            if artist_bonus > 0:
+                reason = (
+                    f"Matches your favorite artist: "
+                    f"{track.artist}"
+                )
+            elif genre_bonus > 0:
+                reason = "Matches your preferred genres"
+            elif score > 0:
                 reason = "Popular among users"
             else:
                 reason = "Not enough interaction data"

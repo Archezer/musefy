@@ -94,6 +94,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Video title or search query",
     )
 
+    youtube_import_url_command = commands.add_parser(
+        "youtube-import-url",
+        help="Download and import a YouTube URL",
+    )
+
+    youtube_import_url_command.add_argument(
+        "url",
+        help="YouTube video URL",
+    )
+
     return parser
 
 
@@ -227,6 +237,39 @@ def import_youtube_track(
     print(f"Local path: {track.local_path}")
 
 
+def import_youtube_url(
+    arguments: argparse.Namespace,
+) -> None:
+    try:
+        create_database()
+
+        store = SQLAlchemyMusicStore(create_session)
+        ingestion_service = AudioIngestionService(store)
+        import_service = YouTubeImportService(
+            ingestion_service,
+        )
+        track = import_service.download_and_import_url(
+            arguments.url,
+        )
+    except (
+        PermissionError,
+        RuntimeError,
+        ValueError,
+        FileNotFoundError,
+    ) as error:
+        raise SystemExit(str(error)) from error
+
+    print("YouTube track imported successfully:")
+    print(f"ID: {track.id}")
+    print(f"Title: {track.title}")
+    print(f"Artist: {track.artist}")
+    print(
+        f"Duration: "
+        f"{format_duration(track.duration_ms)}"
+    )
+    print(f"Local path: {track.local_path}")
+
+
 def print_youtube_candidates(
     candidates: list[YouTubeCandidate],
 ) -> None:
@@ -328,6 +371,8 @@ def main() -> None:
         search_youtube(arguments)
     elif arguments.command == "youtube-import":
         import_youtube_track(arguments)
+    elif arguments.command == "youtube-import-url":
+        import_youtube_url(arguments)
 
 
 if __name__ == "__main__":
