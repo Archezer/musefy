@@ -1,14 +1,14 @@
 {
     "name": "MAEST",
     "type": "Music style classification and embeddings",
-    "link": "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-1.pb",
-    "version": "1",
+    "link": "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.pb",
+    "version": "2",
     "description": "Prediction of music style using 519 classes of the Discogs23 dataset",
     "author": "Pablo Alonso",
     "email": "pablo.alonso@upf.edu",
-    "release_date": "2024-08-12",
+    "release_date": "2025-01-22",
     "framework": "tensorflow",
-    "framework_version": "2.8.0",
+    "framework_version": "2.17.0",
     "classes": [
         "Blues---Boogie Woogie",
         "Blues---Chicago Blues",
@@ -545,10 +545,10 @@
     "schema": {
         "inputs": [
             {
-                "name": "serving_default_melspectrogram",
+                "name": "melspectrogram",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     1876,
                     96
                 ]
@@ -556,156 +556,157 @@
         ],
         "outputs": [
             {
-                "name": "StatefulPartitionedCall:0",
+                "name": "PartitionedCall/Identity",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
+                    519
+                ],
+                "op": "Linear",
+                "output_purpose": "logits"
+            },
+            {
+                "name": "PartitionedCall/Identity_13",
+                "type": "float",
+                "shape": [
+                    1,
                     519
                 ],
                 "op": "Sigmoid",
                 "output_purpose": "predictions"
             },
             {
-                "name": "StatefulPartitionedCall:1",
+                "name": "PartitionedCall/Identity_1",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 1st layer"
             },
             {
-                "name": "StatefulPartitionedCall:2",
+                "name": "PartitionedCall/Identity_2",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 2nd layer"
             },
             {
-                "name": "StatefulPartitionedCall:3",
+                "name": "PartitionedCall/Identity_3",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 3rd layer"
             },
             {
-                "name": "StatefulPartitionedCall:4",
+                "name": "PartitionedCall/Identity_4",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 4th layer"
             },
             {
-                "name": "StatefulPartitionedCall:5",
+                "name": "PartitionedCall/Identity_5",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 5th layer"
             },
             {
-                "name": "StatefulPartitionedCall:6",
+                "name": "PartitionedCall/Identity_6",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 6th layer"
             },
             {
-                "name": "StatefulPartitionedCall:7",
+                "name": "PartitionedCall/Identity_7",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
+                "description": "embeddings from the 7th layer",
                 "output_purpose": "embeddings"
             },
             {
-                "name": "StatefulPartitionedCall:8",
+                "name": "PartitionedCall/Identity_8",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 8th layer"
             },
             {
-                "name": "StatefulPartitionedCall:9",
+                "name": "PartitionedCall/Identity_9",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 9th layer"
             },
             {
-                "name": "StatefulPartitionedCall:10",
+                "name": "PartitionedCall/Identity_10",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 10th layer"
             },
             {
-                "name": "StatefulPartitionedCall:11",
+                "name": "PartitionedCall/Identity_11",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
+                "description": "embeddings from the 11th layer"
             },
             {
-                "name": "StatefulPartitionedCall:12",
+                "name": "PartitionedCall/Identity_12",
                 "type": "float",
                 "shape": [
-                    "batch_size",
+                    1,
                     "n_tokens",
                     768
                 ],
                 "op": "Linear",
-                "output_purpose": "embeddings"
-            },
-            {
-                "name": "StatefulPartitionedCall:13",
-                "type": "float",
-                "shape": [
-                    "batch_size",
-                    519
-                ],
-                "op": "Linear",
-                "output_purpose": "logits"
+                "description": "embeddings from the 12th layer"
             }
         ]
     },

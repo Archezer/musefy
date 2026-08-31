@@ -1,9 +1,14 @@
 import argparse
 from pathlib import Path
 
-from app.domain.models import InteractionType
+from app.domain.models import (
+    DetectedGenre,
+    InteractionType,
+)
 from app.ingestion.audio import AudioIngestionService
+from app.ml.genre_analysis import GenreAnalysisService
 from app.services.interactions import InteractionService
+from app.services.tracks import TrackManagementService
 from app.services.youtube_import import YouTubeImportService
 from app.sources.youtube import (
     YouTubeCandidate,
@@ -44,12 +49,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--artist",
         help="Override the artist from audio metadata",
     )
-    import_command.add_argument(
-        "--genres",
-        default="",
-        help="Comma-separated genres",
-    )
-
     interaction_command = commands.add_parser(
         "interact",
         help="Record a user interaction",
@@ -112,14 +111,41 @@ def import_track(arguments: argparse.Namespace) -> None:
 
     store = SQLAlchemyMusicStore(create_session)
     ingestion_service = AudioIngestionService(store)
+    track_management_service = TrackManagementService(store)
+    genre_analysis_service = GenreAnalysisService(
+        top_k=10,
+        min_score=0.1,
+    )
 
     track = ingestion_service.ingest(
         arguments.file_path,
         title=arguments.title,
         artist=arguments.artist,
-        genres=parse_genres(arguments.genres),
         source="local_import",
     )
+
+    if track.local_path:
+        predictions = genre_analysis_service.analyze(
+            Path(track.local_path)
+        )
+        detected_genres = tuple(
+            DetectedGenre(
+                genre=prediction.genre,
+                parent_genre=prediction.parent_genre,
+                subgenre=prediction.subgenre,
+                score=prediction.score,
+                rank=prediction.rank,
+                rank_weight=prediction.rank_weight,
+                weighted_score=prediction.weighted_score,
+            )
+            for prediction in predictions
+        )
+        track = (
+            track_management_service.update_detected_genres(
+                track_id=track.id,
+                detected_genres=detected_genres,
+            )
+        )
 
     print("Track imported successfully:")
     print(f"ID: {track.id}")
@@ -332,14 +358,6 @@ def choose_youtube_candidate(
             continue
 
         return candidates[selected_index - 1]
-
-
-def parse_genres(value: str) -> tuple[str, ...]:
-    return tuple(
-        genre.strip().lower()
-        for genre in value.split(",")
-        if genre.strip()
-    )
 
 
 def format_duration(duration_ms: int | None) -> str:

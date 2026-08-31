@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC
 
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.models import (
+    DetectedGenre,
     Interaction,
     InteractionType,
     Track,
@@ -61,10 +63,17 @@ class SQLAlchemyMusicStore:
             title=track.title,
             artist=track.artist,
             genres_json=json.dumps(track.genres),
+            detected_genres_json=json.dumps(
+                [
+                    asdict(genre)
+                    for genre in track.detected_genres
+                ]
+            ),
             duration_ms=track.duration_ms,
             source=track.source,
             source_url=track.source_url,
             local_path=track.local_path,
+            
         )
 
         with self.session_factory() as session:
@@ -100,6 +109,12 @@ class SQLAlchemyMusicStore:
             record.title = track.title
             record.artist = track.artist
             record.genres_json = json.dumps(track.genres)
+            record.detected_genres_json = json.dumps(
+                [
+                    asdict(genre)
+                    for genre in track.detected_genres
+                ]
+            )
             record.local_path = track.local_path
 
             session.commit()
@@ -171,11 +186,18 @@ class SQLAlchemyMusicStore:
 
     @staticmethod
     def _to_track(record: TrackRecord) -> Track:
+        detected_genres = tuple(
+            DetectedGenre(**item)
+            for item in json.loads(
+                record.detected_genres_json or "[]"
+            )
+        )
         return Track(
             id=record.id,
             title=record.title,
             artist=record.artist,
             genres=tuple(json.loads(record.genres_json)),
+            detected_genres=detected_genres,
             duration_ms=record.duration_ms,
             source=record.source,
             source_url=record.source_url,

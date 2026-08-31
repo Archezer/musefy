@@ -35,6 +35,9 @@ dev = [
     "matplotlib>=3.9.0",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [[tool.uv.index]]
 name = "pytorch-cuda"
 url = "https://download.pytorch.org/whl/cu126"

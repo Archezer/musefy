@@ -16,6 +16,8 @@ DEFAULT_EXPLORATION_POOL_SIZE = 30
 EXPLORATION_TEMPERATURE = 2.0
 ARTIST_PREFERENCE_FACTOR = 0.5
 GENRE_PREFERENCE_FACTOR = 0.5
+PARENT_GENRE_RELEVANCE = 0.5
+SUBGENRE_RECOMMENDATION_MIN_SCORE = 0.25
 
 PLAYBACK_INTERACTION_TYPES = frozenset(
     {
@@ -128,9 +130,9 @@ class MostPopularRecommender(Recommender):
 
 
     def _get_user_genre_scores(
-            self,
-            user_id: str,
-            interactions: list[Interaction],
+        self,
+        user_id: str,
+        interactions: list[Interaction],
     ) -> dict[str, float]:
         genre_scores: dict[str, float] = defaultdict(float)
 
@@ -145,18 +147,78 @@ class MostPopularRecommender(Recommender):
             if track is None:
                 continue
 
-            for genre in track.genres:
-                normalized_genre = genre.strip().casefold()
-
-                if not normalized_genre:
-                    continue
-
-                genre_scores[normalized_genre] += (
+            for genre, relevance in (
+                self._get_track_genre_features(track).items()
+            ):
+                genre_scores[genre] += (
                     interaction.interaction_type.weight
                     * GENRE_PREFERENCE_FACTOR
+                    * relevance
                 )
 
         return genre_scores
+
+    @staticmethod
+    def _get_track_genre_features(
+        track: Track,
+    ) -> dict[str, float]:
+        features: dict[str, float] = {}
+
+        if track.detected_genres:
+            for prediction in track.detected_genres:
+                full_genre = prediction.genre.strip().casefold()
+                parent_genre = (
+                    prediction.parent_genre.strip().casefold()
+                )
+
+                relevance = max(
+                    prediction.weighted_score,
+                    0.0,
+                )
+
+                if (
+                    full_genre
+                    and (
+                        not prediction.subgenre
+                        or prediction.score
+                        >= SUBGENRE_RECOMMENDATION_MIN_SCORE
+                    )
+                ):
+                    features[full_genre] = max(
+                        features.get(full_genre, 0.0),
+                        relevance,
+                    )
+
+                if parent_genre:
+                    features[parent_genre] = max(
+                        features.get(parent_genre, 0.0),
+                        relevance * PARENT_GENRE_RELEVANCE,
+                    )
+
+            return features
+
+        for genre in track.genres:
+            normalized_genre = genre.strip().casefold()
+
+            if not normalized_genre:
+                continue
+
+            features[normalized_genre] = max(
+                features.get(normalized_genre, 0.0),
+                1.0,
+            )
+
+            parent_genre, separator, _ = (
+                normalized_genre.partition("---")
+            )
+
+            if separator and parent_genre:
+                features[parent_genre] = max(
+                    features.get(parent_genre, 0.0),
+                    PARENT_GENRE_RELEVANCE,
+                )
+
+        return features
 
 
     def _get_user_artist_scores(
@@ -270,19 +332,17 @@ class MostPopularRecommender(Recommender):
         )
 
         for track in self.store.list_tracks():
-            genres = {
-                genre.strip().casefold()
-                for genre in track.genres
-                if genre.strip()
-            }
+            genres = self._get_track_genre_features(track)
+            genre_weight = sum(genres.values())
 
-            if not genres:
+            if not genres or genre_weight <= 0:
                 continue
 
             genre_bonus = sum(
                 user_genre_scores.get(genre, 0.0)
-                for genre in genres
-            ) / len(genres)
+                * relevance
+                for genre, relevance in genres.items()
+            ) / genre_weight
 
             track_scores[track.id] += genre_bonus
 
@@ -383,15 +443,12 @@ class MostPopularRecommender(Recommender):
                 0.0
             )
             
-            genres = {
-                genre.strip().casefold()
-                for genre in track.genres
-                if genre.strip()
-            }
+            genres = self._get_track_genre_features(track)
 
             genre_bonus = sum(
                 user_genre_scores.get(genre, 0.0)
-                for genre in genres
+                * relevance
+                for genre, relevance in genres.items()
             )
 
             if artist_bonus > 0:

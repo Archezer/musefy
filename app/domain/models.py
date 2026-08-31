@@ -24,11 +24,23 @@ class InteractionType(str, Enum):
 
 
 @dataclass(frozen=True)
+class DetectedGenre:
+    genre: str
+    parent_genre: str
+    subgenre: str
+    score: float
+    rank: int
+    rank_weight: float
+    weighted_score: float
+
+
+@dataclass(frozen=True)
 class Track:
     id: str
     title: str
     artist: str
     genres: tuple[str, ...] = ()
+    detected_genres: tuple[DetectedGenre, ...] = ()
     duration_ms: int | None = None
     source: str = "local_upload"
     source_url: str | None = None

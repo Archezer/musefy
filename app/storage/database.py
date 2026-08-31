@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.storage.paths import (
@@ -37,6 +37,22 @@ def create_database() -> None:
     from app.storage.models import Base
 
     Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "tracks"
+            )
+        }
+
+        if "detected_genres_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN detected_genres_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                )
+            )
 
 def create_session() -> Session:
     return SessionFactory()

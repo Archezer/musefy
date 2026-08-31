@@ -8,6 +8,8 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = PROJECT_ROOT / "data" / "models" / "maest"
+
+
 @dataclass(frozen=True)
 class GenrePrediction:
     genre: str
@@ -63,14 +65,49 @@ class MaestClassifier:
         self.provider = self.session.get_providers()[0]
         self.torch_cuda_available = torch.cuda.is_available()
 
-        self.input_name = (
-            self.session.get_inputs()[0].name
-        )
+        model_input = self.session.get_inputs()[0]
+        self.input_name = model_input.name
+        self.input_shape = tuple(model_input.shape)
+        self.prediction_output_name = "activations"
+
+        output_names = {
+            output.name
+            for output in self.session.get_outputs()
+        }
+        if self.prediction_output_name not in output_names:
+            raise RuntimeError(
+                "MAEST model does not expose the activations output."
+            )
 
         metadata = json.loads(
             labels_path.read_text(encoding="utf-8")
         )
         self.labels: list[str] = metadata["classes"]
+
+    def _run_predictions(
+        self,
+        mel_batch: np.ndarray,
+    ) -> np.ndarray:
+        prepared_batch = mel_batch.astype(
+            np.float32,
+            copy=False,
+        )
+
+        fixed_batch_size = self.input_shape[0]
+        if fixed_batch_size == 1:
+            window_predictions = [
+                self.session.run(
+                    [self.prediction_output_name],
+                    {self.input_name: window[None, ...]},
+                )[0][0]
+                for window in prepared_batch
+            ]
+            return np.asarray(window_predictions)
+
+        return self.session.run(
+            [self.prediction_output_name],
+            {self.input_name: prepared_batch},
+        )[0]
 
     def predict(
         self,
@@ -83,10 +120,7 @@ class MaestClassifier:
                 "[batch, 1876, 96]."
             )
 
-        predictions = self.session.run(
-            ["activations"],
-            {self.input_name: mel_batch.astype(np.float32)},
-        )[0]
+        predictions = self._run_predictions(mel_batch)
 
         mean_predictions = predictions.mean(axis=0)
         indexes = np.argsort(mean_predictions)[::-1][:top_k]
@@ -117,10 +151,7 @@ class MaestClassifier:
         if min_score < 0:
             raise ValueError("min_score cannot be negative.")
 
-        predictions = self.session.run(
-            ['activations'],
-            {self.input_name: mel_batch.astype(np.float32)},
-        )[0]
+        predictions = self._run_predictions(mel_batch)
 
         mean_predictions = predictions.mean(axis=0)
         indexes = np.argsort(mean_predictions)[::-1]

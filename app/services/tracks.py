@@ -1,7 +1,10 @@
 from dataclasses import replace
 from pathlib import Path
 
-from app.domain.models import Track
+from app.domain.models import (
+    DetectedGenre,
+    Track,
+)
 from app.ingestion.filenames import (
     add_collision_suffix,
     build_library_filename,
@@ -94,6 +97,37 @@ class TrackManagementService:
                 new_path.rename(old_path)
 
             raise
+
+        return updated_track
+
+    def update_detected_genres(
+        self,
+        *,
+        track_id: str,
+        detected_genres: tuple[DetectedGenre, ...],
+    ) -> Track:
+        current_track = self.store.get_track(track_id)
+
+        if current_track is None:
+            raise ValueError(
+                f"Track does not exist: {track_id}"
+            )
+
+        model_genres = tuple(
+            dict.fromkeys(
+                prediction.parent_genre.strip().casefold()
+                for prediction in detected_genres
+                if prediction.parent_genre.strip()
+            )
+        )
+
+        updated_track = replace(
+            current_track,
+            genres=model_genres,
+            detected_genres=detected_genres,
+        )
+
+        self.store.update_track(updated_track)
 
         return updated_track
 

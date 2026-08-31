@@ -1,9 +1,8 @@
-from pathlib import Path
-
 import torch
-import torchaudio
-from transformers import AutoModel, Wav2Vec2FeatureExtractor
-
+from transformers import (
+    AutoModel,
+    Wav2Vec2FeatureExtractor,
+)
 
 MODEL_NAME = "m-a-p/MERT-v1-95M"
 

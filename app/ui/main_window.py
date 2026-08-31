@@ -28,10 +28,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.domain.models import InteractionType, Track
+from app.domain.models import (
+    DetectedGenre,
+    InteractionType,
+    Track,
+)
 from app.ingestion.audio import AudioIngestionService
 from app.ingestion.metadata import read_audio_metadata
 from app.ml.genre_analysis import GenreAnalysisService
+from app.ml.maest import GenrePrediction
 from app.services.interactions import InteractionService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
@@ -186,6 +191,14 @@ class MainWindow(QMainWindow):
         )
         self.delete_button.setEnabled(False)
 
+        self.analyze_genres_button = QPushButton(
+            "Analyze genres"
+        )
+        self.analyze_genres_button.clicked.connect(
+            self._analyze_selected_track
+        )
+        self.analyze_genres_button.setEnabled(False)
+
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self._refresh_content)
 
@@ -193,6 +206,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(youtube_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.delete_button)
+        toolbar.addWidget(self.analyze_genres_button)
         toolbar.addWidget(refresh_button)
         toolbar.addStretch()
 
@@ -288,7 +302,7 @@ class MainWindow(QMainWindow):
                 "Title",
                 "Artist",
                 "Duration",
-                "Genres",
+                "Genres (top 2)",
                 "Genre analysis",
             ]
         )
@@ -356,7 +370,7 @@ class MainWindow(QMainWindow):
                 row_index,
                 3,
                 QTableWidgetItem(
-                    ", ".join(track.genres)
+                    self._format_display_genres(track)
                 ),
             )
             self.track_table.setItem(
@@ -374,6 +388,39 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Loaded {len(tracks)} tracks"
         )
+
+    @staticmethod
+    def _format_display_genres(
+        track: Track,
+    ) -> str:
+        if track.detected_genres:
+            visible_genres = []
+            for prediction in track.detected_genres:
+                parent_genre = prediction.parent_genre
+                if parent_genre in visible_genres:
+                    continue
+                visible_genres.append(parent_genre)
+                if len(visible_genres) == 2:
+                    break
+            hidden_count = (
+                len({
+                    prediction.parent_genre
+                    for prediction in track.detected_genres
+                })
+                - len(visible_genres)
+            )
+        else:
+            visible_genres = list(track.genres[:2])
+            hidden_count = len(track.genres) - len(
+                visible_genres
+            )
+
+        text = ", ".join(visible_genres)
+
+        if hidden_count > 0:
+            text = f"{text} (+{hidden_count} more)"
+
+        return text
 
     def _load_recommendations(self) -> None:
         recommendations = (
@@ -402,6 +449,7 @@ class MainWindow(QMainWindow):
             self.current_track_id = None
             self.edit_button.setEnabled(False)
             self.delete_button.setEnabled(False)
+            self.analyze_genres_button.setEnabled(False)
             return
 
         title_item = selected_items[0]
@@ -411,6 +459,13 @@ class MainWindow(QMainWindow):
         )
         self.edit_button.setEnabled(True)
         self.delete_button.setEnabled(True)
+        self.analyze_genres_button.setEnabled(
+            self._genre_statuses.get(
+                self.current_track_id,
+                "Not analyzed",
+            )
+            != "Queued"
+        )
 
         self.statusBar().showMessage(
             f"Selected track: {title_item.text()}"
@@ -454,7 +509,7 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        title, artist, genres = (
+        title, artist = (
             metadata_dialog.get_values()
         )
 
@@ -463,7 +518,6 @@ class MainWindow(QMainWindow):
                 source_path,
                 title=title,
                 artist=artist,
-                genres=genres,
                 source="windows_import",
             )
         except (FileNotFoundError, ValueError) as error:
@@ -681,6 +735,8 @@ class MainWindow(QMainWindow):
 
         self._genre_statuses[track.id] = "Queued"
         self._set_genre_status(track.id, "Queued")
+        if self.current_track_id == track.id:
+            self.analyze_genres_button.setEnabled(False)
 
         task = GenreAnalysisTask(
             service=self._genre_analysis_service,
@@ -698,6 +754,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Genre analysis queued: {track.title}"
         )
+
+    def _analyze_selected_track(self) -> None:
+        if self.current_track_id is None:
+            QMessageBox.warning(
+                self,
+                "No track selected",
+                "Select a track first.",
+            )
+            return
+
+        track = self.store.get_track(
+            self.current_track_id
+        )
+
+        if track is None:
+            QMessageBox.warning(
+                self,
+                "Analysis failed",
+                "Track was not found.",
+            )
+            return
+
+        if self._genre_statuses.get(track.id) == "Queued":
+            return
+
+        self._enqueue_genre_analysis(track)
 
     def _set_genre_status(
         self,
@@ -732,9 +814,47 @@ class MainWindow(QMainWindow):
         track_id: str,
         predictions: object,
     ) -> None:
+        if not isinstance(predictions, list):
+            self._handle_genre_analysis_error(
+                track_id,
+                "Genre analysis returned an invalid result.",
+            )
+            return
+
+        detected_genres = tuple(
+            DetectedGenre(
+                genre=prediction.genre,
+                parent_genre=prediction.parent_genre,
+                subgenre=prediction.subgenre,
+                score=prediction.score,
+                rank=prediction.rank,
+                rank_weight=prediction.rank_weight,
+                weighted_score=prediction.weighted_score,
+            )
+            for prediction in predictions
+            if isinstance(prediction, GenrePrediction)
+        )
+
+        try:
+            self.track_management_service.update_detected_genres(
+                track_id=track_id,
+                detected_genres=detected_genres,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            self._handle_genre_analysis_error(
+                track_id,
+                str(error),
+            )
+            return
+
         self._genre_statuses[track_id] = "Completed"
         self._genre_predictions[track_id] = predictions
         self._set_genre_status(track_id, "Completed")
+        if self.current_track_id == track_id:
+            self.analyze_genres_button.setEnabled(True)
+
+        self._load_library()
+        self._load_recommendations()
 
         track = self.store.get_track(track_id)
         track_name = (
@@ -754,6 +874,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._genre_statuses[track_id] = "Failed"
         self._set_genre_status(track_id, "Failed")
+        if self.current_track_id == track_id:
+            self.analyze_genres_button.setEnabled(True)
         self.statusBar().showMessage(
             f"Genre analysis failed: {message}"
         )
@@ -790,7 +912,6 @@ class MainWindow(QMainWindow):
             parent=self,
             title=track.title,
             artist=track.artist,
-            genres=track.genres,
         )
 
         if (
@@ -799,7 +920,7 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        title, artist, genres = (
+        title, artist = (
             metadata_dialog.get_values()
         )
 
@@ -815,7 +936,7 @@ class MainWindow(QMainWindow):
                     track_id=track.id,
                     title=title,
                     artist=artist,
-                    genres=genres,
+                    genres=track.genres,
                 )
             )
         except (
