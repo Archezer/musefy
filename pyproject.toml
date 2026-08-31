@@ -8,7 +8,7 @@ dependencies = [
     "aiogram>=3.30,<4",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
-    "onnxruntime>=1.29.0",
+    "onnxruntime-gpu==1.26.0",
     "pandas>=3.0.5",
     "pyside6>=6.11.2",
     "pytest>=9.1.1",
@@ -28,6 +28,12 @@ dependencies = [
 torch = { index = "pytorch-cuda" }
 torchvision = { index = "pytorch-cuda" }
 torchaudio = { index = "pytorch-cuda" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.0",
+    "matplotlib>=3.9.0",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cuda"

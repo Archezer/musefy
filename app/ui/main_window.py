@@ -1,7 +1,15 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtCore import (
+    QObject,
+    QRunnable,
+    Qt,
+    QThread,
+    QThreadPool,
+    QUrl,
+    Signal,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog,
@@ -23,6 +31,7 @@ from PySide6.QtWidgets import (
 from app.domain.models import InteractionType, Track
 from app.ingestion.audio import AudioIngestionService
 from app.ingestion.metadata import read_audio_metadata
+from app.ml.genre_analysis import GenreAnalysisService
 from app.services.interactions import InteractionService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
@@ -57,6 +66,47 @@ class YouTubeTaskThread(QThread):
             self.result_ready.emit(result)
 
 
+class GenreAnalysisSignals(QObject):
+    result_ready = Signal(str, object)
+    error_occurred = Signal(str, str)
+
+
+class GenreAnalysisTask(QRunnable):
+    def __init__(
+        self,
+        service: GenreAnalysisService,
+        track_id: str,
+        audio_path: Path,
+    ) -> None:
+        super().__init__()
+
+        self.service = service
+        self.track_id = track_id
+        self.audio_path = audio_path
+        self.signals = GenreAnalysisSignals()
+
+    def run(self) -> None:
+        try:
+            predictions = self.service.analyze(
+                self.audio_path
+            )
+        except (
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as error:
+            self.signals.error_occurred.emit(
+                self.track_id,
+                str(error),
+            )
+        else:
+            self.signals.result_ready.emit(
+                self.track_id,
+                predictions,
+            )
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -81,6 +131,16 @@ class MainWindow(QMainWindow):
         self.user_id = user_id
         self.current_track_id: str | None = None
         self._youtube_thread: YouTubeTaskThread | None = None
+        self._genre_statuses: dict[str, str] = {}
+        self._genre_predictions: dict[str, object] = {}
+        self._genre_analysis_service = (
+            GenreAnalysisService(
+                top_k=10,
+                min_score=0.1,
+            )
+        )
+        self._genre_analysis_pool = QThreadPool(self)
+        self._genre_analysis_pool.setMaxThreadCount(1)
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(0.7)
@@ -222,13 +282,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Music library"))
 
         self.track_table = QTableWidget()
-        self.track_table.setColumnCount(4)
+        self.track_table.setColumnCount(5)
         self.track_table.setHorizontalHeaderLabels(
             [
                 "Title",
                 "Artist",
                 "Duration",
                 "Genres",
+                "Genre analysis",
             ]
         )
         self.track_table.setSelectionBehavior(
@@ -296,6 +357,16 @@ class MainWindow(QMainWindow):
                 3,
                 QTableWidgetItem(
                     ", ".join(track.genres)
+                ),
+            )
+            self.track_table.setItem(
+                row_index,
+                4,
+                QTableWidgetItem(
+                    self._genre_statuses.get(
+                        track.id,
+                        "Not analyzed",
+                    )
                 ),
             )
 
@@ -403,6 +474,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._enqueue_genre_analysis(track)
         self._load_library()
         self._load_recommendations()
 
@@ -584,6 +656,7 @@ class MainWindow(QMainWindow):
 
         track = result
         dialog.accept()
+        self._enqueue_genre_analysis(track)
         self._load_library()
         self._load_recommendations()
 
@@ -594,6 +667,95 @@ class MainWindow(QMainWindow):
                 f"Added to Library:\n"
                 f"{track.artist} — {track.title}"
             ),
+        )
+
+    def _enqueue_genre_analysis(
+        self,
+        track: Track,
+    ) -> None:
+        if not track.local_path:
+            self._genre_statuses[track.id] = (
+                "No local file"
+            )
+            return
+
+        self._genre_statuses[track.id] = "Queued"
+        self._set_genre_status(track.id, "Queued")
+
+        task = GenreAnalysisTask(
+            service=self._genre_analysis_service,
+            track_id=track.id,
+            audio_path=Path(track.local_path),
+        )
+        task.signals.result_ready.connect(
+            self._handle_genre_analysis_result
+        )
+        task.signals.error_occurred.connect(
+            self._handle_genre_analysis_error
+        )
+
+        self._genre_analysis_pool.start(task)
+        self.statusBar().showMessage(
+            f"Genre analysis queued: {track.title}"
+        )
+
+    def _set_genre_status(
+        self,
+        track_id: str,
+        status: str,
+    ) -> None:
+        for row_index in range(
+            self.track_table.rowCount()
+        ):
+            title_item = self.track_table.item(
+                row_index,
+                0,
+            )
+
+            if title_item is None:
+                continue
+
+            if title_item.data(
+                Qt.ItemDataRole.UserRole
+            ) != track_id:
+                continue
+
+            self.track_table.setItem(
+                row_index,
+                4,
+                QTableWidgetItem(status),
+            )
+            return
+
+    def _handle_genre_analysis_result(
+        self,
+        track_id: str,
+        predictions: object,
+    ) -> None:
+        self._genre_statuses[track_id] = "Completed"
+        self._genre_predictions[track_id] = predictions
+        self._set_genre_status(track_id, "Completed")
+
+        track = self.store.get_track(track_id)
+        track_name = (
+            track.title
+            if track is not None
+            else track_id
+        )
+
+        self.statusBar().showMessage(
+            f"Genre analysis completed: {track_name}"
+        )
+
+    def _handle_genre_analysis_error(
+        self,
+        track_id: str,
+        message: str,
+    ) -> None:
+        self._genre_statuses[track_id] = "Failed"
+        self._set_genre_status(track_id, "Failed")
+        self.statusBar().showMessage(
+            f"Genre analysis failed: {message}"
         )
 
     @staticmethod
