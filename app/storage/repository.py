@@ -118,6 +118,9 @@ class SQLAlchemyMusicStore:
                     for genre in track.detected_genres
                 ]
             )
+            record.track_embedding_json = json.dumps(
+                track.track_embedding or []
+            )
             record.local_path = track.local_path
 
             session.commit()
