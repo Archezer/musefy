@@ -41,6 +41,7 @@ class Track:
     artist: str
     genres: tuple[str, ...] = ()
     detected_genres: tuple[DetectedGenre, ...] = ()
+    track_embedding: tuple[float, ...] | None = None
     duration_ms: int | None = None
     source: str = "local_upload"
     source_url: str | None = None

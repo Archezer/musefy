@@ -49,6 +49,11 @@ class TrackRecord(Base):
         default="[]",
         nullable=False,
     )
+    track_embedding_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        nullable=False,
+    )
     duration_ms: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,

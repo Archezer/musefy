@@ -4,6 +4,7 @@ from pathlib import Path
 from app.domain.models import (
     DetectedGenre,
     InteractionType,
+    Track,
 )
 from app.ingestion.audio import AudioIngestionService
 from app.ml.genre_analysis import GenreAnalysisService
@@ -124,28 +125,11 @@ def import_track(arguments: argparse.Namespace) -> None:
         source="local_import",
     )
 
-    if track.local_path:
-        predictions = genre_analysis_service.analyze(
-            Path(track.local_path)
-        )
-        detected_genres = tuple(
-            DetectedGenre(
-                genre=prediction.genre,
-                parent_genre=prediction.parent_genre,
-                subgenre=prediction.subgenre,
-                score=prediction.score,
-                rank=prediction.rank,
-                rank_weight=prediction.rank_weight,
-                weighted_score=prediction.weighted_score,
-            )
-            for prediction in predictions
-        )
-        track = (
-            track_management_service.update_detected_genres(
-                track_id=track.id,
-                detected_genres=detected_genres,
-            )
-        )
+    track = analyze_track_genres(
+        track=track,
+        genre_analysis_service=genre_analysis_service,
+        track_management_service=track_management_service,
+    )
 
     print("Track imported successfully:")
     print(f"ID: {track.id}")
@@ -237,6 +221,11 @@ def import_youtube_track(
 
         store = SQLAlchemyMusicStore(create_session)
         ingestion_service = AudioIngestionService(store)
+        track_management_service = TrackManagementService(store)
+        genre_analysis_service = GenreAnalysisService(
+            top_k=10,
+            min_score=0.1,
+        )
         import_service = YouTubeImportService(
             ingestion_service,
             provider=provider,
@@ -244,7 +233,13 @@ def import_youtube_track(
         track = import_service.download_and_import(
             selected_candidate,
         )
+        track = analyze_track_genres(
+            track=track,
+            genre_analysis_service=genre_analysis_service,
+            track_management_service=track_management_service,
+        )
     except (
+        OSError,
         PermissionError,
         RuntimeError,
         ValueError,
@@ -271,13 +266,24 @@ def import_youtube_url(
 
         store = SQLAlchemyMusicStore(create_session)
         ingestion_service = AudioIngestionService(store)
+        track_management_service = TrackManagementService(store)
+        genre_analysis_service = GenreAnalysisService(
+            top_k=10,
+            min_score=0.1,
+        )
         import_service = YouTubeImportService(
             ingestion_service,
         )
         track = import_service.download_and_import_url(
             arguments.url,
         )
+        track = analyze_track_genres(
+            track=track,
+            genre_analysis_service=genre_analysis_service,
+            track_management_service=track_management_service,
+        )
     except (
+        OSError,
         PermissionError,
         RuntimeError,
         ValueError,
@@ -294,6 +300,37 @@ def import_youtube_url(
         f"{format_duration(track.duration_ms)}"
     )
     print(f"Local path: {track.local_path}")
+
+
+def analyze_track_genres(
+    *,
+    track: Track,
+    genre_analysis_service: GenreAnalysisService,
+    track_management_service: TrackManagementService,
+) -> Track:
+    if not track.local_path:
+        return track
+
+    predictions = genre_analysis_service.analyze(
+        Path(track.local_path)
+    )
+    detected_genres = tuple(
+        DetectedGenre(
+            genre=prediction.genre,
+            parent_genre=prediction.parent_genre,
+            subgenre=prediction.subgenre,
+            score=prediction.score,
+            rank=prediction.rank,
+            rank_weight=prediction.rank_weight,
+            weighted_score=prediction.weighted_score,
+        )
+        for prediction in predictions
+    )
+
+    return track_management_service.update_detected_genres(
+        track_id=track.id,
+        detected_genres=detected_genres,
+    )
 
 
 def print_youtube_candidates(

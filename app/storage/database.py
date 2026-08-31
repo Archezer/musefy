@@ -54,6 +54,15 @@ def create_database() -> None:
                 )
             )
 
+        if "track_embedding_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN track_embedding_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                )
+            )
+
 def create_session() -> Session:
     return SessionFactory()
 

@@ -252,6 +252,8 @@ uv run python -c "import onnxruntime as ort; print(ort.get_available_providers()
 - использование CUDA через ONNX Runtime;
 - score threshold и учёт ранга;
 - разделение полного названия на родительский жанр и поджанр;
+- массовый reanalysis всех локальных треков из UI;
+- автоматический анализ жанров после локального и YouTube-импорта;
 - демонстрационный notebook.
 
 Следующий этап — подключить автоматическое определение жанров к импорту

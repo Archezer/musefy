@@ -270,12 +270,7 @@ class YouTubeSearchProvider:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": (
-                "bestaudio[ext=m4a]"
-                "/bestaudio[ext=opus]"
-                "/bestaudio"
-                "/best[acodec!=none]"
-            ),
+            "format": "bestaudio/best",
             "outtmpl": str(
                 output_dir
                 / f"{candidate.video_id}.%(ext)s"
@@ -488,7 +483,7 @@ def _youtube_clients(
     if auth_sources == ("none",):
         return ["web_embedded"]
 
-    return ["web", "web_embedded"]
+    return ["web_embedded", "web"]
 
 
 def _firefox_profile_exists() -> bool:

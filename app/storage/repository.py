@@ -69,6 +69,9 @@ class SQLAlchemyMusicStore:
                     for genre in track.detected_genres
                 ]
             ),
+            track_embedding_json=json.dumps(
+                track.track_embedding or []
+            ),
             duration_ms=track.duration_ms,
             source=track.source,
             source_url=track.source_url,
@@ -192,12 +195,22 @@ class SQLAlchemyMusicStore:
                 record.detected_genres_json or "[]"
             )
         )
+        embedding_values = json.loads(
+            record.track_embedding_json or "[]"
+        )
+
+        track_embedding = (
+            tuple(float(value) for value in embedding_values)
+            if embedding_values
+            else None
+        )
         return Track(
             id=record.id,
             title=record.title,
             artist=record.artist,
             genres=tuple(json.loads(record.genres_json)),
             detected_genres=detected_genres,
+            track_embedding=track_embedding,
             duration_ms=record.duration_ms,
             source=record.source,
             source_url=record.source_url,

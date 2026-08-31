@@ -36,7 +36,10 @@ from app.domain.models import (
 from app.ingestion.audio import AudioIngestionService
 from app.ingestion.metadata import read_audio_metadata
 from app.ml.genre_analysis import GenreAnalysisService
-from app.ml.maest import GenrePrediction
+from app.ml.maest import (
+    GenrePrediction,
+    MaestAnalysisResult,
+)
 from app.services.interactions import InteractionService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
@@ -92,7 +95,7 @@ class GenreAnalysisTask(QRunnable):
 
     def run(self) -> None:
         try:
-            predictions = self.service.analyze(
+            analysis_result = self.service.analyze_result(
                 self.audio_path
             )
         except (
@@ -108,7 +111,7 @@ class GenreAnalysisTask(QRunnable):
         else:
             self.signals.result_ready.emit(
                 self.track_id,
-                predictions,
+                analysis_result,
             )
 
 
@@ -138,6 +141,9 @@ class MainWindow(QMainWindow):
         self._youtube_thread: YouTubeTaskThread | None = None
         self._genre_statuses: dict[str, str] = {}
         self._genre_predictions: dict[str, object] = {}
+        self._genre_batch_track_ids: set[str] = set()
+        self._genre_batch_completed = 0
+        self._genre_batch_total = 0
         self._genre_analysis_service = (
             GenreAnalysisService(
                 top_k=10,
@@ -199,6 +205,13 @@ class MainWindow(QMainWindow):
         )
         self.analyze_genres_button.setEnabled(False)
 
+        self.reanalyze_genres_button = QPushButton(
+            "Reanalyze all genres"
+        )
+        self.reanalyze_genres_button.clicked.connect(
+            self._reanalyze_all_genres
+        )
+
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self._refresh_content)
 
@@ -207,6 +220,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.delete_button)
         toolbar.addWidget(self.analyze_genres_button)
+        toolbar.addWidget(self.reanalyze_genres_button)
         toolbar.addWidget(refresh_button)
         toolbar.addStretch()
 
@@ -781,6 +795,77 @@ class MainWindow(QMainWindow):
 
         self._enqueue_genre_analysis(track)
 
+    def _reanalyze_all_genres(self) -> None:
+        tracks = list(self.store.list_tracks())
+        local_tracks = [
+            track
+            for track in tracks
+            if track.local_path
+            and Path(track.local_path).exists()
+        ]
+
+        if not local_tracks:
+            QMessageBox.information(
+                self,
+                "No local tracks",
+                "There are no local tracks available for analysis.",
+            )
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Reanalyze all genres",
+            (
+                f"Analyze genres for {len(local_tracks)} local tracks?\n"
+                "The current detected genres will be replaced."
+            ),
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._genre_batch_track_ids = {
+            track.id
+            for track in local_tracks
+        }
+        self._genre_batch_completed = 0
+        self._genre_batch_total = len(local_tracks)
+        self.reanalyze_genres_button.setEnabled(False)
+
+        for track in local_tracks:
+            self._enqueue_genre_analysis(track)
+
+        self.statusBar().showMessage(
+            f"Genre reanalysis queued: 0/{self._genre_batch_total}"
+        )
+
+    def _finish_genre_batch_item(
+        self,
+        track_id: str,
+    ) -> bool:
+        if track_id not in self._genre_batch_track_ids:
+            return False
+
+        self._genre_batch_track_ids.remove(track_id)
+        self._genre_batch_completed += 1
+
+        if self._genre_batch_track_ids:
+            self.statusBar().showMessage(
+                "Genre reanalysis progress: "
+                f"{self._genre_batch_completed}/"
+                f"{self._genre_batch_total}"
+            )
+        else:
+            self.reanalyze_genres_button.setEnabled(True)
+            self.statusBar().showMessage(
+                "Genre reanalysis completed: "
+                f"{self._genre_batch_total} tracks"
+            )
+
+        return True
+
     def _set_genre_status(
         self,
         track_id: str,
@@ -812,14 +897,21 @@ class MainWindow(QMainWindow):
     def _handle_genre_analysis_result(
         self,
         track_id: str,
-        predictions: object,
+        analysis_result: object,
     ) -> None:
-        if not isinstance(predictions, list):
+        if not isinstance(
+            analysis_result,
+            MaestAnalysisResult,
+        ):
             self._handle_genre_analysis_error(
                 track_id,
                 "Genre analysis returned an invalid result.",
             )
             return
+
+        predictions = list(
+            analysis_result.genres
+        )
 
         detected_genres = tuple(
             DetectedGenre(
@@ -839,6 +931,10 @@ class MainWindow(QMainWindow):
             self.track_management_service.update_detected_genres(
                 track_id=track_id,
                 detected_genres=detected_genres,
+                track_embedding=tuple(
+                    float(value)
+                    for value in analysis_result.track_embedding
+                ),
             )
         except (OSError, RuntimeError, ValueError) as error:
             self._handle_genre_analysis_error(
@@ -848,13 +944,18 @@ class MainWindow(QMainWindow):
             return
 
         self._genre_statuses[track_id] = "Completed"
-        self._genre_predictions[track_id] = predictions
+        self._genre_predictions[track_id] = (
+            analysis_result
+        )
         self._set_genre_status(track_id, "Completed")
         if self.current_track_id == track_id:
             self.analyze_genres_button.setEnabled(True)
 
         self._load_library()
         self._load_recommendations()
+
+        if self._finish_genre_batch_item(track_id):
+            return
 
         track = self.store.get_track(track_id)
         track_name = (
@@ -876,6 +977,8 @@ class MainWindow(QMainWindow):
         self._set_genre_status(track_id, "Failed")
         if self.current_track_id == track_id:
             self.analyze_genres_button.setEnabled(True)
+        if self._finish_genre_batch_item(track_id):
+            return
         self.statusBar().showMessage(
             f"Genre analysis failed: {message}"
         )

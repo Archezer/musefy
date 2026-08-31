@@ -105,6 +105,7 @@ class TrackManagementService:
         *,
         track_id: str,
         detected_genres: tuple[DetectedGenre, ...],
+        track_embedding: tuple[float, ...] | None = None,
     ) -> Track:
         current_track = self.store.get_track(track_id)
 
@@ -125,6 +126,11 @@ class TrackManagementService:
             current_track,
             genres=model_genres,
             detected_genres=detected_genres,
+            track_embedding=(
+                track_embedding
+                if track_embedding is not None
+                else current_track.track_embedding
+            ),
         )
 
         self.store.update_track(updated_track)

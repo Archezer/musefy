@@ -32,6 +32,12 @@ class GenrePrediction:
         return parts[1]
 
 
+@dataclass(frozen=True)
+class MaestAnalysisResult:
+    genres: tuple[GenrePrediction, ...]
+    track_embedding: np.ndarray
+
+
 class MaestClassifier:
     def __init__(
         self,
@@ -69,14 +75,22 @@ class MaestClassifier:
         self.input_name = model_input.name
         self.input_shape = tuple(model_input.shape)
         self.prediction_output_name = "activations"
+        self.embedding_output_name = "layer_07_embeddings"
 
         output_names = {
             output.name
             for output in self.session.get_outputs()
         }
-        if self.prediction_output_name not in output_names:
+        required_outputs = {
+            self.prediction_output_name,
+            self.embedding_output_name,
+        }
+
+        if not required_outputs.issubset(output_names):
+            missing_outputs = required_outputs - output_names
             raise RuntimeError(
-                "MAEST model does not expose the activations output."
+                "MAEST model is missing outputs: "
+                f"{sorted(missing_outputs)}"
             )
 
         metadata = json.loads(
@@ -84,30 +98,124 @@ class MaestClassifier:
         )
         self.labels: list[str] = metadata["classes"]
 
-    def _run_predictions(
+
+    def _extract_cls_embeddings(
+        self,
+        token_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        if token_embeddings.ndim == 4:
+            token_embeddings = token_embeddings[:, 0]
+
+        if token_embeddings.ndim != 3:
+            raise ValueError(
+                "Unexpected MAEST embedding shape: "
+                f"{token_embeddings.shape}"
+            )
+
+        return token_embeddings[:, 0, :]
+
+    def _run_inference(
         self,
         mel_batch: np.ndarray,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         prepared_batch = mel_batch.astype(
             np.float32,
             copy=False,
         )
 
-        fixed_batch_size = self.input_shape[0]
-        if fixed_batch_size == 1:
-            window_predictions = [
-                self.session.run(
-                    [self.prediction_output_name],
-                    {self.input_name: window[None, ...]},
-                )[0][0]
-                for window in prepared_batch
-            ]
-            return np.asarray(window_predictions)
+        if prepared_batch.shape[0] == 0:
+            raise ValueError("Mel batch must not be empty.")
 
-        return self.session.run(
-            [self.prediction_output_name],
+        output_names = [
+            self.prediction_output_name,
+            self.embedding_output_name,
+        ]
+
+        fixed_batch_size = self.input_shape[0]
+
+        if fixed_batch_size == 1:
+            window_scores = []
+            window_embeddings = []
+
+            for window in prepared_batch:
+                scores, token_embeddings = self.session.run(
+                    output_names,
+                    {
+                        self.input_name: window[None, ...],
+                    },
+                )
+
+                embeddings = self._extract_cls_embeddings(
+                    token_embeddings
+                )
+
+                window_scores.append(scores[0])
+                window_embeddings.append(embeddings[0])
+
+            return (
+                np.asarray(window_scores),
+                np.asarray(window_embeddings),
+            )
+
+        scores, token_embeddings = self.session.run(
+            output_names,
             {self.input_name: prepared_batch},
-        )[0]
+        )
+
+        return (
+            scores,
+            self._extract_cls_embeddings(token_embeddings),
+        )
+
+
+    def _rank_predictions(
+        self,
+        mean_predictions: np.ndarray,
+        top_k: int,
+        min_score: float,
+    ) -> list[GenrePrediction]:
+        if top_k < 1:
+            raise ValueError("top_k must be positive.")
+
+        if min_score < 0:
+            raise ValueError(
+                "min_score cannot be negative."
+            )
+
+        indexes = np.argsort(
+            mean_predictions
+        )[::-1]
+
+        results = []
+
+        for rank, index in enumerate(
+            indexes,
+            start=1,
+        ):
+            score = float(mean_predictions[index])
+
+            if score <= min_score:
+                break
+
+            rank_weight = float(
+                1.0 / np.log2(rank + 1)
+            )
+
+            results.append(
+                GenrePrediction(
+                    genre=self.labels[index],
+                    score=score,
+                    rank=rank,
+                    rank_weight=rank_weight,
+                    weighted_score=score * rank_weight,
+                )
+            )
+
+            if len(results) >= top_k:
+                break
+
+        return results
+
 
     def predict(
         self,
@@ -120,7 +228,7 @@ class MaestClassifier:
                 "[batch, 1876, 96]."
             )
 
-        predictions = self._run_predictions(mel_batch)
+        predictions, _ = self._run_inference(mel_batch)
 
         mean_predictions = predictions.mean(axis=0)
         indexes = np.argsort(mean_predictions)[::-1][:top_k]
@@ -137,50 +245,65 @@ class MaestClassifier:
         self,
         mel_batch: np.ndarray,
         top_k: int = 10,
-        min_score: float = 0.1
+        min_score: float = 0.1,
     ) -> list[GenrePrediction]:
         if mel_batch.ndim != 3:
             raise ValueError(
-            "Mel batch must have shape "
-            "[batch, 1876, 96]."
+                "Mel batch must have shape "
+                "[batch, 1876, 96]."
+            )
+
+        scores, _ = self._run_inference(
+            mel_batch
         )
 
-        if top_k < 1:
-            raise ValueError("top_k must be positive.")
+        return self._rank_predictions(
+            mean_predictions=scores.mean(axis=0),
+            top_k=top_k,
+            min_score=min_score,
+        )
 
-        if min_score < 0:
-            raise ValueError("min_score cannot be negative.")
 
-        predictions = self._run_predictions(mel_batch)
-
-        mean_predictions = predictions.mean(axis=0)
-        indexes = np.argsort(mean_predictions)[::-1]
-
-        results: list[GenrePrediction] = []
-
-        for rank, index in enumerate(indexes, start=1):
-            score = float(mean_predictions[index])
-
-            if score <= min_score:
-                break
-
-            rank_weight = float(
-                1.0 / np.log2(rank + 1)
+    def analyze(
+        self,
+        mel_batch: np.ndarray,
+        top_k: int = 10,
+        min_score: float = 0.1,
+    ) -> MaestAnalysisResult:
+        if mel_batch.ndim != 3:
+            raise ValueError(
+                "Mel batch must have shape "
+                "[batch, 1876, 96]."
             )
 
-            results.append(
-                GenrePrediction(
-                    genre=self.labels[index],
-                    score=score,
-                    rank=rank,
-                    rank_weight=rank_weight,
-                    weighted_score=score * rank_weight
-                )
+        scores, window_embeddings = (
+            self._run_inference(mel_batch)
+        )
+
+        genres = self._rank_predictions(
+            mean_predictions=scores.mean(axis=0),
+            top_k=top_k,
+            min_score=min_score,
+        )
+
+        track_embedding = window_embeddings.mean(
+            axis=0
+        )
+
+        norm = np.linalg.norm(track_embedding)
+
+        if not np.isfinite(norm) or norm == 0:
+            raise RuntimeError(
+                "Could not normalize track embedding."
             )
 
-            if len(results) >= top_k:
-                break
+        track_embedding = (
+            track_embedding / norm
+        ).astype(np.float32)
 
-        return results
+        return MaestAnalysisResult(
+            genres=tuple(genres),
+            track_embedding=track_embedding,
+        )
 
     

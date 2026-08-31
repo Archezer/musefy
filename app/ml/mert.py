@@ -1,4 +1,7 @@
+import numpy as np
 import torch
+import torchaudio
+from torch.nn import functional as F
 from transformers import (
     AutoModel,
     Wav2Vec2FeatureExtractor,
@@ -25,6 +28,45 @@ class MertAudioEmbedder:
 
         self.model.eval()
         self.sample_rate = self.processor.sampling_rate
+
+
+    def embed_waveform(
+        self,
+        waveform: torch.Tensor,
+        sample_rate: int,
+    ) -> np.ndarray:
+        if waveform.ndim == 2:
+            waveform = waveform.mean(dim=0)
+
+        if sample_rate != self.sample_rate:
+            waveform = torchaudio.functional.resample(
+                waveform,
+                sample_rate,
+                self.sample_rate,
+            )
+
+        inputs = self.processor(
+            waveform.detach().cpu().numpy(),
+            sampling_rate=self.sample_rate,
+            return_tensors="pt",
+        )
+
+        inputs = {
+            name: value.to(self.device)
+            for name, value in inputs.items()
+        }
+
+        with torch.inference_mode():
+            outputs = self.model(
+                **inputs,
+                output_hidden_states=True,
+            )
+
+        hidden_state = outputs.hidden_states[-1]
+        embedding = hidden_state.mean(dim=1)
+        embedding = F.normalize(embedding, p=2, dim=1)
+
+        return embedding[0].cpu().numpy().astype(np.float32)
 
 
         
