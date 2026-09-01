@@ -1,7 +1,13 @@
 from collections.abc import Iterable
 from typing import Protocol
 
-from app.domain.models import Interaction, Track, User
+from app.domain.models import (
+    Interaction,
+    Playlist,
+    PlaylistEntry,
+    Track,
+    User,
+)
 
 
 class MusicStore(Protocol):
@@ -22,6 +28,34 @@ class MusicStore(Protocol):
         ...
 
     def delete_track(self, track_id: str) -> None:
+        ...
+
+    def add_playlist(self, playlist: Playlist) -> None:
+        ...
+
+    def get_playlist(self, playlist_id: str) -> Playlist | None:
+        ...
+
+    def update_playlist(self, playlist: Playlist) -> None:
+        ...
+
+    def delete_playlist(self, playlist_id: str) -> None:
+        ...
+
+    def list_playlists(self) -> Iterable[Playlist]:
+        ...
+
+    def list_playlist_entries(
+        self,
+        playlist_id: str,
+    ) -> Iterable[PlaylistEntry]:
+        ...
+
+    def replace_playlist_entries(
+        self,
+        playlist_id: str,
+        entries: Iterable[PlaylistEntry],
+    ) -> None:
         ...
 
     def add_interaction(self, interaction: Interaction) -> None:

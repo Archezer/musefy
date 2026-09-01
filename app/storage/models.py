@@ -73,6 +73,11 @@ class TrackRecord(Base):
         cascade="all, delete-orphan",
     )
 
+    playlist_entries: Mapped[list["PlaylistEntryRecord"]] = relationship(
+        back_populates="track",
+        cascade="all, delete-orphan",
+    )
+
 
 class InteractionRecord(Base):
     __tablename__ = "interactions"
@@ -104,4 +109,51 @@ class InteractionRecord(Base):
     )
     user: Mapped[UserRecord] = relationship(
         back_populates="interactions"
+    )
+
+
+class PlaylistRecord(Base):
+    __tablename__ = "playlists"
+
+    id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    entries: Mapped[list["PlaylistEntryRecord"]] = relationship(
+        back_populates="playlist",
+        cascade="all, delete-orphan",
+    )
+
+
+class PlaylistEntryRecord(Base):
+    __tablename__ = "playlist_entries"
+
+    playlist_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "playlists.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+    track_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "tracks.id",
+            ondelete="CASCADE",
+        )
+    )
+
+    playlist: Mapped[PlaylistRecord] = relationship(
+        back_populates="entries"
+    )
+    track: Mapped[TrackRecord] = relationship(
+        back_populates="playlist_entries"
     )

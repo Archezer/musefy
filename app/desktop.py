@@ -6,6 +6,8 @@ from app.domain.models import User
 from app.ingestion.audio import AudioIngestionService
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
+from app.services.playback_queue import PlaybackQueueService
+from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import YouTubeImportService
@@ -27,6 +29,8 @@ def main() -> None:
 
     ingestion_service = AudioIngestionService(store)
     interaction_service = InteractionService(store)
+    playback_queue_service = PlaybackQueueService()
+    playlist_management_service = PlaylistManagementService(store)
     track_management_service = TrackManagementService(store)
     youtube_import_service = YouTubeImportService(
         ingestion_service
@@ -46,6 +50,8 @@ def main() -> None:
         recommendation_service=recommendation_service,
         track_management_service=track_management_service,
         youtube_import_service=youtube_import_service,
+        playback_queue_service=playback_queue_service,
+        playlist_management_service=playlist_management_service,
         user_id=CURRENT_USER_ID,
     )
     window.show()

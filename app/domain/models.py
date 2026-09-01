@@ -72,3 +72,50 @@ class Recommendation:
     track: Track
     score: float
     reason: str
+
+
+@dataclass(frozen=True)
+class Playlist:
+    id: str
+    name: str
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+
+
+@dataclass(frozen=True)
+class PlaylistEntry:
+    playlist_id: str
+    track_id: str
+    position: int
+
+
+class QueueMode(str, Enum):
+    NORMAL = "normal"
+    SHUFFLE = "shuffle"
+    SMART_SHUFFLE = "smart_shuffle"
+    SESSION = "session"
+
+
+@dataclass(frozen=True)
+class PlaybackQueue:
+    current_track_id: str | None = None
+    remaining_track_ids: tuple[str, ...] = ()
+    queued_track_ids: tuple[str, ...] = ()
+    mode: QueueMode = QueueMode.NORMAL
+    source_playlist_id: str | None = None
+
+    def __post_init__(self) -> None:
+        track_ids = (
+            (self.current_track_id,)
+            if self.current_track_id is not None
+            else ()
+        ) + self.remaining_track_ids + self.queued_track_ids
+
+        if not track_ids:
+            raise ValueError(
+                "Playback queue must contain at least one track"
+            )
+
+        if any(not track_id.strip() for track_id in track_ids):
+            raise ValueError("Queue track IDs must not be empty")
