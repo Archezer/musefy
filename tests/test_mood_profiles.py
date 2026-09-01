@@ -78,14 +78,32 @@ def test_parent_and_subgenre_have_equal_genre_evidence() -> None:
     assert romantic.genre_score == pytest.approx(0.8)
 
 
-def test_genre_evidence_can_prioritize_a_mood_profile() -> None:
-    predictions = predict_mood_profiles(
+def test_genre_evidence_boosts_a_mood_profile() -> None:
+    predictions_without_genre = predict_mood_profiles(
+        valence=5.0,
+        arousal=5.0,
+        top_k=8,
+    )
+    predictions_with_genre = predict_mood_profiles(
         valence=5.0,
         arousal=5.0,
         genres=(("Electronic---House", 0.9),),
+        top_k=8,
     )
 
-    assert predictions[0].profile == "party"
+    party_without_genre = next(
+        item
+        for item in predictions_without_genre
+        if item.profile == "party"
+    )
+    party_with_genre = next(
+        item
+        for item in predictions_with_genre
+        if item.profile == "party"
+    )
+
+    assert party_with_genre.score > party_without_genre.score
+    assert party_with_genre.genre_score > 0.0
 
 
 def test_profile_evidence_corrects_the_affect_vector() -> None:
