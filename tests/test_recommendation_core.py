@@ -5,6 +5,9 @@ from app.domain.models import (
     Track,
     User,
 )
+from app.domain.mood import MOOD_PRESETS
+from app.domain.recommendations import RecommendationContext
+from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import (
     MostPopularRecommender,
 )
@@ -164,3 +167,89 @@ def test_replay_cooldown_excludes_recently_played_track():
         recommendation.track.id
         for recommendation in recommendations
     ] == ["track-2"]
+
+
+def test_selected_mood_prioritizes_matching_tracks():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="dark-track",
+            title="Dark Track",
+            artist="Artist One",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    store.add_track(
+        Track(
+            id="happy-track",
+            title="Happy Track",
+            artist="Artist Two",
+            mood=MOOD_PRESETS["happy"],
+        )
+    )
+
+    service = RecommendationService(
+        MostPopularRecommender(
+            store,
+            exploration_pool_size=1,
+        ),
+        mood_recommender=MoodRecommender(store),
+    )
+
+    recommendations = service.get_recommendations(
+        user_id="user-1",
+        limit=1,
+        context=RecommendationContext.mood(
+            MOOD_PRESETS["dark"]
+        ),
+    )
+
+    assert recommendations[0].track.id == "dark-track"
+    assert recommendations[0].reason == "Matches the selected mood"
+
+
+def test_selected_mood_ignores_large_interaction_score():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="dark-track",
+            title="Dark Track",
+            artist="Dark Artist",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    store.add_track(
+        Track(
+            id="happy-track",
+            title="Happy Track",
+            artist="Happy Artist",
+            mood=MOOD_PRESETS["happy"],
+        )
+    )
+
+    interactions = InteractionService(store)
+    for _ in range(20):
+        interactions.record(
+            user_id="user-1",
+            track_id="happy-track",
+            interaction_type=InteractionType.PLAY,
+        )
+
+    service = RecommendationService(
+        MostPopularRecommender(
+            store,
+            exploration_pool_size=1,
+        ),
+        mood_recommender=MoodRecommender(store),
+    )
+    recommendations = service.get_recommendations(
+        user_id="user-1",
+        limit=1,
+        context=RecommendationContext.mood(
+            MOOD_PRESETS["dark"]
+        ),
+    )
+
+    assert recommendations[0].track.id == "dark-track"

@@ -63,6 +63,29 @@ def create_database() -> None:
                 )
             )
 
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "tracks"
+            )
+        }
+
+        if "mood_valence" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN mood_valence REAL"
+                )
+            )
+
+        if "mood_arousal" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN mood_arousal REAL"
+                )
+            )
+
 def create_session() -> Session:
     return SessionFactory()
 

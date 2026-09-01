@@ -1,3 +1,5 @@
+from app.domain.models import Recommendation
+from app.domain.recommendations import RecommendationMode
 from app.recommenders.similarity import (
     SimilarTrack,
     TrackSimilarityIndex,
@@ -6,7 +8,7 @@ from app.storage.protocols import MusicStore
 
 
 class TrackSimilarityService:
-    def __int__(
+    def __init__(
         self,
         store: MusicStore,
         neighbors_per_track: int = 20
@@ -35,3 +37,35 @@ class TrackSimilarityService:
             self.rebuild()
             
         return self._index.neighbors_for(track_id)[:limit]
+
+    def recommendations_for(
+        self,
+        track_id: str,
+        limit: int = 10,
+    ) -> list[Recommendation]:
+        seed_track = self.store.get_track(track_id)
+        if seed_track is None or seed_track.track_embedding is None:
+            return []
+
+        tracks_by_id = {
+            track.id: track
+            for track in self.store.list_tracks()
+        }
+        recommendations = []
+
+        for neighbor in self.neighbors_for(track_id, limit):
+            track = tracks_by_id.get(neighbor.track_id)
+            if track is None:
+                continue
+
+            recommendations.append(
+                Recommendation(
+                    track=track,
+                    score=neighbor.score,
+                    reason="Similar to the selected track",
+                    mode=RecommendationMode.TRACK_RADIO,
+                    embedding_similarity=neighbor.score,
+                )
+            )
+
+        return recommendations

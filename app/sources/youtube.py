@@ -154,6 +154,109 @@ class YouTubeSearchProvider:
 
         return candidates
 
+    def playlist(
+        self,
+        url: str,
+    ) -> list[YouTubeCandidate]:
+        normalized_url = url.strip()
+        _validate_youtube_playlist_url(normalized_url)
+
+        auth_sources = _authentication_sources()
+        clients = _youtube_clients(auth_sources)
+        result = None
+        last_error: DownloadError | None = None
+
+        for auth_source in auth_sources:
+            for client in clients:
+                options = _youtube_options(
+                    client=client,
+                    auth_source=auth_source,
+                )
+                options.update(
+                    {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "skip_download": True,
+                        "extract_flat": "in_playlist",
+                        "noplaylist": False,
+                    }
+                )
+
+                try:
+                    with _dns_fallback(), yt_dlp.YoutubeDL(
+                        options
+                    ) as downloader:
+                        result = downloader.extract_info(
+                            normalized_url,
+                            download=False,
+                        )
+                    break
+                except DownloadError as error:
+                    last_error = error
+
+                    if (
+                        client != clients[-1]
+                        or auth_source != auth_sources[-1]
+                    ):
+                        continue
+
+                    if _is_authentication_error(str(error)):
+                        break
+
+                    raise RuntimeError(
+                        "YouTube playlist extraction failed"
+                    ) from error
+
+            if result is not None:
+                break
+
+        if result is None:
+            assert last_error is not None
+            raise RuntimeError(
+                _youtube_authentication_message()
+            ) from last_error
+
+        candidates = []
+
+        for entry in result.get("entries", []):
+            if not entry:
+                continue
+
+            video_id = entry.get("id")
+
+            if not video_id:
+                continue
+
+            duration = entry.get("duration")
+            candidates.append(
+                YouTubeCandidate(
+                    video_id=video_id,
+                    title=entry.get(
+                        "title",
+                        f"YouTube video {video_id}",
+                    ),
+                    channel_title=(
+                        entry.get("channel")
+                        or entry.get(
+                            "uploader",
+                            "Unknown channel",
+                        )
+                    ),
+                    duration_ms=(
+                        round(duration * 1000)
+                        if duration is not None
+                        else None
+                    ),
+                    view_count=entry.get("view_count"),
+                    url=(
+                        "https://www.youtube.com/watch?v="
+                        f"{video_id}"
+                    ),
+                )
+            )
+
+        return candidates
+
     def candidate_from_url(
         self,
         url: str,
@@ -270,7 +373,7 @@ class YouTubeSearchProvider:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": "bestaudio/best",
+            "format": "bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]",
             "outtmpl": str(
                 output_dir
                 / f"{candidate.video_id}.%(ext)s"
@@ -555,6 +658,15 @@ def _validate_youtube_url(url: str) -> None:
     ):
         raise ValueError(
             "URL must be a valid YouTube video URL."
+        )
+
+
+def _validate_youtube_playlist_url(url: str) -> None:
+    _validate_youtube_url(url)
+
+    if not parse_qs(urlparse(url).query).get("list"):
+        raise ValueError(
+            "URL must contain a YouTube playlist."
         )
 
 

@@ -44,6 +44,36 @@ def test_queue_ends_after_all_tracks_are_played() -> None:
     assert service.queue is None
 
 
+def test_previous_restores_the_last_played_track() -> None:
+    service = PlaybackQueueService()
+    service.start(("track-1", "track-2", "track-3"))
+
+    service.advance()
+    queue = service.previous()
+
+    assert queue is not None
+    assert queue.current_track_id == "track-1"
+    assert service.upcoming_track_ids() == (
+        "track-2",
+        "track-3",
+    )
+
+
+def test_previous_after_queue_end_restores_the_last_track() -> None:
+    service = PlaybackQueueService()
+    service.start(("track-1",))
+    service.advance()
+
+    queue = service.previous()
+
+    assert queue is not None
+    assert queue.current_track_id == "track-1"
+
+
+def test_previous_without_history_returns_none() -> None:
+    assert PlaybackQueueService().previous() is None
+
+
 def test_start_rejects_an_empty_queue() -> None:
     with pytest.raises(
         ValueError,

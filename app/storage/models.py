@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -53,6 +53,14 @@ class TrackRecord(Base):
         Text,
         default="[]",
         nullable=False,
+    )
+    mood_valence: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    mood_arousal: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
     )
     duration_ms: Mapped[int | None] = mapped_column(
         Integer,

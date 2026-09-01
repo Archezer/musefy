@@ -2,6 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -103,13 +104,17 @@ class TrackMetadataDialog(QDialog):
 
 class YouTubeSearchDialog(QDialog):
     search_requested = Signal(str)
+    spotify_search_requested = Signal(str)
     import_requested = Signal(object)
     url_import_requested = Signal(str)
+    playlist_requested = Signal(str)
+    playlist_import_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self._busy = False
+        self._playlist_mode = False
 
         self.setWindowTitle("Add track from YouTube")
         self.resize(760, 520)
@@ -123,6 +128,15 @@ class YouTubeSearchDialog(QDialog):
             "Artist and track title"
         )
         form_layout.addRow("Search:", self.query_edit)
+
+        self.spotify_url_edit = QLineEdit()
+        self.spotify_url_edit.setPlaceholderText(
+            "https://open.spotify.com/track/..."
+        )
+        form_layout.addRow(
+            "Spotify track:",
+            self.spotify_url_edit,
+        )
 
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText(
@@ -145,12 +159,27 @@ class YouTubeSearchDialog(QDialog):
             self._request_url_import
         )
         search_layout.addWidget(self.url_button)
+
+        self.spotify_button = QPushButton("Search Spotify")
+        self.spotify_button.clicked.connect(
+            self._request_spotify_search
+        )
+        search_layout.addWidget(self.spotify_button)
+
+        self.playlist_button = QPushButton("Load playlist")
+        self.playlist_button.clicked.connect(
+            self._request_playlist
+        )
+        search_layout.addWidget(self.playlist_button)
         search_layout.addStretch()
         layout.addLayout(search_layout)
 
         self.results_list = QListWidget()
         self.results_list.setWordWrap(True)
         self.results_list.itemSelectionChanged.connect(
+            self._handle_selection_changed
+        )
+        self.results_list.itemChanged.connect(
             self._handle_selection_changed
         )
         layout.addWidget(self.results_list)
@@ -193,13 +222,29 @@ class YouTubeSearchDialog(QDialog):
 
         self.search_requested.emit(query)
 
-    def _request_import(self) -> None:
-        candidate = self.selected_candidate()
+    def _request_spotify_search(self) -> None:
+        url = self.spotify_url_edit.text().strip()
 
-        if candidate is None:
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Spotify search failed",
+                "Spotify track URL must not be empty.",
+            )
             return
 
-        self.import_requested.emit(candidate)
+        self.spotify_search_requested.emit(url)
+
+    def _request_import(self) -> None:
+        candidates = self.selected_candidates()
+
+        if not candidates:
+            return
+
+        if self._playlist_mode:
+            self.playlist_import_requested.emit(candidates)
+        else:
+            self.import_requested.emit(candidates[0])
 
     def _request_url_import(self) -> None:
         url = self.url_edit.text().strip()
@@ -214,11 +259,32 @@ class YouTubeSearchDialog(QDialog):
 
         self.url_import_requested.emit(url)
 
+    def _request_playlist(self) -> None:
+        url = self.url_edit.text().strip()
+
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Playlist loading failed",
+                "YouTube playlist URL must not be empty.",
+            )
+            return
+
+        self.playlist_requested.emit(url)
+
     def _handle_selection_changed(self) -> None:
+        selected_count = len(self.selected_candidates())
         self.import_button.setEnabled(
             not self._busy
-            and self.selected_candidate() is not None
+            and selected_count > 0
         )
+
+        if self._playlist_mode:
+            self.import_button.setText(
+                f"Download selected ({selected_count})"
+            )
+        else:
+            self.import_button.setText("Download selected")
 
     def selected_candidate(
         self,
@@ -235,10 +301,38 @@ class YouTubeSearchDialog(QDialog):
 
         return None
 
+    def selected_candidates(self) -> list[YouTubeCandidate]:
+        if self._playlist_mode:
+            candidates = []
+
+            for index in range(self.results_list.count()):
+                item = self.results_list.item(index)
+
+                if item.checkState() != Qt.CheckState.Checked:
+                    continue
+
+                candidate = item.data(Qt.ItemDataRole.UserRole)
+
+                if isinstance(candidate, YouTubeCandidate):
+                    candidates.append(candidate)
+
+            return candidates
+
+        candidate = self.selected_candidate()
+        return [candidate] if candidate is not None else []
+
     def set_candidates(
         self,
         candidates: list[YouTubeCandidate],
+        *,
+        playlist: bool = False,
     ) -> None:
+        self._playlist_mode = playlist
+        self.results_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+            if playlist
+            else QAbstractItemView.SelectionMode.SingleSelection
+        )
         self.results_list.clear()
 
         for index, candidate in enumerate(
@@ -252,13 +346,30 @@ class YouTubeSearchDialog(QDialog):
                 Qt.ItemDataRole.UserRole,
                 candidate,
             )
+            if playlist:
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                item.setCheckState(Qt.CheckState.Checked)
             self.results_list.addItem(item)
 
-        self.status_label.setText(
-            f"Found {len(candidates)} videos. "
-            "Select one to download."
-        )
+        if playlist:
+            message = (
+                f"Found {len(candidates)} playlist videos. "
+                "Uncheck anything you do not want to download."
+            )
+        else:
+            message = (
+                f"Found {len(candidates)} videos. "
+                "Select one to download."
+            )
+
+        self.status_label.setText(message)
         self._handle_selection_changed()
+
+    def set_search_query(self, query: str) -> None:
+        self.query_edit.setText(query)
 
     def set_busy(
         self,
@@ -267,12 +378,26 @@ class YouTubeSearchDialog(QDialog):
     ) -> None:
         self._busy = busy
         self.search_button.setEnabled(not busy)
+        self.spotify_button.setEnabled(not busy)
         self.url_button.setEnabled(not busy)
+        self.playlist_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)
         self.url_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
         self._handle_selection_changed()
+
+    def update_playlist_download_progress(
+        self,
+        completed: int,
+        total: int,
+    ) -> None:
+        if not self._playlist_mode:
+            return
+
+        self.status_label.setText(
+            f"Downloading playlist: {completed}/{total}..."
+        )
 
     def show_error(self, message: str) -> None:
         self.set_busy(False, "Operation failed.")
@@ -319,3 +444,56 @@ class YouTubeSearchDialog(QDialog):
             return "Unknown views"
 
         return f"{view_count:,} views"
+
+
+class PlaylistImportResultDialog(QDialog):
+    retry_requested = Signal(object)
+
+    def __init__(
+        self,
+        imported_count: int,
+        failed: tuple[tuple[YouTubeCandidate, str], ...],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self.failed = failed
+        self.setWindowTitle("Playlist import completed")
+        self.resize(640, 440)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                f"Imported {imported_count} playlist tracks.\n"
+                f"Skipped {len(failed)} tracks."
+            )
+        )
+
+        layout.addWidget(QLabel("Not imported:"))
+        failed_tracks = QListWidget()
+
+        for candidate, error in failed:
+            failed_tracks.addItem(
+                f"{candidate.title}\n{error}"
+            )
+
+        layout.addWidget(failed_tracks)
+
+        buttons_layout = QHBoxLayout()
+        retry_button = QPushButton(
+            f"Try failed tracks again ({len(failed)})"
+        )
+        retry_button.clicked.connect(self._request_retry)
+        buttons_layout.addWidget(retry_button)
+        buttons_layout.addStretch()
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        buttons_layout.addWidget(close_button)
+        layout.addLayout(buttons_layout)
+
+    def _request_retry(self) -> None:
+        self.retry_requested.emit(
+            [candidate for candidate, _ in self.failed]
+        )
+        self.accept()

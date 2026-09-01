@@ -4,11 +4,13 @@ from PySide6.QtWidgets import QApplication
 
 from app.domain.models import User
 from app.ingestion.audio import AudioIngestionService
+from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
+from app.services.track_similarity import TrackSimilarityService
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import YouTubeImportService
 from app.storage.database import (
@@ -37,8 +39,12 @@ def main() -> None:
     )
 
     recommender = MostPopularRecommender(store)
+    mood_recommender = MoodRecommender(store)
+    track_radio = TrackSimilarityService(store)
     recommendation_service = RecommendationService(
-        recommender
+        recommender,
+        mood_recommender=mood_recommender,
+        track_radio=track_radio,
     )
 
     qt_application = QApplication(sys.argv)

@@ -5,6 +5,7 @@ from app.domain.models import (
     DetectedGenre,
     Track,
 )
+from app.domain.mood import MoodVector
 from app.ingestion.filenames import (
     add_collision_suffix,
     build_library_filename,
@@ -106,6 +107,7 @@ class TrackManagementService:
         track_id: str,
         detected_genres: tuple[DetectedGenre, ...],
         track_embedding: tuple[float, ...] | None = None,
+        mood: MoodVector | None = None,
     ) -> Track:
         current_track = self.store.get_track(track_id)
 
@@ -130,6 +132,11 @@ class TrackManagementService:
                 track_embedding
                 if track_embedding is not None
                 else current_track.track_embedding
+            ),
+            mood=(
+                mood
+                if mood is not None
+                else current_track.mood
             ),
         )
 

@@ -5,6 +5,8 @@ from app.recommenders.similarity import (
     TrackSimilarityIndex,
     cosine_similarity,
 )
+from app.services.track_similarity import TrackSimilarityService
+from app.storage.memory import InMemoryMusicStore
 
 
 def test_cosine_similarity_finds_identical_vectors() -> None:
@@ -54,3 +56,32 @@ def test_index_returns_closest_tracks_first() -> None:
     ]
     assert neighbors[0].score > neighbors[1].score
     assert index.neighbors_for("track-without-embedding") == ()
+
+
+def test_similarity_service_returns_recommendations_for_seed() -> None:
+    store = InMemoryMusicStore()
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="neighbor",
+            title="Neighbor",
+            artist="Artist",
+            track_embedding=(0.9, 0.1),
+        )
+    )
+
+    recommendations = TrackSimilarityService(
+        store
+    ).recommendations_for("seed", limit=1)
+
+    assert recommendations[0].track.id == "neighbor"
+    assert recommendations[0].reason == (
+        "Similar to the selected track"
+    )

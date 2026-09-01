@@ -7,6 +7,7 @@ from app.domain.models import PlaybackQueue, QueueMode
 class PlaybackQueueService:
     def __init__(self) -> None:
         self._queue: PlaybackQueue | None = None
+        self._history: list[str] = []
 
     @property
     def queue(self) -> PlaybackQueue | None:
@@ -24,6 +25,7 @@ class PlaybackQueueService:
         if not normalized_track_ids:
             raise ValueError("Playback queue must contain at least one track")
 
+        self._history.clear()
         self._queue = PlaybackQueue(
             current_track_id=normalized_track_ids[0],
             remaining_track_ids=normalized_track_ids[1:],
@@ -59,6 +61,9 @@ class PlaybackQueueService:
         if self._queue is None:
             return None
 
+        if self._queue.current_track_id is not None:
+            self._history.append(self._queue.current_track_id)
+
         if self._queue.queued_track_ids:
             next_track_id = self._queue.queued_track_ids[0]
             self._queue = replace(
@@ -82,8 +87,36 @@ class PlaybackQueueService:
         self._queue = None
         return None
 
+    def previous(self) -> PlaybackQueue | None:
+        if not self._history:
+            return None
+
+        previous_track_id = self._history.pop()
+
+        if self._queue is None:
+            self._queue = PlaybackQueue(
+                current_track_id=previous_track_id,
+            )
+            return self._queue
+
+        current_track_id = self._queue.current_track_id
+        remaining_track_ids = self._queue.remaining_track_ids
+        if current_track_id is not None:
+            remaining_track_ids = (
+                current_track_id,
+                *remaining_track_ids,
+            )
+
+        self._queue = replace(
+            self._queue,
+            current_track_id=previous_track_id,
+            remaining_track_ids=remaining_track_ids,
+        )
+        return self._queue
+
     def clear(self) -> None:
         self._queue = None
+        self._history.clear()
 
     def upcoming_track_ids(self) -> tuple[str, ...]:
         if self._queue is None:

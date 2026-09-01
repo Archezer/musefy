@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
+from app.domain.mood import MoodVector
+from app.domain.recommendations import RecommendationMode
+
 
 class InteractionType(str, Enum):
     PLAY = "play"
@@ -46,6 +49,7 @@ class Track:
     source: str = "local_upload"
     source_url: str | None = None
     local_path: str | None = None
+    mood: MoodVector | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,14 @@ class Recommendation:
     track: Track
     score: float
     reason: str
+    mode: RecommendationMode = RecommendationMode.POPULARITY
+    mood_similarity: float | None = None
+    embedding_similarity: float | None = None
+    popularity_score: float | None = None
+
+    @property
+    def match_score(self) -> float:
+        return self.score
 
 
 @dataclass(frozen=True)

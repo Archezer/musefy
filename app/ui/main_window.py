@@ -8,11 +8,13 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QThreadPool,
+    QTimer,
     QUrl,
     Signal,
 )
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -40,12 +42,16 @@ from app.domain.models import (
     QueueMode,
     Track,
 )
+from app.domain.mood import MOOD_PRESETS
+from app.domain.recommendations import RecommendationContext
 from app.ingestion.audio import AudioIngestionService
 from app.ingestion.metadata import read_audio_metadata
-from app.ml.genre_analysis import GenreAnalysisService
+from app.ml.genre_analysis import (
+    GenreAnalysisService,
+    TrackAnalysisResult,
+)
 from app.ml.maest import (
     GenrePrediction,
-    MaestAnalysisResult,
 )
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
@@ -54,10 +60,15 @@ from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
-from app.services.youtube_import import YouTubeImportService
+from app.services.youtube_import import (
+    SpotifySearchResult,
+    YouTubeImportService,
+    YouTubePlaylistImportResult,
+)
 from app.sources.youtube import YouTubeCandidate
 from app.storage.protocols import MusicStore
 from app.ui.dialogs import (
+    PlaylistImportResultDialog,
     TrackMetadataDialog,
     YouTubeSearchDialog,
 )
@@ -66,6 +77,7 @@ from app.ui.dialogs import (
 class YouTubeTaskThread(QThread):
     result_ready = Signal(object)
     error_occurred = Signal(str)
+    progress_updated = Signal(int, int)
 
     def __init__(
         self,
@@ -106,7 +118,7 @@ class GenreAnalysisTask(QRunnable):
 
     def run(self) -> None:
         try:
-            analysis_result = self.service.analyze_result(
+            analysis_result = self.service.analyze_track_result(
                 self.audio_path
             )
         except (
@@ -156,6 +168,8 @@ class MainWindow(QMainWindow):
         self.user_id = user_id
         self.selected_track_id: str | None = None
         self.selected_playlist_id: str | None = None
+        self.selected_mood_name: str | None = None
+        self.session_mood_name: str | None = None
         self.current_track_id: str | None = None
         self._youtube_thread: YouTubeTaskThread | None = None
         self._genre_statuses: dict[str, str] = {}
@@ -171,6 +185,12 @@ class MainWindow(QMainWindow):
         )
         self._genre_analysis_pool = QThreadPool(self)
         self._genre_analysis_pool.setMaxThreadCount(1)
+        self._model_idle_timer = QTimer(self)
+        self._model_idle_timer.setInterval(60_000)
+        self._model_idle_timer.timeout.connect(
+            self._unload_idle_models
+        )
+        self._model_idle_timer.start()
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(0.7)
@@ -221,7 +241,7 @@ class MainWindow(QMainWindow):
         self.delete_button.setEnabled(False)
 
         self.analyze_genres_button = QPushButton(
-            "Analyze genres"
+            "Analyze track"
         )
         self.analyze_genres_button.clicked.connect(
             self._analyze_selected_track
@@ -229,7 +249,7 @@ class MainWindow(QMainWindow):
         self.analyze_genres_button.setEnabled(False)
 
         self.reanalyze_genres_button = QPushButton(
-            "Reanalyze all genres"
+            "Reanalyze all tracks"
         )
         self.reanalyze_genres_button.clicked.connect(
             self._reanalyze_all_genres
@@ -283,6 +303,12 @@ class MainWindow(QMainWindow):
         play_queue_button = QPushButton("Play queue")
         play_queue_button.clicked.connect(self._play_queue)
 
+        back_button = QPushButton("Back")
+        back_button.clicked.connect(self._go_previous)
+
+        next_button = QPushButton("Next")
+        next_button.clicked.connect(self._go_next)
+
         like_button = QPushButton("Like")
         like_button.clicked.connect(
             lambda: self._record_interaction(
@@ -307,6 +333,8 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(play_button)
         actions_layout.addWidget(stop_button)
         actions_layout.addWidget(play_queue_button)
+        actions_layout.addWidget(back_button)
+        actions_layout.addWidget(next_button)
         actions_layout.addWidget(like_button)
         actions_layout.addWidget(skip_button)
         actions_layout.addWidget(save_button)
@@ -352,7 +380,7 @@ class MainWindow(QMainWindow):
                 "Artist",
                 "Duration",
                 "Genres (top 2)",
-                "Genre analysis",
+                "Track analysis",
             ]
         )
         self.track_table.setSelectionBehavior(
@@ -382,9 +410,30 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        layout.addWidget(
-            QLabel("Recommendations for current user")
+        mood_layout = QHBoxLayout()
+        mood_layout.addWidget(QLabel("Mood"))
+
+        self.mood_combo = QComboBox()
+        self.mood_combo.addItem("All moods", None)
+        for mood_name in MOOD_PRESETS:
+            self.mood_combo.addItem(
+                mood_name.title(),
+                mood_name,
+            )
+        self.mood_combo.currentIndexChanged.connect(
+            self._handle_mood_changed
         )
+        mood_layout.addWidget(self.mood_combo)
+
+        self.start_session_button = QPushButton("Start Now")
+        self.start_session_button.clicked.connect(
+            self._start_mood_session
+        )
+        mood_layout.addWidget(self.start_session_button)
+        mood_layout.addStretch()
+        layout.addLayout(mood_layout)
+
+        layout.addWidget(QLabel("Recommendations"))
 
         self.recommendation_list = QListWidget()
         layout.addWidget(self.recommendation_list)
@@ -470,6 +519,7 @@ class MainWindow(QMainWindow):
 
     def _load_library(self) -> None:
         tracks = list(self.store.list_tracks())
+        self.recommendation_service.refresh()
 
         self.track_table.setRowCount(0)
         self.track_table.setRowCount(len(tracks))
@@ -556,11 +606,21 @@ class MainWindow(QMainWindow):
         return text
 
     def _load_recommendations(self) -> None:
-        recommendations = (
-            self.recommendation_service.get_recommendations(
-                user_id=self.user_id,
-                limit=10,
+        if self.selected_mood_name is not None:
+            context = RecommendationContext.mood(
+                MOOD_PRESETS[self.selected_mood_name]
             )
+        elif self.selected_track_id is not None:
+            context = RecommendationContext.track_radio(
+                self.selected_track_id
+            )
+        else:
+            context = RecommendationContext()
+
+        recommendations = self.recommendation_service.get_recommendations(
+            user_id=self.user_id,
+            limit=10,
+            context=context,
         )
 
         self.recommendation_list.clear()
@@ -570,10 +630,100 @@ class MainWindow(QMainWindow):
 
             text = (
                 f"{track.artist} — {track.title} "
-                f"(score: {recommendation.score:.1f})"
+                f"(match: {recommendation.match_score:.2f})"
             )
 
             self.recommendation_list.addItem(text)
+
+    def _handle_mood_changed(self, index: int) -> None:
+        selected_mood = self.mood_combo.itemData(index)
+        self.selected_mood_name = (
+            str(selected_mood)
+            if selected_mood is not None
+            else None
+        )
+        self._load_recommendations()
+
+    def _start_mood_session(self) -> None:
+        if self.selected_mood_name is None:
+            QMessageBox.information(
+                self,
+                "Choose a mood",
+                "Choose a mood before starting a Now session.",
+            )
+            return
+
+        target_mood = MOOD_PRESETS[self.selected_mood_name]
+        recommendations = self.recommendation_service.get_recommendations(
+            user_id=self.user_id,
+            limit=30,
+            context=RecommendationContext.mood(target_mood),
+        )
+        track_ids = [
+            recommendation.track.id
+            for recommendation in recommendations
+            if (
+                recommendation.track.mood is not None
+                and
+                recommendation.track.local_path
+                and Path(recommendation.track.local_path).exists()
+            )
+        ]
+
+        if not track_ids:
+            QMessageBox.information(
+                self,
+                "Session unavailable",
+                "No analyzed local tracks match this mood yet.",
+            )
+            return
+
+        self.session_mood_name = self.selected_mood_name
+        self.playback_queue_service.start(
+            track_ids,
+            mode=QueueMode.SESSION,
+        )
+        self._play_current_queue_track()
+        self.statusBar().showMessage(
+            f"Now session started: {self.selected_mood_name.title()}"
+        )
+
+    def _replenish_mood_session(self) -> None:
+        if self.session_mood_name is None:
+            return
+
+        queue = self.playback_queue_service.queue
+        if queue is None or queue.mode != QueueMode.SESSION:
+            return
+
+        upcoming_count = len(
+            self.playback_queue_service.upcoming_track_ids()
+        )
+        if upcoming_count > 5:
+            return
+
+        target_mood = MOOD_PRESETS[self.session_mood_name]
+        recommendations = self.recommendation_service.get_recommendations(
+            user_id=self.user_id,
+            limit=10,
+            context=RecommendationContext.mood(target_mood),
+        )
+        existing_ids = {
+            queue.current_track_id,
+            *self.playback_queue_service.upcoming_track_ids(),
+        }
+
+        for recommendation in recommendations:
+            track = recommendation.track
+            if track.id in existing_ids:
+                continue
+            if track.mood is None:
+                continue
+            if not track.local_path or not Path(track.local_path).exists():
+                continue
+
+            self.playback_queue_service.enqueue(track.id)
+            existing_ids.add(track.id)
 
     def _load_queue(self) -> None:
         self.queue_list.clear()
@@ -942,6 +1092,7 @@ class MainWindow(QMainWindow):
             self.edit_button.setEnabled(False)
             self.delete_button.setEnabled(False)
             self.analyze_genres_button.setEnabled(False)
+            self._load_recommendations()
             return
 
         title_item = selected_items[0]
@@ -962,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Selected track: {title_item.text()}"
         )
+        self._load_recommendations()
 
     def _import_track(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1041,6 +1193,12 @@ class MainWindow(QMainWindow):
                 query,
             )
         )
+        dialog.spotify_search_requested.connect(
+            lambda url: self._start_spotify_search(
+                dialog,
+                url,
+            )
+        )
         dialog.import_requested.connect(
             lambda candidate: (
                 self._start_youtube_import(
@@ -1053,6 +1211,18 @@ class MainWindow(QMainWindow):
             lambda url: self._start_youtube_url_import(
                 dialog,
                 url,
+            )
+        )
+        dialog.playlist_requested.connect(
+            lambda url: self._start_youtube_playlist_load(
+                dialog,
+                url,
+            )
+        )
+        dialog.playlist_import_requested.connect(
+            lambda candidates: self._start_youtube_playlist_import(
+                dialog,
+                candidates,
             )
         )
 
@@ -1086,6 +1256,37 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_spotify_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        url: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Reading Spotify track...")
+
+        thread = YouTubeTaskThread(
+            lambda: (
+                self.youtube_import_service
+                .search_from_spotify(url)
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_spotify_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _start_youtube_import(
         self,
         dialog: YouTubeSearchDialog,
@@ -1104,6 +1305,90 @@ class MainWindow(QMainWindow):
         )
         thread.result_ready.connect(
             lambda result: self._handle_youtube_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_youtube_playlist_load(
+        self,
+        dialog: YouTubeSearchDialog,
+        url: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Loading YouTube playlist...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.youtube_import_service.get_playlist(url),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_playlist_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_youtube_playlist_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidates: object,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        if not isinstance(candidates, list):
+            self._handle_youtube_error(
+                dialog,
+                "YouTube playlist selection is invalid.",
+            )
+            return
+
+        selected_candidates = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, YouTubeCandidate)
+        ]
+
+        if not selected_candidates:
+            return
+
+        dialog.set_busy(
+            True,
+            (
+                "Downloading playlist: "
+                f"0/{len(selected_candidates)}..."
+            ),
+        )
+
+        def import_playlist() -> YouTubePlaylistImportResult:
+            return self.youtube_import_service.download_and_import_playlist(
+                selected_candidates,
+                on_progress=thread.progress_updated.emit,
+            )
+
+        thread = YouTubeTaskThread(import_playlist, self)
+        thread.progress_updated.connect(
+            dialog.update_playlist_download_progress
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_playlist_import_result(
                 dialog,
                 result,
             )
@@ -1188,6 +1473,40 @@ class MainWindow(QMainWindow):
         ]
         dialog.set_candidates(candidates)
 
+    def _handle_spotify_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SpotifySearchResult):
+            self._handle_youtube_error(
+                dialog,
+                "Spotify search returned an invalid result.",
+            )
+            return
+
+        dialog.set_search_query(result.query)
+        dialog.set_candidates(list(result.candidates))
+
+    def _handle_youtube_playlist_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, list):
+            self._handle_youtube_error(
+                dialog,
+                "YouTube playlist returned an invalid result.",
+            )
+            return
+
+        candidates = [
+            candidate
+            for candidate in result
+            if isinstance(candidate, YouTubeCandidate)
+        ]
+        dialog.set_candidates(candidates, playlist=True)
+
     def _handle_youtube_import_result(
         self,
         dialog: YouTubeSearchDialog,
@@ -1213,6 +1532,59 @@ class MainWindow(QMainWindow):
                 f"Added to Library:\n"
                 f"{track.artist} — {track.title}"
             ),
+        )
+
+    def _handle_youtube_playlist_import_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, YouTubePlaylistImportResult):
+            self._handle_youtube_error(
+                dialog,
+                "YouTube playlist import returned an invalid result.",
+            )
+            return
+
+        for track in result.imported:
+            self._enqueue_genre_analysis(track)
+
+        self._load_library()
+        self._load_recommendations()
+
+        if result.failed:
+            failed_candidates = [
+                candidate for candidate, _ in result.failed
+            ]
+            dialog.set_candidates(failed_candidates, playlist=True)
+            dialog.set_busy(
+                False,
+                f"{len(failed_candidates)} tracks failed."
+            )
+
+            result_dialog = PlaylistImportResultDialog(
+                len(result.imported),
+                result.failed,
+                dialog,
+            )
+            result_dialog.retry_requested.connect(
+                lambda candidates: QTimer.singleShot(
+                    0,
+                    lambda: self._start_youtube_playlist_import(
+                        dialog,
+                        candidates,
+                    ),
+                )
+            )
+            result_dialog.exec()
+            return
+
+        dialog.accept()
+
+        QMessageBox.information(
+            self,
+            "Playlist import completed",
+            f"Imported {len(result.imported)} playlist tracks.",
         )
 
     def _enqueue_genre_analysis(
@@ -1244,7 +1616,7 @@ class MainWindow(QMainWindow):
 
         self._genre_analysis_pool.start(task)
         self.statusBar().showMessage(
-            f"Genre analysis queued: {track.title}"
+            f"Track analysis queued: {track.title}"
         )
 
     def _analyze_selected_track(self) -> None:
@@ -1292,10 +1664,10 @@ class MainWindow(QMainWindow):
 
         answer = QMessageBox.question(
             self,
-            "Reanalyze all genres",
+            "Reanalyze all tracks",
             (
-                f"Analyze genres for {len(local_tracks)} local tracks?\n"
-                "The current detected genres will be replaced."
+                f"Analyze {len(local_tracks)} local tracks?\n"
+                "The current detected genres and mood will be replaced."
             ),
             QMessageBox.StandardButton.Yes
             | QMessageBox.StandardButton.No,
@@ -1377,18 +1749,15 @@ class MainWindow(QMainWindow):
         track_id: str,
         analysis_result: object,
     ) -> None:
-        if not isinstance(
-            analysis_result,
-            MaestAnalysisResult,
-        ):
+        if not isinstance(analysis_result, TrackAnalysisResult):
             self._handle_genre_analysis_error(
                 track_id,
-                "Genre analysis returned an invalid result.",
+                "Track analysis returned an invalid result.",
             )
             return
 
         predictions = list(
-            analysis_result.genres
+            analysis_result.genre_result.genres
         )
 
         detected_genres = tuple(
@@ -1411,8 +1780,9 @@ class MainWindow(QMainWindow):
                 detected_genres=detected_genres,
                 track_embedding=tuple(
                     float(value)
-                    for value in analysis_result.track_embedding
+                    for value in analysis_result.genre_result.track_embedding
                 ),
+                mood=analysis_result.mood_result.mood,
             )
         except (OSError, RuntimeError, ValueError) as error:
             self._handle_genre_analysis_error(
@@ -1443,8 +1813,14 @@ class MainWindow(QMainWindow):
         )
 
         self.statusBar().showMessage(
-            f"Genre analysis completed: {track_name}"
+            f"Track analysis completed: {track_name}"
         )
+
+    def _unload_idle_models(self) -> None:
+        if self._genre_analysis_pool.activeThreadCount() != 0:
+            return
+
+        self._genre_analysis_service.unload_idle_models()
 
     def _handle_genre_analysis_error(
         self,
@@ -1458,7 +1834,7 @@ class MainWindow(QMainWindow):
         if self._finish_genre_batch_item(track_id):
             return
         self.statusBar().showMessage(
-            f"Genre analysis failed: {message}"
+            f"Track analysis failed: {message}"
         )
 
     @staticmethod
@@ -1628,6 +2004,26 @@ class MainWindow(QMainWindow):
         )
         self._play_current_queue_track()
 
+    def _go_previous(self) -> None:
+        if self.media_player.position() > 0:
+            self.media_player.setPosition(0)
+            self.statusBar().showMessage("Track restarted")
+            return
+
+        queue = self.playback_queue_service.previous()
+        if queue is None or queue.current_track_id is None:
+            self.statusBar().showMessage("No previous track")
+            return
+
+        self._play_current_queue_track()
+
+    def _go_next(self) -> None:
+        if self.playback_queue_service.queue is None:
+            self.statusBar().showMessage("No next track")
+            return
+
+        self._play_next_from_queue()
+
     def _play_queue(self) -> None:
         queue = self.playback_queue_service.queue
 
@@ -1733,6 +2129,7 @@ class MainWindow(QMainWindow):
         status: QMediaPlayer.MediaStatus,
     ) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._replenish_mood_session()
             self._play_next_from_queue()
 
     def _handle_volume_changed(

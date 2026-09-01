@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "aiogram>=3.30,<4",
+    "librosa>=1.0.0",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
     "onnxruntime-gpu==1.26.0",

@@ -16,6 +16,7 @@ from app.domain.models import (
     Track,
     User,
 )
+from app.domain.mood import MoodVector
 from app.storage.models import (
     InteractionRecord,
     PlaylistEntryRecord,
@@ -76,6 +77,16 @@ class SQLAlchemyMusicStore:
             track_embedding_json=json.dumps(
                 track.track_embedding or []
             ),
+            mood_valence=(
+                track.mood.valence
+                if track.mood is not None
+                else None
+            ),
+            mood_arousal=(
+                track.mood.arousal
+                if track.mood is not None
+                else None
+            ),
             duration_ms=track.duration_ms,
             source=track.source,
             source_url=track.source_url,
@@ -124,6 +135,16 @@ class SQLAlchemyMusicStore:
             )
             record.track_embedding_json = json.dumps(
                 track.track_embedding or []
+            )
+            record.mood_valence = (
+                track.mood.valence
+                if track.mood is not None
+                else None
+            )
+            record.mood_arousal = (
+                track.mood.arousal
+                if track.mood is not None
+                else None
             )
             record.local_path = track.local_path
 
@@ -353,6 +374,18 @@ class SQLAlchemyMusicStore:
             if embedding_values
             else None
         )
+
+        mood = None
+
+        if (
+            record.mood_valence is not None
+            and record.mood_arousal is not None
+        ):
+            mood = MoodVector(
+                valence=float(record.mood_valence),
+                arousal=float(record.mood_arousal),
+            )
+
         return Track(
             id=record.id,
             title=record.title,
@@ -360,6 +393,7 @@ class SQLAlchemyMusicStore:
             genres=tuple(json.loads(record.genres_json)),
             detected_genres=detected_genres,
             track_embedding=track_embedding,
+            mood=mood,
             duration_ms=record.duration_ms,
             source=record.source,
             source_url=record.source_url,

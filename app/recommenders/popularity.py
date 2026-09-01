@@ -8,6 +8,7 @@ from app.domain.models import (
     Recommendation,
     Track,
 )
+from app.domain.recommendations import RecommendationMode
 from app.recommenders.protocols import Recommender
 from app.storage.protocols import MusicStore
 
@@ -283,6 +284,7 @@ class MostPopularRecommender(Recommender):
             raise ValueError("Recommendation limit must be positive")
 
         interactions = list(self.store.list_interactions())
+        tracks = list(self.store.list_tracks())
 
         track_scores: dict[str, float] = defaultdict(float)
         seen_states: set[
@@ -316,7 +318,7 @@ class MostPopularRecommender(Recommender):
             )
         )
 
-        for track in self.store.list_tracks():
+        for track in tracks:
             track_scores[track.id] += (
                 user_artist_scores.get(
                     track.artist,
@@ -331,7 +333,7 @@ class MostPopularRecommender(Recommender):
             )
         )
 
-        for track in self.store.list_tracks():
+        for track in tracks:
             genres = self._get_track_genre_features(track)
             genre_weight = sum(genres.values())
 
@@ -385,8 +387,7 @@ class MostPopularRecommender(Recommender):
         )
 
         candidate_tracks = [
-            track
-            for track in self.store.list_tracks()
+            track for track in tracks
             if track.id not in excluded_track_ids
         ]
 
@@ -394,8 +395,7 @@ class MostPopularRecommender(Recommender):
 
         if fallback_used:
             candidate_tracks = [
-                track
-                for track in self.store.list_tracks()
+                track for track in tracks
                 if track.id not in skipped_track_ids
             ]
 
@@ -468,6 +468,8 @@ class MostPopularRecommender(Recommender):
                     track=track,
                     score=score,
                     reason=reason,
+                    mode=RecommendationMode.POPULARITY,
+                    popularity_score=score,
                 )
             )
 
