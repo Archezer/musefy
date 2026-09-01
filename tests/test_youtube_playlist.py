@@ -188,11 +188,15 @@ def test_playlist_import_keeps_successes_when_one_track_fails() -> None:
     )
 
     progress: list[tuple[int, int]] = []
+    imported_events: list[tuple[str, str]] = []
 
     result = service.download_and_import_playlist(
         candidates,
         on_progress=lambda completed, total: progress.append(
             (completed, total)
+        ),
+        on_track_imported=lambda candidate, track: imported_events.append(
+            (candidate.title, track.title)
         ),
     )
 
@@ -203,6 +207,7 @@ def test_playlist_import_keeps_successes_when_one_track_fails() -> None:
         "Broken track"
     ]
     assert progress == [(1, 2), (2, 2)]
+    assert imported_events == [("Working track", "Working track")]
 
 
 class FakeSpotifyProvider:
@@ -213,6 +218,21 @@ class FakeSpotifyProvider:
     def get_playlist(self, url: str) -> SpotifyPlaylist:
         return SpotifyPlaylist(
             name="Imported playlist",
+            tracks=(
+                SpotifyTrack("First track", "Artist One"),
+                SpotifyTrack("Second track", "Artist Two"),
+            ),
+        )
+
+
+class FakeSpotifyAlbumProvider:
+    def get_resource_type(self, url: str) -> str:
+        assert url == "spotify-album"
+        return "album"
+
+    def get_album(self, url: str) -> SpotifyPlaylist:
+        return SpotifyPlaylist(
+            name="Imported album",
             tracks=(
                 SpotifyTrack("First track", "Artist One"),
                 SpotifyTrack("Second track", "Artist Two"),
@@ -257,4 +277,21 @@ def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
     assert [candidate.playlist_position for candidate in result.candidates] == [
         0,
         1,
+    ]
+
+
+def test_spotify_album_search_uses_album_tracks() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+        FakeSpotifyAlbumProvider(),
+    )
+
+    result = service.search_from_spotify("spotify-album")
+
+    assert isinstance(result, SpotifyPlaylistSearchResult)
+    assert result.playlist_name == "Imported album"
+    assert [candidate.requested_title for candidate in result.candidates] == [
+        "First track",
+        "Second track",
     ]

@@ -79,6 +79,7 @@ class YouTubeTaskThread(QThread):
     result_ready = Signal(object)
     error_occurred = Signal(str)
     progress_updated = Signal(int, int)
+    track_imported = Signal(object, object)
 
     def __init__(
         self,
@@ -1200,6 +1201,12 @@ class MainWindow(QMainWindow):
                 url,
             )
         )
+        dialog.spotify_oauth_search_requested.connect(
+            lambda url: self._start_spotify_oauth_search(
+                dialog,
+                url,
+            )
+        )
         dialog.import_requested.connect(
             lambda candidate: (
                 self._start_youtube_import(
@@ -1265,12 +1272,43 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Reading Spotify link...")
+        dialog.set_busy(True, "Reading Spotify playlist...")
 
         thread = YouTubeTaskThread(
             lambda: (
                 self.youtube_import_service
                 .search_from_spotify(url)
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_spotify_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_spotify_oauth_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        url: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Opening Spotify authorization...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.youtube_import_service.search_from_spotify(
+                url,
+                use_oauth=True,
             ),
             self,
         )
@@ -1382,9 +1420,19 @@ class MainWindow(QMainWindow):
             return self.youtube_import_service.download_and_import_playlist(
                 selected_candidates,
                 on_progress=thread.progress_updated.emit,
+                on_track_imported=thread.track_imported.emit,
             )
 
         thread = YouTubeTaskThread(import_playlist, self)
+        thread.track_imported.connect(
+            lambda candidate, track: (
+                self._handle_youtube_playlist_track_imported(
+                    dialog,
+                    candidate,
+                    track,
+                )
+            )
+        )
         thread.progress_updated.connect(
             dialog.update_playlist_download_progress
         )
@@ -1564,30 +1612,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        for track in result.imported:
-            self._enqueue_genre_analysis(track)
-
-        if dialog.playlist_name and result.imported_candidates:
-            if dialog.local_playlist_id is None:
-                playlist = (
-                    self.playlist_management_service.create_playlist(
-                        dialog.playlist_name
-                    )
-                )
-                dialog.set_local_playlist_id(playlist.id)
-
-            for candidate, track in result.imported_candidates:
-                if candidate.playlist_position is not None:
-                    dialog.remember_imported_playlist_track(
-                        candidate.playlist_position,
-                        track.id,
-                    )
-
-            self.playlist_management_service.replace_tracks(
-                dialog.local_playlist_id,
-                dialog.imported_playlist_track_ids(),
-            )
-
         self._load_library()
         self._load_recommendations()
 
@@ -1645,6 +1669,38 @@ class MainWindow(QMainWindow):
             "Playlist import completed",
             message,
         )
+
+    def _handle_youtube_playlist_track_imported(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidate: YouTubeCandidate,
+        track: object,
+    ) -> None:
+        if not isinstance(track, Track):
+            return
+
+        self._enqueue_genre_analysis(track)
+
+        if dialog.playlist_name and candidate.playlist_position is not None:
+            if dialog.local_playlist_id is None:
+                playlist = (
+                    self.playlist_management_service.create_playlist(
+                        dialog.playlist_name
+                    )
+                )
+                dialog.set_local_playlist_id(playlist.id)
+
+            dialog.remember_imported_playlist_track(
+                candidate.playlist_position,
+                track.id,
+            )
+            self.playlist_management_service.replace_tracks(
+                dialog.local_playlist_id,
+                dialog.imported_playlist_track_ids(),
+            )
+
+        self._load_library()
+        self._load_recommendations()
 
     def _enqueue_genre_analysis(
         self,

@@ -60,9 +60,20 @@ class YouTubeImportService:
     def search_from_spotify(
         self,
         url: str,
+        *,
+        use_oauth: bool = False,
     ) -> SpotifySearchResult | SpotifyPlaylistSearchResult:
-        if self.spotify_provider.get_resource_type(url) == "playlist":
-            return self.search_playlist_from_spotify(url)
+        resource_type = self.spotify_provider.get_resource_type(url)
+        if resource_type == "playlist":
+            return self.search_playlist_from_spotify(
+                url,
+                use_oauth=use_oauth,
+            )
+        if resource_type == "album":
+            return self.search_album_from_spotify(
+                url,
+                use_oauth=use_oauth,
+            )
 
         spotify_track = self.spotify_provider.get_track(url)
         candidates = self.provider.search(
@@ -78,8 +89,15 @@ class YouTubeImportService:
     def search_playlist_from_spotify(
         self,
         url: str,
+        *,
+        use_oauth: bool = False,
     ) -> SpotifyPlaylistSearchResult:
-        playlist = self.spotify_provider.get_playlist(url)
+        if use_oauth:
+            playlist = self.spotify_provider.get_authenticated_playlist(
+                url
+            )
+        else:
+            playlist = self.spotify_provider.get_playlist(url)
         candidates = []
         failed = []
 
@@ -115,6 +133,62 @@ class YouTubeImportService:
 
         return SpotifyPlaylistSearchResult(
             playlist_name=playlist.name,
+            candidates=tuple(candidates),
+            failed=tuple(failed),
+        )
+
+    def search_album_from_spotify(
+        self,
+        url: str,
+        *,
+        use_oauth: bool = False,
+    ) -> SpotifyPlaylistSearchResult:
+        if use_oauth:
+            album = self.spotify_provider.get_authenticated_album(url)
+        else:
+            album = self.spotify_provider.get_album(url)
+
+        return self._search_spotify_collection(album)
+
+    def _search_spotify_collection(
+        self,
+        collection,
+    ) -> SpotifyPlaylistSearchResult:
+        candidates = []
+        failed = []
+
+        for position, spotify_track in enumerate(collection.tracks):
+            try:
+                matches = self.provider.search(
+                    spotify_track.search_query,
+                    max_results=5,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                failed.append((spotify_track, str(error)))
+                continue
+
+            if not matches:
+                failed.append(
+                    (spotify_track, "No YouTube match found.")
+                )
+                continue
+
+            candidates.append(
+                replace(
+                    matches[0],
+                    requested_title=spotify_track.title,
+                    requested_artist=spotify_track.artist,
+                    playlist_position=position,
+                )
+            )
+
+        if not candidates and failed:
+            raise RuntimeError(
+                "No Spotify collection tracks could be matched on YouTube."
+            )
+
+        return SpotifyPlaylistSearchResult(
+            playlist_name=collection.name,
             candidates=tuple(candidates),
             failed=tuple(failed),
         )
@@ -160,6 +234,8 @@ class YouTubeImportService:
         candidates: list[YouTubeCandidate],
         *,
         on_progress: Callable[[int, int], None] | None = None,
+        on_track_imported: Callable[[YouTubeCandidate, Track], None]
+        | None = None,
     ) -> YouTubePlaylistImportResult:
         imported = []
         failed = []
@@ -171,6 +247,8 @@ class YouTubeImportService:
                 track = self.download_and_import(candidate)
                 imported.append(track)
                 imported_candidates.append((candidate, track))
+                if on_track_imported is not None:
+                    on_track_imported(candidate, track)
             except (OSError, RuntimeError, ValueError) as error:
                 failed.append(
                     (candidate, str(error))

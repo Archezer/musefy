@@ -1,5 +1,6 @@
 import io
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -61,67 +62,214 @@ def test_spotify_provider_detects_track_and_playlist_urls() -> None:
     assert provider.get_resource_type(
         "https://open.spotify.com/playlist/playlist-1"
     ) == "playlist"
+    assert provider.get_resource_type(
+        "https://open.spotify.com/album/album-1"
+    ) == "album"
 
 
-def test_spotify_playlist_reads_tracks_with_client_credentials(
-    monkeypatch,
-) -> None:
-    responses = [
-        FakeResponse(
-            json.dumps(
-                {
-                    "access_token": "access-token",
-                    "expires_in": 3600,
-                }
-            ).encode()
-        ),
-        FakeResponse(json.dumps({"name": "Night drive"}).encode()),
-        FakeResponse(
-            json.dumps(
-                {
+def test_public_spotify_playlist_is_paginated(monkeypatch) -> None:
+    first_item = {
+        "itemV2": {
+            "data": {
+                "__typename": "Track",
+                "name": "Exorcism",
+                "artists": {
                     "items": [
                         {
-                            "is_local": False,
-                            "track": {
-                                "type": "track",
-                                "name": "First track",
-                                "artists": [{"name": "Artist One"}],
-                            },
-                        },
-                        {
-                            "is_local": True,
-                            "track": {
-                                "type": "track",
-                                "name": "Local track",
-                                "artists": [{"name": "Local artist"}],
-                            },
-                        },
-                    ],
-                    "next": None,
-                    "total": 2,
+                            "profile": {
+                                "name": "Sidewalks and Skeletons"
+                            }
+                        }
+                    ]
+                },
+            }
+        }
+    }
+    last_item = {
+        "itemV2": {
+            "data": {
+                "__typename": "Track",
+                "name": "Blood",
+                "artists": {
+                    "items": [{"profile": {"name": "SET"}}]
+                },
+            }
+        }
+    }
+    responses = [
+        {"accessToken": "anonymous-token"},
+        {
+            "data": {
+                "playlistV2": {
+                    "name": "Witch House",
+                    "content": {
+                        "totalCount": 101,
+                        "items": [first_item] * 100,
+                    },
                 }
-            ).encode()
-        ),
+            }
+        },
+        {
+            "data": {
+                "playlistV2": {
+                    "name": "Witch House",
+                    "content": {
+                        "totalCount": 101,
+                        "items": [last_item],
+                    },
+                }
+            }
+        },
     ]
+    calls = []
 
     def fake_urlopen(request, timeout):
+        calls.append(request)
         assert timeout == 10.0
-        return responses.pop(0)
+        return FakeResponse(json.dumps(responses.pop(0)).encode())
 
     monkeypatch.setattr(spotify_source, "urlopen", fake_urlopen)
 
-    playlist = SpotifyMetadataProvider(
-        client_id="client-id",
-        client_secret="client-secret",
-    ).get_playlist(
+    playlist = SpotifyMetadataProvider().get_playlist(
         "https://open.spotify.com/playlist/playlist-1"
     )
 
-    assert playlist.name == "Night drive"
-    assert playlist.tracks == (
-        spotify_source.SpotifyTrack(
-            title="First track",
-            artist="Artist One",
-        ),
+    assert playlist.name == "Witch House"
+    assert len(playlist.tracks) == 101
+    assert playlist.tracks[0].search_query == (
+        "Sidewalks and Skeletons - Exorcism"
     )
-    assert responses == []
+    assert playlist.tracks[-1].search_query == "SET - Blood"
+    assert "get_access_token" in calls[0].full_url
+    assert "/pathfinder/v2/query" in calls[1].full_url
+    first_query = parse_qs(urlparse(calls[1].full_url).query)
+    second_query = parse_qs(urlparse(calls[2].full_url).query)
+    assert json.loads(first_query["variables"][0])["offset"] == 0
+    assert json.loads(second_query["variables"][0])["offset"] == 100
+
+
+def test_public_spotify_album_is_paginated(monkeypatch) -> None:
+    first_track = {
+        "track": {
+            "type": "track",
+            "name": "First track",
+            "artists": [{"name": "Artist One"}],
+        }
+    }
+    second_track = {
+        "track": {
+            "type": "track",
+            "name": "Second track",
+            "artists": [{"name": "Artist Two"}],
+        }
+    }
+    responses = [
+        {"accessToken": "anonymous-token"},
+        {
+            "data": {
+                "albumUnion": {
+                    "name": "Long album",
+                    "tracksV2": {
+                        "totalCount": 101,
+                        "items": [first_track] * 100,
+                    },
+                }
+            }
+        },
+        {
+            "data": {
+                "albumUnion": {
+                    "name": "Long album",
+                    "tracksV2": {
+                        "totalCount": 101,
+                        "items": [second_track],
+                    },
+                }
+            }
+        },
+    ]
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request)
+        assert timeout == 10.0
+        return FakeResponse(json.dumps(responses.pop(0)).encode())
+
+    monkeypatch.setattr(spotify_source, "urlopen", fake_urlopen)
+
+    album = SpotifyMetadataProvider().get_album(
+        "https://open.spotify.com/album/album-1"
+    )
+
+    assert album.name == "Long album"
+    assert len(album.tracks) == 101
+    assert album.tracks[0].search_query == "Artist One - First track"
+    assert album.tracks[-1].search_query == "Artist Two - Second track"
+    assert "/pathfinder/v2/query" in calls[1].full_url
+    assert "getAlbum" in calls[1].full_url
+    first_query = parse_qs(urlparse(calls[1].full_url).query)
+    second_query = parse_qs(urlparse(calls[2].full_url).query)
+    assert json.loads(first_query["variables"][0])["offset"] == 0
+    assert json.loads(second_query["variables"][0])["offset"] == 100
+
+
+class FakeSpotifyOAuthClient:
+    def __init__(self, responses: list[dict]) -> None:
+        self.responses = responses
+        self.requests: list[tuple[str, dict[str, str]]] = []
+
+    def get_json(
+        self,
+        path: str,
+        params: dict[str, str],
+    ) -> dict:
+        self.requests.append((path, params))
+        return self.responses.pop(0)
+
+
+def test_authenticated_spotify_playlist_is_paginated() -> None:
+    oauth_client = FakeSpotifyOAuthClient(
+        [
+            {"name": "Long playlist"},
+            {
+                "items": [
+                    {
+                        "is_local": False,
+                        "item": {
+                            "type": "track",
+                            "name": "First track",
+                            "artists": [{"name": "Artist One"}],
+                        },
+                    }
+                ],
+                "next": "https://api.spotify.com/next",
+            },
+            {
+                "items": [
+                    {
+                        "is_local": False,
+                        "item": {
+                            "type": "track",
+                            "name": "Second track",
+                            "artists": [{"name": "Artist Two"}],
+                        },
+                    }
+                ],
+                "next": None,
+            },
+        ]
+    )
+
+    playlist = SpotifyMetadataProvider(
+        oauth_client=oauth_client,
+    ).get_authenticated_playlist(
+        "https://open.spotify.com/playlist/playlist-1"
+    )
+
+    assert playlist.name == "Long playlist"
+    assert [track.search_query for track in playlist.tracks] == [
+        "Artist One - First track",
+        "Artist Two - Second track",
+    ]
+    assert oauth_client.requests[1][1]["offset"] == "0"
+    assert oauth_client.requests[2][1]["offset"] == "1"

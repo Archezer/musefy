@@ -106,6 +106,7 @@ class TrackMetadataDialog(QDialog):
 class YouTubeSearchDialog(QDialog):
     search_requested = Signal(str)
     spotify_search_requested = Signal(str)
+    spotify_oauth_search_requested = Signal(str)
     import_requested = Signal(object)
     url_import_requested = Signal(str)
     playlist_requested = Signal(str)
@@ -138,7 +139,7 @@ class YouTubeSearchDialog(QDialog):
 
         self.spotify_url_edit = QLineEdit()
         self.spotify_url_edit.setPlaceholderText(
-            "https://open.spotify.com/track/... or /playlist/..."
+            "Spotify track, album, or playlist URL"
         )
         form_layout.addRow(
             "Spotify URL:",
@@ -168,10 +169,22 @@ class YouTubeSearchDialog(QDialog):
         search_layout.addWidget(self.url_button)
 
         self.spotify_button = QPushButton("Load Spotify")
+        self.spotify_button.setToolTip(
+            "Import a public track, album, or playlist without signing in."
+        )
         self.spotify_button.clicked.connect(
             self._request_spotify_search
         )
         search_layout.addWidget(self.spotify_button)
+
+        self.spotify_oauth_button = QPushButton("Load Spotify (sign in)")
+        self.spotify_oauth_button.setToolTip(
+            "Sign in to import private or collaborative playlists."
+        )
+        self.spotify_oauth_button.clicked.connect(
+            self._request_spotify_oauth_search
+        )
+        search_layout.addWidget(self.spotify_oauth_button)
 
         self.playlist_button = QPushButton("Load playlist")
         self.playlist_button.clicked.connect(
@@ -241,6 +254,19 @@ class YouTubeSearchDialog(QDialog):
             return
 
         self.spotify_search_requested.emit(url)
+
+    def _request_spotify_oauth_search(self) -> None:
+        url = self.spotify_url_edit.text().strip()
+
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Spotify OAuth failed",
+                "Spotify URL must not be empty.",
+            )
+            return
+
+        self.spotify_oauth_search_requested.emit(url)
 
     def _request_import(self) -> None:
         candidates = self.selected_candidates()
@@ -428,6 +454,7 @@ class YouTubeSearchDialog(QDialog):
         self._busy = busy
         self.search_button.setEnabled(not busy)
         self.spotify_button.setEnabled(not busy)
+        self.spotify_oauth_button.setEnabled(not busy)
         self.url_button.setEnabled(not busy)
         self.playlist_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)

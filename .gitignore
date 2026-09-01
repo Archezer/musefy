@@ -129,3 +129,6 @@ desktop.ini
 # YouTube session data
 data/youtube_cookies.txt
 .uv-cache/
+
+# Spotify OAuth refresh token
+data/spotify_token.json
