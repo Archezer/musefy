@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import replace
 from uuid import uuid4
 
@@ -86,6 +87,35 @@ class PlaylistManagementService:
                 track_id=track_id,
                 position=len(entries),
             )
+        )
+        self.store.replace_playlist_entries(
+            playlist_id,
+            entries,
+        )
+
+        return self.get_playlist_tracks(playlist_id)
+
+    def replace_tracks(
+        self,
+        playlist_id: str,
+        track_ids: Iterable[str],
+    ) -> list[Track]:
+        self._get_playlist_or_raise(playlist_id)
+        normalized_track_ids = tuple(track_ids)
+
+        for track_id in normalized_track_ids:
+            if self.store.get_track(track_id) is None:
+                raise ValueError(
+                    f"Track does not exist: {track_id}"
+                )
+
+        entries = tuple(
+            PlaylistEntry(
+                playlist_id=playlist_id,
+                track_id=track_id,
+                position=position,
+            )
+            for position, track_id in enumerate(normalized_track_ids)
         )
         self.store.replace_playlist_entries(
             playlist_id,

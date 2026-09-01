@@ -200,6 +200,33 @@ $env:YTDLP_COOKIES_FILE = "C:\path\to\youtube_cookies.txt"
 - [How do I pass cookies to yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)
 - [Exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)
 
+## Spotify: треки и плейлисты
+
+В поле `Spotify URL` можно вставить ссылку на отдельный трек или публичный
+плейлист.
+
+- для трека приложение получает название и исполнителя через Spotify oEmbed,
+  затем показывает несколько совпадений YouTube;
+- для плейлиста приложение получает список треков через Spotify Web API,
+  подбирает по одному лучшему совпадению YouTube для каждого трека и сохраняет
+  исходный порядок в локальном плейлисте;
+- найденные совпадения можно снять галочками перед скачиванием;
+- исходные названия и исполнители Spotify сохраняются, даже если аудио скачано
+  с YouTube.
+
+Для чтения публичных плейлистов создай приложение в
+[Spotify Developer Dashboard](https://developer.spotify.com/dashboard) и задай
+переменные в PowerShell из корня проекта:
+
+```powershell
+$env:SPOTIFY_CLIENT_ID = "your-client-id"
+$env:SPOTIFY_CLIENT_SECRET = "your-client-secret"
+```
+
+После этого запускай приложение в том же окне PowerShell. Значения действуют
+только для текущего окна и не сохраняются в Git. Приватные плейлисты требуют
+пользовательскую OAuth-авторизацию и пока не поддерживаются.
+
 ## Локальная библиотека и удаление
 
 Импортированные аудиофайлы копируются в `data/library/`.

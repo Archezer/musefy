@@ -3,7 +3,11 @@ from typing import Self
 
 import app.sources.youtube as youtube_source
 from app.domain.models import Track
-from app.services.youtube_import import YouTubeImportService
+from app.services.youtube_import import (
+    SpotifyPlaylistSearchResult,
+    YouTubeImportService,
+)
+from app.sources.spotify import SpotifyPlaylist, SpotifyTrack
 from app.sources.youtube import YouTubeCandidate, YouTubeSearchProvider
 
 
@@ -199,3 +203,58 @@ def test_playlist_import_keeps_successes_when_one_track_fails() -> None:
         "Broken track"
     ]
     assert progress == [(1, 2), (2, 2)]
+
+
+class FakeSpotifyProvider:
+    def get_resource_type(self, url: str) -> str:
+        assert url == "spotify-playlist"
+        return "playlist"
+
+    def get_playlist(self, url: str) -> SpotifyPlaylist:
+        return SpotifyPlaylist(
+            name="Imported playlist",
+            tracks=(
+                SpotifyTrack("First track", "Artist One"),
+                SpotifyTrack("Second track", "Artist Two"),
+            ),
+        )
+
+
+class FakeSpotifyYoutubeProvider:
+    def search(
+        self,
+        query: str,
+        *,
+        max_results: int,
+    ) -> list[YouTubeCandidate]:
+        return [
+            YouTubeCandidate(
+                video_id=query,
+                title=f"YouTube {query}",
+                channel_title="YouTube channel",
+                duration_ms=None,
+                view_count=None,
+                url=f"https://youtube.test/{query}",
+            )
+        ]
+
+
+def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+        FakeSpotifyProvider(),
+    )
+
+    result = service.search_from_spotify("spotify-playlist")
+
+    assert isinstance(result, SpotifyPlaylistSearchResult)
+    assert result.playlist_name == "Imported playlist"
+    assert [candidate.requested_title for candidate in result.candidates] == [
+        "First track",
+        "Second track",
+    ]
+    assert [candidate.playlist_position for candidate in result.candidates] == [
+        0,
+        1,
+    ]

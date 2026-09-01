@@ -61,6 +61,7 @@ from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import (
+    SpotifyPlaylistSearchResult,
     SpotifySearchResult,
     YouTubeImportService,
     YouTubePlaylistImportResult,
@@ -1264,7 +1265,7 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Reading Spotify track...")
+        dialog.set_busy(True, "Reading Spotify link...")
 
         thread = YouTubeTaskThread(
             lambda: (
@@ -1478,15 +1479,29 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog,
         result: object,
     ) -> None:
-        if not isinstance(result, SpotifySearchResult):
+        if isinstance(result, SpotifySearchResult):
+            dialog.set_search_query(result.query)
+            dialog.set_candidates(list(result.candidates))
+            return
+
+        if isinstance(result, SpotifyPlaylistSearchResult):
+            dialog.set_search_query(result.playlist_name)
+            dialog.set_candidates(
+                list(result.candidates),
+                playlist=True,
+                playlist_name=result.playlist_name,
+                unmatched=result.failed,
+            )
+            return
+
+        if not isinstance(
+            result,
+            (SpotifySearchResult, SpotifyPlaylistSearchResult),
+        ):
             self._handle_youtube_error(
                 dialog,
                 "Spotify search returned an invalid result.",
             )
-            return
-
-        dialog.set_search_query(result.query)
-        dialog.set_candidates(list(result.candidates))
 
     def _handle_youtube_playlist_result(
         self,
@@ -1505,7 +1520,10 @@ class MainWindow(QMainWindow):
             for candidate in result
             if isinstance(candidate, YouTubeCandidate)
         ]
-        dialog.set_candidates(candidates, playlist=True)
+        dialog.set_candidates(
+            candidates,
+            playlist=True,
+        )
 
     def _handle_youtube_import_result(
         self,
@@ -1549,23 +1567,54 @@ class MainWindow(QMainWindow):
         for track in result.imported:
             self._enqueue_genre_analysis(track)
 
+        if dialog.playlist_name and result.imported_candidates:
+            if dialog.local_playlist_id is None:
+                playlist = (
+                    self.playlist_management_service.create_playlist(
+                        dialog.playlist_name
+                    )
+                )
+                dialog.set_local_playlist_id(playlist.id)
+
+            for candidate, track in result.imported_candidates:
+                if candidate.playlist_position is not None:
+                    dialog.remember_imported_playlist_track(
+                        candidate.playlist_position,
+                        track.id,
+                    )
+
+            self.playlist_management_service.replace_tracks(
+                dialog.local_playlist_id,
+                dialog.imported_playlist_track_ids(),
+            )
+
         self._load_library()
         self._load_recommendations()
 
-        if result.failed:
+        unmatched = dialog.unmatched_playlist_tracks
+        if result.failed or unmatched:
             failed_candidates = [
                 candidate for candidate, _ in result.failed
             ]
-            dialog.set_candidates(failed_candidates, playlist=True)
+            dialog.set_candidates(
+                failed_candidates,
+                playlist=True,
+                playlist_name=dialog.playlist_name,
+                unmatched=unmatched,
+            )
             dialog.set_busy(
                 False,
-                f"{len(failed_candidates)} tracks failed."
+                (
+                    f"{len(failed_candidates) + len(unmatched)} "
+                    "tracks failed or were not found."
+                ),
             )
 
             result_dialog = PlaylistImportResultDialog(
                 len(result.imported),
                 result.failed,
                 dialog,
+                unmatched=unmatched,
             )
             result_dialog.retry_requested.connect(
                 lambda candidates: QTimer.singleShot(
@@ -1577,14 +1626,24 @@ class MainWindow(QMainWindow):
                 )
             )
             result_dialog.exec()
+            if not result.failed:
+                dialog.accept()
             return
 
         dialog.accept()
 
+        message = (
+            f"Imported {len(result.imported)} playlist tracks."
+        )
+        if dialog.playlist_name:
+            message += (
+                f"\nLocal playlist: {dialog.playlist_name}"
+            )
+
         QMessageBox.information(
             self,
             "Playlist import completed",
-            f"Imported {len(result.imported)} playlist tracks.",
+            message,
         )
 
     def _enqueue_genre_analysis(

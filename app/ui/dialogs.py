@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ingestion.metadata import AudioMetadata
+from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
 
 
@@ -115,6 +116,12 @@ class YouTubeSearchDialog(QDialog):
 
         self._busy = False
         self._playlist_mode = False
+        self._playlist_name: str | None = None
+        self._unmatched_playlist_tracks: tuple[
+            tuple[SpotifyTrack, str], ...
+        ] = ()
+        self._local_playlist_id: str | None = None
+        self._imported_playlist_tracks: dict[int, str] = {}
 
         self.setWindowTitle("Add track from YouTube")
         self.resize(760, 520)
@@ -131,10 +138,10 @@ class YouTubeSearchDialog(QDialog):
 
         self.spotify_url_edit = QLineEdit()
         self.spotify_url_edit.setPlaceholderText(
-            "https://open.spotify.com/track/..."
+            "https://open.spotify.com/track/... or /playlist/..."
         )
         form_layout.addRow(
-            "Spotify track:",
+            "Spotify URL:",
             self.spotify_url_edit,
         )
 
@@ -160,7 +167,7 @@ class YouTubeSearchDialog(QDialog):
         )
         search_layout.addWidget(self.url_button)
 
-        self.spotify_button = QPushButton("Search Spotify")
+        self.spotify_button = QPushButton("Load Spotify")
         self.spotify_button.clicked.connect(
             self._request_spotify_search
         )
@@ -229,7 +236,7 @@ class YouTubeSearchDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Spotify search failed",
-                "Spotify track URL must not be empty.",
+                "Spotify URL must not be empty.",
             )
             return
 
@@ -326,8 +333,14 @@ class YouTubeSearchDialog(QDialog):
         candidates: list[YouTubeCandidate],
         *,
         playlist: bool = False,
+        playlist_name: str | None = None,
+        unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
     ) -> None:
         self._playlist_mode = playlist
+        self._playlist_name = playlist_name if playlist else None
+        self._unmatched_playlist_tracks = (
+            unmatched if playlist else ()
+        )
         self.results_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
             if playlist
@@ -356,9 +369,13 @@ class YouTubeSearchDialog(QDialog):
 
         if playlist:
             message = (
-                f"Found {len(candidates)} playlist videos. "
+                f"Matched {len(candidates)} playlist tracks. "
                 "Uncheck anything you do not want to download."
             )
+            if unmatched:
+                message += (
+                    f" {len(unmatched)} tracks were not found."
+                )
         else:
             message = (
                 f"Found {len(candidates)} videos. "
@@ -367,6 +384,38 @@ class YouTubeSearchDialog(QDialog):
 
         self.status_label.setText(message)
         self._handle_selection_changed()
+
+    @property
+    def playlist_name(self) -> str | None:
+        return self._playlist_name
+
+    @property
+    def unmatched_playlist_tracks(
+        self,
+    ) -> tuple[tuple[SpotifyTrack, str], ...]:
+        return self._unmatched_playlist_tracks
+
+    @property
+    def local_playlist_id(self) -> str | None:
+        return self._local_playlist_id
+
+    def set_local_playlist_id(self, playlist_id: str) -> None:
+        self._local_playlist_id = playlist_id
+
+    def remember_imported_playlist_track(
+        self,
+        position: int,
+        track_id: str,
+    ) -> None:
+        self._imported_playlist_tracks[position] = track_id
+
+    def imported_playlist_track_ids(self) -> tuple[str, ...]:
+        return tuple(
+            track_id
+            for _, track_id in sorted(
+                self._imported_playlist_tracks.items()
+            )
+        )
 
     def set_search_query(self, query: str) -> None:
         self.query_edit.setText(query)
@@ -382,6 +431,7 @@ class YouTubeSearchDialog(QDialog):
         self.url_button.setEnabled(not busy)
         self.playlist_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)
+        self.spotify_url_edit.setEnabled(not busy)
         self.url_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
@@ -419,6 +469,17 @@ class YouTubeSearchDialog(QDialog):
             candidate.view_count
         )
 
+        if candidate.requested_title:
+            requested_artist = (
+                candidate.requested_artist or "Unknown artist"
+            )
+            return (
+                f"{index}. {requested_artist} — "
+                f"{candidate.requested_title}\n"
+                f"YouTube: {candidate.title}\n"
+                f"{candidate.channel_title} · {duration} · {views}"
+            )
+
         return (
             f"{index}. {candidate.title}\n"
             f"{candidate.channel_title} · {duration} · {views}"
@@ -454,6 +515,8 @@ class PlaylistImportResultDialog(QDialog):
         imported_count: int,
         failed: tuple[tuple[YouTubeCandidate, str], ...],
         parent: QWidget | None = None,
+        *,
+        unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
     ) -> None:
         super().__init__(parent)
 
@@ -465,7 +528,7 @@ class PlaylistImportResultDialog(QDialog):
         layout.addWidget(
             QLabel(
                 f"Imported {imported_count} playlist tracks.\n"
-                f"Skipped {len(failed)} tracks."
+                f"Skipped {len(failed) + len(unmatched)} tracks."
             )
         )
 
@@ -477,12 +540,19 @@ class PlaylistImportResultDialog(QDialog):
                 f"{candidate.title}\n{error}"
             )
 
+        for track, error in unmatched:
+            artist = track.artist or "Unknown artist"
+            failed_tracks.addItem(
+                f"{artist} — {track.title}\n{error}"
+            )
+
         layout.addWidget(failed_tracks)
 
         buttons_layout = QHBoxLayout()
         retry_button = QPushButton(
-            f"Try failed tracks again ({len(failed)})"
+            f"Try failed downloads again ({len(failed)})"
         )
+        retry_button.setEnabled(bool(failed))
         retry_button.clicked.connect(self._request_retry)
         buttons_layout.addWidget(retry_button)
         buttons_layout.addStretch()

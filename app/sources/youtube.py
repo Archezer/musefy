@@ -41,6 +41,9 @@ class YouTubeCandidate:
     duration_ms: int | None
     view_count: int | None
     url: str
+    requested_title: str | None = None
+    requested_artist: str | None = None
+    playlist_position: int | None = None
 
 
 class YouTubeSearchProvider:
