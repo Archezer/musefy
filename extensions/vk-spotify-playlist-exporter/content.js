@@ -244,6 +244,16 @@ function playlistTitle() {
   ]) || document.title.replace(/\s*[—–-]\s*VK.*$/i, "").trim() || "VK playlist";
 }
 
+function playlistCoverUrl() {
+  const scope =
+    document.querySelector('[data-testid="MusicPlaylistModal_Header"]') ||
+    document.querySelector('[data-testid="MusicPlaylistModal"]') ||
+    document.querySelector('[data-testid="MusicPlaylistPage"]');
+  const image = scope?.querySelector("img[src]");
+
+  return image?.currentSrc || image?.src || null;
+}
+
 function showAllButton() {
   const scope =
     document.querySelector('[data-testid="MusicPlaylistModal"]') ||
@@ -338,12 +348,13 @@ async function exportPlaylist() {
 
   return {
     format: VK_EXPORT_FORMAT,
-    version: 1,
+    version: 2,
     exported_at: new Date().toISOString(),
     playlist: {
       source: "vk",
       title: playlistTitle(),
       url: window.location.href,
+      cover_url: playlistCoverUrl(),
     },
     tracks,
   };

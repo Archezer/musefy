@@ -92,6 +92,7 @@ class SQLAlchemyMusicStore:
             source_id=track.source_id,
             source_url=track.source_url,
             local_path=track.local_path,
+            cover_path=track.cover_path,
             
         )
 
@@ -149,6 +150,8 @@ class SQLAlchemyMusicStore:
             )
             record.local_path = track.local_path
             record.source_id = track.source_id
+            record.source_url = track.source_url
+            record.cover_path = track.cover_path
 
             session.commit()
 
@@ -243,6 +246,7 @@ class SQLAlchemyMusicStore:
         record = PlaylistRecord(
             id=playlist.id,
             name=playlist.name,
+            cover_path=playlist.cover_path,
             created_at=playlist.created_at,
         )
 
@@ -276,6 +280,7 @@ class SQLAlchemyMusicStore:
                 )
 
             record.name = playlist.name
+            record.cover_path = playlist.cover_path
             session.commit()
 
     def delete_playlist(self, playlist_id: str) -> None:
@@ -477,6 +482,7 @@ class SQLAlchemyMusicStore:
             source_id=record.source_id,
             source_url=record.source_url,
             local_path=record.local_path,
+            cover_path=record.cover_path,
         )
 
     @staticmethod
@@ -484,6 +490,7 @@ class SQLAlchemyMusicStore:
         return Playlist(
             id=record.id,
             name=record.name,
+            cover_path=record.cover_path,
             created_at=record.created_at,
         )
 

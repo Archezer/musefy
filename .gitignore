@@ -92,6 +92,8 @@ target/
 
 data/inbox/
 data/library/
+data/playlist_covers/
+data/track_covers/
 
 # Large ML model binaries (keep metadata and label maps tracked)
 data/models/**/*.onnx

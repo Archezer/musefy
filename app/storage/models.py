@@ -96,6 +96,10 @@ class TrackRecord(Base):
         Text,
         nullable=True,
     )
+    cover_path: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
 
     interactions: Mapped[list["InteractionRecord"]] = relationship(
         back_populates="track",
@@ -153,6 +157,10 @@ class PlaylistRecord(Base):
         primary_key=True,
     )
     name: Mapped[str] = mapped_column(String(200))
+    cover_path: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True)
     )

@@ -173,6 +173,13 @@ function playlistTitle() {
   );
 }
 
+function playlistCoverUrl() {
+  const main = document.querySelector("main");
+  const image = main?.querySelector("img[src]");
+
+  return image?.currentSrc || image?.src || null;
+}
+
 function scrollContainer() {
   const region = playlistRegion();
   let current = region;
@@ -330,12 +337,13 @@ async function exportPlaylist() {
 
   return {
     format: YANDEX_EXPORT_FORMAT,
-    version: 1,
+    version: 2,
     exported_at: new Date().toISOString(),
     playlist: {
       source: "yandex",
       title: playlistTitle(),
       url: window.location.href,
+      cover_url: playlistCoverUrl(),
     },
     tracks,
   };

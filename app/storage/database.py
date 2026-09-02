@@ -101,6 +101,14 @@ def create_database() -> None:
                 )
             )
 
+        if "cover_path" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN cover_path VARCHAR(500)"
+                )
+            )
+
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
@@ -108,6 +116,21 @@ def create_database() -> None:
                 "ON tracks (source, source_id)"
             )
         )
+
+        playlist_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "playlists"
+            )
+        }
+
+        if "cover_path" not in playlist_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE playlists "
+                    "ADD COLUMN cover_path VARCHAR(500)"
+                )
+            )
 
         interaction_columns = {
             column["name"]

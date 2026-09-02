@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import app.services.playlists as playlist_service_module
+
 from app.domain.models import Track
 from app.services.playlists import PlaylistManagementService
 from app.storage.memory import InMemoryMusicStore
@@ -66,3 +70,74 @@ def test_renaming_a_playlist_preserves_entries() -> None:
         track.id
         for track in service.get_playlist_tracks(playlist.id)
     ] == ["track-1"]
+
+
+def test_playlist_artwork_is_copied_and_persisted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = make_service()
+    playlist = service.create_playlist("Artwork")
+    source = tmp_path / "cover.png"
+    source.write_bytes(b"not-a-real-png-but-a-valid-user-file")
+    covers_directory = tmp_path / "playlist_covers"
+    monkeypatch.setattr(
+        playlist_service_module,
+        "PLAYLIST_COVERS_DIR",
+        covers_directory,
+    )
+
+    updated_playlist = service.set_cover(playlist.id, source)
+
+    assert updated_playlist.cover_path is not None
+    copied_cover = Path(updated_playlist.cover_path)
+    assert copied_cover.parent == covers_directory
+    assert copied_cover.read_bytes() == source.read_bytes()
+    assert service.store.get_playlist(playlist.id) == updated_playlist
+
+
+def test_playlist_artwork_can_be_downloaded_from_export_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class FakeHeaders:
+        @staticmethod
+        def get_content_type() -> str:
+            return "image/png"
+
+    class FakeResponse:
+        headers = FakeHeaders()
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        @staticmethod
+        def read(_size: int) -> bytes:
+            return b"\x89PNG\r\n\x1a\ncover"
+
+    service = make_service()
+    playlist = service.create_playlist("Remote artwork")
+    covers_directory = tmp_path / "playlist_covers"
+    monkeypatch.setattr(
+        playlist_service_module,
+        "PLAYLIST_COVERS_DIR",
+        covers_directory,
+    )
+    monkeypatch.setattr(
+        playlist_service_module,
+        "urlopen",
+        lambda _request, timeout: FakeResponse(),
+    )
+
+    updated_playlist = service.set_cover_from_url(
+        playlist.id,
+        "https://example.com/cover.png",
+    )
+
+    assert updated_playlist.cover_path is not None
+    assert Path(updated_playlist.cover_path).read_bytes().startswith(
+        b"\x89PNG"
+    )

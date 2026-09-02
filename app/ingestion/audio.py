@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from app.domain.models import Track
+from app.ingestion.artwork import save_embedded_artwork
 from app.ingestion.filenames import (
     add_collision_suffix,
     build_library_filename,
@@ -73,6 +74,10 @@ class AudioIngestionService:
             artist=resolved_artist,
             title=resolved_title,
         )
+        cover_path = save_embedded_artwork(
+            file_path,
+            resolved_track_id,
+        )
 
         track = Track(
             id=resolved_track_id,
@@ -84,6 +89,7 @@ class AudioIngestionService:
             source_id=source_id,
             source_url=source_url,
             local_path=str(internal_path),
+            cover_path=cover_path,
         )
 
         self.store.add_track(track)
@@ -111,6 +117,10 @@ class AudioIngestionService:
             artist=artist,
             title=title,
         )
+        cover_path = save_embedded_artwork(
+            file_path,
+            existing_track.id,
+        )
 
         restored_track = replace(
             existing_track,
@@ -121,6 +131,7 @@ class AudioIngestionService:
             source_id=source_id,
             source_url=source_url,
             local_path=str(internal_path),
+            cover_path=cover_path or existing_track.cover_path,
         )
         self.store.update_track(restored_track)
 

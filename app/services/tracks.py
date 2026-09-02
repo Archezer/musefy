@@ -10,7 +10,7 @@ from app.ingestion.filenames import (
     add_collision_suffix,
     build_library_filename,
 )
-from app.storage.paths import LIBRARY_DIR
+from app.storage.paths import LIBRARY_DIR, TRACK_COVERS_DIR
 from app.storage.protocols import MusicStore
 
 
@@ -166,11 +166,15 @@ class TrackManagementService:
             current_track,
             require_exists=False,
         )
+        cover_path = self._get_managed_cover_path(current_track)
 
         self.store.delete_track(normalized_track_id)
 
         if file_path is not None and file_path.exists():
             file_path.unlink()
+
+        if cover_path is not None and cover_path.exists():
+            cover_path.unlink()
 
     @staticmethod
     def _get_managed_file_path(
@@ -204,6 +208,21 @@ class TrackManagementService:
             ) from error
 
         return file_path
+
+    @staticmethod
+    def _get_managed_cover_path(track: Track) -> Path | None:
+        if not track.cover_path:
+            return None
+
+        cover_path = Path(track.cover_path).resolve()
+        covers_root = TRACK_COVERS_DIR.resolve()
+
+        try:
+            cover_path.relative_to(covers_root)
+        except ValueError:
+            return None
+
+        return cover_path
 
     @staticmethod
     def _build_new_file_path(

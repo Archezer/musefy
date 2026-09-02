@@ -38,6 +38,7 @@ class SpotifyPlaylistSearchResult:
     playlist_name: str
     candidates: tuple[YouTubeCandidate, ...]
     failed: tuple[tuple[SpotifyTrack, str], ...]
+    cover_url: str | None = None
 
 
 class YouTubeImportService:
@@ -179,12 +180,15 @@ class YouTubeImportService:
         return self._search_playlist_tracks(
             exported_playlist.title,
             tracks,
+            cover_url=exported_playlist.cover_url,
         )
 
     def _search_playlist_tracks(
         self,
         playlist_name: str,
         tracks: tuple[SpotifyTrack, ...],
+        *,
+        cover_url: str | None = None,
     ) -> SpotifyPlaylistSearchResult:
         candidates = []
         failed = []
@@ -223,6 +227,7 @@ class YouTubeImportService:
             playlist_name=playlist_name,
             candidates=tuple(candidates),
             failed=tuple(failed),
+            cover_url=cover_url,
         )
 
     def search_album_from_spotify(

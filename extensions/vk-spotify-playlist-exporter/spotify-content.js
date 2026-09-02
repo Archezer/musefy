@@ -107,6 +107,13 @@ function playlistTitle() {
     "Spotify playlist";
 }
 
+function playlistCoverUrl() {
+  const main = document.querySelector("main");
+  const image = main?.querySelector("img[src]");
+
+  return image?.currentSrc || image?.src || null;
+}
+
 function scrollContainer() {
   let current = playlistGrid()?.parentElement;
 
@@ -168,12 +175,13 @@ async function exportPlaylist() {
 
   return {
     format: SPOTIFY_EXPORT_FORMAT,
-    version: 1,
+    version: 2,
     exported_at: new Date().toISOString(),
     playlist: {
       source: "spotify",
       title: playlistTitle(),
       url: window.location.href,
+      cover_url: playlistCoverUrl(),
     },
     tracks,
   };

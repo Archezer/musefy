@@ -116,6 +116,7 @@ class YouTubeSearchDialog(QDialog):
         self._busy = False
         self._playlist_mode = False
         self._playlist_name: str | None = None
+        self._playlist_cover_url: str | None = None
         self._unmatched_playlist_tracks: tuple[
             tuple[SpotifyTrack, str], ...
         ] = ()
@@ -309,10 +310,14 @@ class YouTubeSearchDialog(QDialog):
         *,
         playlist: bool = False,
         playlist_name: str | None = None,
+        playlist_cover_url: str | None = None,
         unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
     ) -> None:
         self._playlist_mode = playlist
         self._playlist_name = playlist_name if playlist else None
+        self._playlist_cover_url = (
+            playlist_cover_url if playlist else None
+        )
         self._unmatched_playlist_tracks = (
             unmatched if playlist else ()
         )
@@ -363,6 +368,10 @@ class YouTubeSearchDialog(QDialog):
     @property
     def playlist_name(self) -> str | None:
         return self._playlist_name
+
+    @property
+    def playlist_cover_url(self) -> str | None:
+        return self._playlist_cover_url
 
     @property
     def unmatched_playlist_tracks(

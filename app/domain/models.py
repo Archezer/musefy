@@ -50,6 +50,7 @@ class Track:
     source_id: str | None = None
     source_url: str | None = None
     local_path: str | None = None
+    cover_path: str | None = None
     mood: MoodVector | None = None
 
 
@@ -92,6 +93,7 @@ class Recommendation:
 class Playlist:
     id: str
     name: str
+    cover_path: str | None = None
     created_at: datetime = field(
         default_factory=lambda: datetime.now(UTC)
     )

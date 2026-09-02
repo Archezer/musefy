@@ -21,6 +21,7 @@ class ExportedPlaylist:
     source: str
     title: str
     url: str
+    cover_url: str | None
     tracks: tuple[ExportedPlaylistTrack, ...]
 
 
@@ -59,6 +60,7 @@ def read_playlist_export(path: Path) -> ExportedPlaylist:
 
     title = _required_text(playlist.get("title"), "playlist title")
     url = str(playlist.get("url") or "").strip()
+    cover_url = _optional_cover_url(playlist.get("cover_url"))
     tracks = tuple(
         _parse_track(raw_track, fallback_position=index + 1)
         for index, raw_track in enumerate(raw_tracks)
@@ -71,6 +73,7 @@ def read_playlist_export(path: Path) -> ExportedPlaylist:
         source=source,
         title=title,
         url=url,
+        cover_url=cover_url,
         tracks=tracks,
     )
 
@@ -123,3 +126,14 @@ def _required_text(value: object, field_name: str) -> str:
         raise ValueError(f"Playlist export is missing {field_name}.")
 
     return text
+
+
+def _optional_cover_url(value: object) -> str | None:
+    url = str(value or "").strip()
+    if not url:
+        return None
+
+    if not url.lower().startswith(("https://", "http://")):
+        return None
+
+    return url
