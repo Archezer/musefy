@@ -1,5 +1,6 @@
 import hashlib
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from app.domain.models import Track
@@ -39,6 +40,7 @@ class AudioIngestionService:
         track_id: str | None = None,
         genres: tuple[str, ...] = (),
         source: str = "local_upload",
+        source_id: str | None = None,
         source_url: str | None = None,
     ) -> Track:
         self._validate_file(file_path)
@@ -79,6 +81,7 @@ class AudioIngestionService:
             genres=genres,
             duration_ms=metadata.duration_ms,
             source=source,
+            source_id=source_id,
             source_url=source_url,
             local_path=str(internal_path),
         )
@@ -86,6 +89,42 @@ class AudioIngestionService:
         self.store.add_track(track)
 
         return track
+
+    def restore_missing_track(
+        self,
+        existing_track: Track,
+        file_path: Path,
+        *,
+        title: str,
+        artist: str,
+        source: str,
+        source_id: str | None,
+        source_url: str | None,
+    ) -> Track:
+        self._validate_file(file_path)
+
+        metadata = read_audio_metadata(file_path)
+        content_id = self._build_track_id(file_path)
+        internal_path = self._copy_to_library(
+            file_path=file_path,
+            content_id=content_id,
+            artist=artist,
+            title=title,
+        )
+
+        restored_track = replace(
+            existing_track,
+            title=title,
+            artist=artist,
+            duration_ms=metadata.duration_ms,
+            source=source,
+            source_id=source_id,
+            source_url=source_url,
+            local_path=str(internal_path),
+        )
+        self.store.update_track(restored_track)
+
+        return restored_track
 
     @staticmethod
     def _copy_to_library(

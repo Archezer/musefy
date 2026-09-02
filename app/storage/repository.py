@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import UTC
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -89,6 +89,7 @@ class SQLAlchemyMusicStore:
             ),
             duration_ms=track.duration_ms,
             source=track.source,
+            source_id=track.source_id,
             source_url=track.source_url,
             local_path=track.local_path,
             
@@ -147,8 +148,31 @@ class SQLAlchemyMusicStore:
                 else None
             )
             record.local_path = track.local_path
+            record.source_id = track.source_id
 
             session.commit()
+
+    def get_track_by_source(
+        self,
+        source: str,
+        source_id: str,
+    ) -> Track | None:
+        statement = (
+            select(TrackRecord)
+            .where(
+                TrackRecord.source == source,
+                TrackRecord.source_id == source_id,
+            )
+            .limit(1)
+        )
+
+        with self.session_factory() as session:
+            record = session.scalar(statement)
+
+        if record is None:
+            return None
+
+        return self._to_track(record)
 
     def delete_track(self, track_id: str) -> None:
         with self.session_factory() as session:
@@ -160,6 +184,59 @@ class SQLAlchemyMusicStore:
                 )
 
             session.delete(record)
+            session.commit()
+
+    def merge_track_references(
+        self,
+        duplicate_track_id: str,
+        survivor_track_id: str,
+    ) -> None:
+        if duplicate_track_id == survivor_track_id:
+            raise ValueError(
+                "Duplicate and survivor track IDs must differ"
+            )
+
+        with self.session_factory() as session:
+            duplicate = session.get(
+                TrackRecord,
+                duplicate_track_id,
+            )
+            survivor = session.get(
+                TrackRecord,
+                survivor_track_id,
+            )
+
+            if duplicate is None:
+                raise ValueError(
+                    f"Track does not exist: {duplicate_track_id}"
+                )
+
+            if survivor is None:
+                raise ValueError(
+                    f"Track does not exist: {survivor_track_id}"
+                )
+
+            session.execute(
+                update(InteractionRecord)
+                .where(
+                    InteractionRecord.track_id
+                    == duplicate_track_id
+                )
+                .values(track_id=survivor_track_id)
+            )
+            session.execute(
+                update(PlaylistEntryRecord)
+                .where(
+                    PlaylistEntryRecord.track_id
+                    == duplicate_track_id
+                )
+                .values(track_id=survivor_track_id)
+            )
+            session.execute(
+                delete(TrackRecord).where(
+                    TrackRecord.id == duplicate_track_id
+                )
+            )
             session.commit()
 
     def add_playlist(self, playlist: Playlist) -> None:
@@ -338,6 +415,7 @@ class SQLAlchemyMusicStore:
                 user_id=interaction.user_id,
                 track_id=interaction.track_id,
                 interaction_type=interaction.interaction_type.value,
+                mood_context=interaction.mood_context,
                 created_at=interaction.created_at,
             )
 
@@ -396,6 +474,7 @@ class SQLAlchemyMusicStore:
             mood=mood,
             duration_ms=record.duration_ms,
             source=record.source,
+            source_id=record.source_id,
             source_url=record.source_url,
             local_path=record.local_path,
         )
@@ -434,6 +513,7 @@ class SQLAlchemyMusicStore:
                 record.interaction_type
             ),
             created_at=created_at,
+            mood_context=record.mood_context,
         )
 
     @staticmethod

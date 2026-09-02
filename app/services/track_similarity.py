@@ -1,4 +1,4 @@
-from app.domain.models import Recommendation
+from app.domain.models import Recommendation, Track
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.similarity import (
     SimilarTrack,
@@ -24,6 +24,18 @@ class TrackSimilarityService:
             neighbors_per_track=self.neighbors_per_track
         )
         return self._index
+
+    def update_track(self, track: Track) -> None:
+        if self._index is None:
+            if track.track_embedding is not None:
+                self.rebuild()
+            return
+
+        self._index.upsert(track)
+
+    def remove_track(self, track_id: str) -> None:
+        if self._index is not None:
+            self._index.remove(track_id)
 
     def neighbors_for(
         self,

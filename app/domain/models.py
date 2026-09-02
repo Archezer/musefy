@@ -47,6 +47,7 @@ class Track:
     track_embedding: tuple[float, ...] | None = None
     duration_ms: int | None = None
     source: str = "local_upload"
+    source_id: str | None = None
     source_url: str | None = None
     local_path: str | None = None
     mood: MoodVector | None = None
@@ -69,6 +70,7 @@ class Interaction:
     created_at: datetime = field(
         default_factory=lambda: datetime.now(UTC)
     )
+    mood_context: str | None = None
 
 
 @dataclass(frozen=True)

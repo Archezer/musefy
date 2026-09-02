@@ -27,9 +27,15 @@ class InteractionService:
         user_id: str,
         track_id: str,
         interaction_type: InteractionType,
+        mood_context: str | None = None,
     ) -> InteractionResult:
         normalized_user_id = user_id.strip()
         normalized_track_id = track_id.strip()
+        normalized_mood_context = (
+            mood_context.strip().casefold()
+            if mood_context and mood_context.strip()
+            else None
+        )
 
         if not normalized_user_id:
             raise ValueError("User ID must not be empty")
@@ -52,6 +58,7 @@ class InteractionService:
                 user_id=normalized_user_id,
                 track_id=normalized_track_id,
                 interaction_type=interaction_type,
+                mood_context=normalized_mood_context,
             )
 
             if existing_state is not None:
@@ -64,6 +71,7 @@ class InteractionService:
             user_id=normalized_user_id,
             track_id=normalized_track_id,
             interaction_type=interaction_type,
+            mood_context=normalized_mood_context,
         )
 
         self.store.add_interaction(interaction)
@@ -78,6 +86,7 @@ class InteractionService:
         user_id: str,
         track_id: str,
         interaction_type: InteractionType,
+        mood_context: str | None,
     ) -> Interaction | None:
         for interaction in self.store.list_interactions():
             if (
@@ -85,6 +94,8 @@ class InteractionService:
                 and interaction.track_id == track_id
                 and interaction.interaction_type
                 == interaction_type
+                and interaction.mood_context
+                == mood_context
             ):
                 return interaction
 

@@ -283,7 +283,11 @@ class MostPopularRecommender(Recommender):
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
 
-        interactions = list(self.store.list_interactions())
+        interactions = [
+            interaction
+            for interaction in self.store.list_interactions()
+            if interaction.mood_context is None
+        ]
         tracks = list(self.store.list_tracks())
 
         track_scores: dict[str, float] = defaultdict(float)

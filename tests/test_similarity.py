@@ -58,6 +58,48 @@ def test_index_returns_closest_tracks_first() -> None:
     assert index.neighbors_for("track-without-embedding") == ()
 
 
+def test_index_updates_neighbors_without_rebuilding_everything() -> None:
+    track_a = Track(
+        id="track-a",
+        title="A",
+        artist="Artist",
+        track_embedding=(1.0, 0.0),
+    )
+    track_b = Track(
+        id="track-b",
+        title="B",
+        artist="Artist",
+        track_embedding=(0.0, 1.0),
+    )
+    track_c = Track(
+        id="track-c",
+        title="C",
+        artist="Artist",
+        track_embedding=(-1.0, 0.0),
+    )
+
+    index = TrackSimilarityIndex(
+        [track_a, track_b],
+        neighbors_per_track=2,
+    )
+
+    index.upsert(track_c)
+
+    assert index.neighbors_for("track-a")[0].track_id == "track-b"
+    assert index.neighbors_for("track-c")[0].track_id == "track-b"
+
+    updated_track_b = Track(
+        id="track-b",
+        title="B",
+        artist="Artist",
+        track_embedding=(1.0, 0.0),
+    )
+    index.upsert(updated_track_b)
+
+    assert index.neighbors_for("track-a")[0].track_id == "track-b"
+    assert index.neighbors_for("track-c")[0].track_id == "track-a"
+
+
 def test_similarity_service_returns_recommendations_for_seed() -> None:
     store = InMemoryMusicStore()
     store.add_track(
@@ -85,3 +127,30 @@ def test_similarity_service_returns_recommendations_for_seed() -> None:
     assert recommendations[0].reason == (
         "Similar to the selected track"
     )
+
+
+def test_similarity_service_removes_deleted_track_from_index() -> None:
+    store = InMemoryMusicStore()
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="neighbor",
+            title="Neighbor",
+            artist="Artist",
+            track_embedding=(0.9, 0.1),
+        )
+    )
+
+    service = TrackSimilarityService(store)
+    assert service.recommendations_for("seed", limit=1)
+
+    service.remove_track("neighbor")
+
+    assert service.recommendations_for("seed", limit=1) == []

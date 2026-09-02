@@ -15,6 +15,7 @@ class RecommendationContext:
     mode: RecommendationMode = RecommendationMode.POPULARITY
     seed_track_id: str | None = None
     target_mood: MoodVector | None = None
+    mood_name: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -22,6 +23,7 @@ class RecommendationContext:
             and (
                 self.seed_track_id is not None
                 or self.target_mood is not None
+                or self.mood_name is not None
             )
         ):
             raise ValueError(
@@ -37,12 +39,17 @@ class RecommendationContext:
                 raise ValueError(
                     "Mood context must not contain a seed track."
                 )
+            if self.mood_name is not None and not self.mood_name.strip():
+                raise ValueError(
+                    "Mood context name must not be empty."
+                )
 
         if (
             self.mode == RecommendationMode.TRACK_RADIO
             and (
                 not self.seed_track_id
                 or self.target_mood is not None
+                or self.mood_name is not None
             )
         ):
             raise ValueError(
@@ -50,10 +57,15 @@ class RecommendationContext:
             )
 
     @classmethod
-    def mood(cls, target_mood: MoodVector) -> "RecommendationContext":
+    def mood(
+        cls,
+        target_mood: MoodVector,
+        mood_name: str | None = None,
+    ) -> "RecommendationContext":
         return cls(
             mode=RecommendationMode.MOOD,
             target_mood=target_mood,
+            mood_name=mood_name,
         )
 
     @classmethod

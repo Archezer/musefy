@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.domain.models import (
     Interaction,
@@ -39,6 +39,20 @@ class InMemoryMusicStore:
     def get_track(self, track_id: str) -> Track | None:
         return self.tracks.get(track_id)
 
+    def get_track_by_source(
+        self,
+        source: str,
+        source_id: str,
+    ) -> Track | None:
+        for track in self.tracks.values():
+            if (
+                track.source == source
+                and track.source_id == source_id
+            ):
+                return track
+
+        return None
+
     def update_track(self, track: Track) -> None:
         if track.id not in self.tracks:
             raise ValueError(
@@ -73,6 +87,49 @@ class InMemoryMusicStore:
                 )
                 for position, entry in enumerate(remaining_entries)
             ]
+
+    def merge_track_references(
+        self,
+        duplicate_track_id: str,
+        survivor_track_id: str,
+    ) -> None:
+        if duplicate_track_id == survivor_track_id:
+            raise ValueError(
+                "Duplicate and survivor track IDs must differ"
+            )
+
+        if duplicate_track_id not in self.tracks:
+            raise ValueError(
+                f"Track does not exist: {duplicate_track_id}"
+            )
+
+        if survivor_track_id not in self.tracks:
+            raise ValueError(
+                f"Track does not exist: {survivor_track_id}"
+            )
+
+        self.interactions = [
+            replace(
+                interaction,
+                track_id=survivor_track_id,
+            )
+            if interaction.track_id == duplicate_track_id
+            else interaction
+            for interaction in self.interactions
+        ]
+
+        for playlist_id, entries in self.playlist_entries.items():
+            self.playlist_entries[playlist_id] = [
+                replace(
+                    entry,
+                    track_id=survivor_track_id,
+                )
+                if entry.track_id == duplicate_track_id
+                else entry
+                for entry in entries
+            ]
+
+        del self.tracks[duplicate_track_id]
 
     def add_playlist(self, playlist: Playlist) -> None:
         if playlist.id in self.playlists:

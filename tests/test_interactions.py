@@ -193,3 +193,46 @@ def test_record_save_is_idempotent():
     assert first_result.created is True
     assert second_result.created is False
     assert len(store.list_interactions()) == 1
+
+
+def test_stateful_interactions_are_idempotent_per_mood_context():
+    store = InMemoryMusicStore()
+    store.add_user(
+        User(
+            id="user-1",
+            display_name="Test User",
+        )
+    )
+    store.add_track(
+        Track(
+            id="track-1",
+            title="Test Track",
+            artist="Test Artist",
+        )
+    )
+
+    service = InteractionService(store)
+
+    sad_result = service.record(
+        "user-1",
+        "track-1",
+        InteractionType.LIKE,
+        mood_context=" Sad ",
+    )
+    repeated_sad_result = service.record(
+        "user-1",
+        "track-1",
+        InteractionType.LIKE,
+        mood_context="sad",
+    )
+    happy_result = service.record(
+        "user-1",
+        "track-1",
+        InteractionType.LIKE,
+        mood_context="happy",
+    )
+
+    assert sad_result.created is True
+    assert repeated_sad_result.created is False
+    assert happy_result.created is True
+    assert len(store.list_interactions()) == 2

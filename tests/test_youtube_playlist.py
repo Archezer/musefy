@@ -9,6 +9,7 @@ from app.services.youtube_import import (
 )
 from app.sources.spotify import SpotifyPlaylist, SpotifyTrack
 from app.sources.youtube import YouTubeCandidate, YouTubeSearchProvider
+from app.storage.memory import InMemoryMusicStore
 
 
 class FakeYoutubeDownloader:
@@ -74,34 +75,65 @@ def test_playlist_extracts_video_candidates(monkeypatch) -> None:
 
 
 class FakeIngestionService:
+    def __init__(self) -> None:
+        self.store = InMemoryMusicStore()
+
     def ingest(
         self,
         source_path: Path,
         *,
         title: str,
         artist: str,
+        track_id: str,
         source: str,
+        source_id: str,
         source_url: str,
     ) -> Track:
         if title == "Broken track":
             raise ValueError("duplicate track")
 
         return Track(
-            id=title,
+            id=track_id,
             title=title,
             artist=artist,
             source=source,
+            source_id=source_id,
+            source_url=source_url,
+            local_path=str(source_path),
+        )
+
+    def restore_missing_track(
+        self,
+        existing_track: Track,
+        source_path: Path,
+        *,
+        title: str,
+        artist: str,
+        source: str,
+        source_id: str,
+        source_url: str,
+    ) -> Track:
+        return Track(
+            id=existing_track.id,
+            title=title,
+            artist=artist,
+            source=source,
+            source_id=source_id,
             source_url=source_url,
             local_path=str(source_path),
         )
 
 
 class FakeDownloadProvider:
+    def __init__(self) -> None:
+        self.download_calls = 0
+
     def download(
         self,
         candidate: YouTubeCandidate,
         output_dir: Path,
     ) -> Path:
+        self.download_calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{candidate.video_id}.mp3"
         path.touch()
@@ -208,6 +240,43 @@ def test_playlist_import_keeps_successes_when_one_track_fails() -> None:
     ]
     assert progress == [(1, 2), (2, 2)]
     assert imported_events == [("Working track", "Working track")]
+
+
+def test_youtube_import_skips_existing_video_without_downloading(
+    tmp_path,
+) -> None:
+    ingestion_service = FakeIngestionService()
+    existing_path = tmp_path / "existing.mp3"
+    existing_path.touch()
+    existing_track = Track(
+        id="youtube-video-1",
+        title="First track",
+        artist="Artist",
+        source="youtube",
+        source_id="video-1",
+        source_url="https://www.youtube.com/watch?v=video-1",
+        local_path=str(existing_path),
+    )
+    ingestion_service.store.add_track(existing_track)
+
+    provider = FakeDownloadProvider()
+    service = YouTubeImportService(
+        ingestion_service,
+        provider,
+    )
+    candidate = YouTubeCandidate(
+        video_id="video-1",
+        title="First track",
+        channel_title="Artist",
+        duration_ms=None,
+        view_count=None,
+        url="https://youtu.be/video-1",
+    )
+
+    imported_track = service.download_and_import(candidate)
+
+    assert imported_track == existing_track
+    assert provider.download_calls == 0
 
 
 class FakeSpotifyProvider:

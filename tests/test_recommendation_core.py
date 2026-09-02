@@ -143,6 +143,78 @@ def test_like_from_any_user_affects_global_popularity():
     assert recommendations[0].score == 4.0
 
 
+def test_mood_context_does_not_affect_global_popularity():
+    store = make_store()
+
+    InteractionService(store).record(
+        user_id="user-2",
+        track_id="track-1",
+        interaction_type=InteractionType.LIKE,
+        mood_context="sad",
+    )
+
+    recommendations = MostPopularRecommender(
+        store,
+        exploration_pool_size=1,
+    ).recommend(
+        user_id="user-1",
+        limit=1,
+    )
+
+    assert recommendations[0].score == 0.0
+
+
+def test_mood_skip_is_scoped_to_the_same_mood():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="dark-track",
+            title="Dark Track",
+            artist="Artist One",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    store.add_track(
+        Track(
+            id="happy-track",
+            title="Happy Track",
+            artist="Artist Two",
+            mood=MOOD_PRESETS["happy"],
+        )
+    )
+
+    InteractionService(store).record(
+        user_id="user-1",
+        track_id="dark-track",
+        interaction_type=InteractionType.SKIP,
+        mood_context="sad",
+    )
+
+    recommender = MoodRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=1,
+    )
+    same_mood = recommender.recommend(
+        user_id="user-1",
+        target_mood=MOOD_PRESETS["dark"],
+        mood_name="sad",
+        limit=10,
+    )
+    other_mood = recommender.recommend(
+        user_id="user-1",
+        target_mood=MOOD_PRESETS["dark"],
+        mood_name="happy",
+        limit=1,
+    )
+
+    assert [item.track.id for item in same_mood] == [
+        "happy-track"
+    ]
+    assert other_mood[0].track.id == "dark-track"
+
+
 def test_replay_cooldown_excludes_recently_played_track():
     store = make_store()
 

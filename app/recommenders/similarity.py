@@ -44,7 +44,12 @@ class TrackSimilarityIndex:
                 "Neighbors per track must be positive."
             )
         self.neighbors_per_track = neighbors_per_track
-        self._neighbors = self._build_neighbors(tracks)
+        self._embeddings = {
+            track.id: tuple(track.track_embedding)
+            for track in tracks
+            if track.track_embedding is not None
+        }
+        self._neighbors = self._build_neighbors()
 
     def neighbors_for(
         self,
@@ -52,34 +57,90 @@ class TrackSimilarityIndex:
     ) -> tuple[SimilarTrack, ...]:
         return self._neighbors.get(track_id, ())
 
+    def upsert(self, track: Track) -> None:
+        if track.track_embedding is None:
+            self.remove(track.id)
+            return
+
+        self._embeddings[track.id] = tuple(track.track_embedding)
+        self._neighbors.pop(track.id, None)
+
+        for source_id, neighbors in list(self._neighbors.items()):
+            filtered = [
+                neighbor
+                for neighbor in neighbors
+                if neighbor.track_id != track.id
+            ]
+            score = cosine_similarity(
+                self._embeddings[source_id],
+                self._embeddings[track.id],
+            )
+            filtered.append(
+                SimilarTrack(
+                    track_id=track.id,
+                    score=score,
+                )
+            )
+            filtered.sort(
+                key=lambda neighbor: neighbor.score,
+                reverse=True,
+            )
+            self._neighbors[source_id] = tuple(
+                filtered[:self.neighbors_per_track]
+            )
+
+        candidates = [
+            SimilarTrack(
+                track_id=candidate_id,
+                score=cosine_similarity(
+                    self._embeddings[track.id],
+                    embedding,
+                ),
+            )
+            for candidate_id, embedding in self._embeddings.items()
+            if candidate_id != track.id
+        ]
+        candidates.sort(
+            key=lambda neighbor: neighbor.score,
+            reverse=True,
+        )
+        self._neighbors[track.id] = tuple(
+            candidates[:self.neighbors_per_track]
+        )
+
+    def remove(self, track_id: str) -> None:
+        self._embeddings.pop(track_id, None)
+        self._neighbors.pop(track_id, None)
+        for source_id, neighbors in list(self._neighbors.items()):
+            self._neighbors[source_id] = tuple(
+                neighbor
+                for neighbor in neighbors
+                if neighbor.track_id != track_id
+            )
+
     def _build_neighbors(
         self,
-        tracks: Sequence[Track]
     ) -> dict[str, tuple[SimilarTrack, ...]]:
-        embedded_tracks = [
-            track
-            for track in tracks
-            if track.track_embedding is not None
-        ]
         neighbors: dict[str, tuple[SimilarTrack, ...]] = {}
-        for source_track in embedded_tracks:
+        for source_id, source_embedding in self._embeddings.items():
             candidates = [
                 SimilarTrack(
-                    track_id=candidate_track.id,
+                    track_id=candidate_id,
                     score=cosine_similarity(
-                        source_track.track_embedding or (),
-                        candidate_track.track_embedding or ()
+                        source_embedding,
+                        candidate_embedding,
                     )
                 )
-                for candidate_track in embedded_tracks
-                if candidate_track.id != source_track.id
+                for candidate_id, candidate_embedding
+                in self._embeddings.items()
+                if candidate_id != source_id
             ]
 
             candidates.sort(
                 key=lambda candidate: candidate.score,
                 reverse=True
             )
-            neighbors[source_track.id] = tuple(
+            neighbors[source_id] = tuple(
                 candidates[:self.neighbors_per_track]
             )
 

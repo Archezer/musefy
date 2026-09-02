@@ -12,6 +12,7 @@ from app.sources.spotify import (
 from app.sources.youtube import (
     YouTubeCandidate,
     YouTubeSearchProvider,
+    extract_youtube_video_id,
 )
 
 
@@ -197,24 +198,83 @@ class YouTubeImportService:
         self,
         candidate: YouTubeCandidate,
     ) -> Track:
+        existing_track = self._find_existing_youtube_track(
+            candidate.video_id
+        )
+
         with TemporaryDirectory(
             prefix="music-recommendation-youtube-"
         ) as temporary_directory:
+            temporary_path = Path(temporary_directory)
+
+            if (
+                existing_track is not None
+                and existing_track.local_path
+                and Path(existing_track.local_path).is_file()
+            ):
+                return existing_track
+
             downloaded_path = self.provider.download(
                 candidate,
-                Path(temporary_directory),
+                temporary_path,
             )
+
+            title = candidate.requested_title or candidate.title
+            artist = (
+                candidate.requested_artist
+                or candidate.channel_title
+            )
+
+            if existing_track is not None:
+                return self.ingestion_service.restore_missing_track(
+                    existing_track,
+                    downloaded_path,
+                    title=title,
+                    artist=artist,
+                    source="youtube",
+                    source_id=candidate.video_id,
+                    source_url=candidate.url,
+                )
 
             return self.ingestion_service.ingest(
                 downloaded_path,
-                title=candidate.requested_title or candidate.title,
-                artist=(
-                    candidate.requested_artist
-                    or candidate.channel_title
-                ),
+                title=title,
+                artist=artist,
+                track_id=f"youtube-{candidate.video_id}",
                 source="youtube",
+                source_id=candidate.video_id,
                 source_url=candidate.url,
             )
+
+    def _find_existing_youtube_track(
+        self,
+        video_id: str,
+    ) -> Track | None:
+        existing_track = self.ingestion_service.store.get_track_by_source(
+            "youtube",
+            video_id,
+        )
+        if existing_track is not None:
+            return existing_track
+
+        # Migrate old YouTube records that only stored source_url.
+        for track in self.ingestion_service.store.list_tracks():
+            if track.source != "youtube" or not track.source_url:
+                continue
+
+            if extract_youtube_video_id(track.source_url) != video_id:
+                continue
+
+            migrated_track = replace(
+                track,
+                source_id=video_id,
+            )
+            self.ingestion_service.store.update_track(
+                migrated_track
+            )
+            return migrated_track
+
+        return None
 
     def download_and_import_url(
         self,

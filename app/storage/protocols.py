@@ -24,10 +24,24 @@ class MusicStore(Protocol):
     def get_track(self, track_id: str) -> Track | None:
         ...
 
+    def get_track_by_source(
+        self,
+        source: str,
+        source_id: str,
+    ) -> Track | None:
+        ...
+
     def update_track(self, track: Track) -> None:
         ...
 
     def delete_track(self, track_id: str) -> None:
+        ...
+
+    def merge_track_references(
+        self,
+        duplicate_track_id: str,
+        survivor_track_id: str,
+    ) -> None:
         ...
 
     def add_playlist(self, playlist: Playlist) -> None:

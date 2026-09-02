@@ -1,4 +1,4 @@
-from app.domain.models import Recommendation
+from app.domain.models import Recommendation, Track
 from app.domain.mood import MoodVector
 from app.domain.recommendations import (
     RecommendationContext,
@@ -23,6 +23,14 @@ class RecommendationService:
     def refresh(self) -> None:
         if self.track_radio is not None:
             self.track_radio.rebuild()
+
+    def update_track(self, track: Track) -> None:
+        if self.track_radio is not None:
+            self.track_radio.update_track(track)
+
+    def remove_track(self, track_id: str) -> None:
+        if self.track_radio is not None:
+            self.track_radio.remove_track(track_id)
 
     def get_recommendations(
         self,
@@ -56,6 +64,7 @@ class RecommendationService:
                 user_id=normalized_user_id,
                 target_mood=context.target_mood,
                 limit=limit,
+                mood_name=context.mood_name,
             )
 
         if context.mode == RecommendationMode.TRACK_RADIO:

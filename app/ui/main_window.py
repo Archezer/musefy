@@ -179,6 +179,8 @@ class MainWindow(QMainWindow):
         self._genre_batch_track_ids: set[str] = set()
         self._genre_batch_completed = 0
         self._genre_batch_total = 0
+        self._analysis_pending_track_ids: set[str] = set()
+        self._playlist_import_active = False
         self._genre_analysis_service = (
             GenreAnalysisService(
                 top_k=10,
@@ -527,52 +529,96 @@ class MainWindow(QMainWindow):
         self.track_table.setRowCount(len(tracks))
 
         for row_index, track in enumerate(tracks):
-            title_item = QTableWidgetItem(track.title)
-            title_item.setData(
-                Qt.ItemDataRole.UserRole,
-                track.id,
-            )
-
-            self.track_table.setItem(
-                row_index,
-                0,
-                title_item,
-            )
-            self.track_table.setItem(
-                row_index,
-                1,
-                QTableWidgetItem(track.artist),
-            )
-            self.track_table.setItem(
-                row_index,
-                2,
-                QTableWidgetItem(
-                    self._format_duration(track.duration_ms)
-                ),
-            )
-            self.track_table.setItem(
-                row_index,
-                3,
-                QTableWidgetItem(
-                    self._format_display_genres(track)
-                ),
-            )
-            self.track_table.setItem(
-                row_index,
-                4,
-                QTableWidgetItem(
-                    self._genre_statuses.get(
-                        track.id,
-                        "Not analyzed",
-                    )
-                ),
-            )
+            self._populate_track_row(row_index, track)
 
         self.track_table.resizeColumnsToContents()
         self._load_queue()
         self.statusBar().showMessage(
             f"Loaded {len(tracks)} tracks"
         )
+
+    def _populate_track_row(
+        self,
+        row_index: int,
+        track: Track,
+    ) -> None:
+        title_item = QTableWidgetItem(track.title)
+        title_item.setData(
+            Qt.ItemDataRole.UserRole,
+            track.id,
+        )
+
+        self.track_table.setItem(
+            row_index,
+            0,
+            title_item,
+        )
+        self.track_table.setItem(
+            row_index,
+            1,
+            QTableWidgetItem(track.artist),
+        )
+        self.track_table.setItem(
+            row_index,
+            2,
+            QTableWidgetItem(
+                self._format_duration(track.duration_ms)
+            ),
+        )
+        self.track_table.setItem(
+            row_index,
+            3,
+            QTableWidgetItem(
+                self._format_display_genres(track)
+            ),
+        )
+        self.track_table.setItem(
+            row_index,
+            4,
+            QTableWidgetItem(
+                self._genre_statuses.get(
+                    track.id,
+                    "Not analyzed",
+                )
+            ),
+        )
+
+    def _append_library_track(self, track: Track) -> None:
+        for row_index in range(self.track_table.rowCount()):
+            title_item = self.track_table.item(row_index, 0)
+            if title_item is None:
+                continue
+            if title_item.data(Qt.ItemDataRole.UserRole) != track.id:
+                continue
+
+            self._populate_track_row(row_index, track)
+            return
+
+        row_index = self.track_table.rowCount()
+        self.track_table.insertRow(row_index)
+        self._populate_track_row(row_index, track)
+
+    def _update_library_track_row(self, track: Track) -> None:
+        for row_index in range(self.track_table.rowCount()):
+            title_item = self.track_table.item(row_index, 0)
+            if title_item is None:
+                continue
+            if title_item.data(Qt.ItemDataRole.UserRole) != track.id:
+                continue
+
+            self._populate_track_row(row_index, track)
+            return
+
+    def _remove_library_track_row(self, track_id: str) -> None:
+        for row_index in range(self.track_table.rowCount()):
+            title_item = self.track_table.item(row_index, 0)
+            if title_item is None:
+                continue
+            if title_item.data(Qt.ItemDataRole.UserRole) != track_id:
+                continue
+
+            self.track_table.removeRow(row_index)
+            return
 
     @staticmethod
     def _format_display_genres(
@@ -610,7 +656,8 @@ class MainWindow(QMainWindow):
     def _load_recommendations(self) -> None:
         if self.selected_mood_name is not None:
             context = RecommendationContext.mood(
-                MOOD_PRESETS[self.selected_mood_name]
+                MOOD_PRESETS[self.selected_mood_name],
+                mood_name=self.selected_mood_name,
             )
         elif self.selected_track_id is not None:
             context = RecommendationContext.track_radio(
@@ -659,7 +706,10 @@ class MainWindow(QMainWindow):
         recommendations = self.recommendation_service.get_recommendations(
             user_id=self.user_id,
             limit=30,
-            context=RecommendationContext.mood(target_mood),
+            context=RecommendationContext.mood(
+                target_mood,
+                mood_name=self.selected_mood_name,
+            ),
         )
         track_ids = [
             recommendation.track.id
@@ -708,7 +758,10 @@ class MainWindow(QMainWindow):
         recommendations = self.recommendation_service.get_recommendations(
             user_id=self.user_id,
             limit=10,
-            context=RecommendationContext.mood(target_mood),
+            context=RecommendationContext.mood(
+                target_mood,
+                mood_name=self.session_mood_name,
+            ),
         )
         existing_ids = {
             queue.current_track_id,
@@ -1174,9 +1227,10 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._append_library_track(track)
         self._enqueue_genre_analysis(track)
-        self._load_library()
-        self._load_recommendations()
+        self._load_queue()
+        self._maybe_refresh_recommendations()
 
         QMessageBox.information(
             self,
@@ -1408,6 +1462,7 @@ class MainWindow(QMainWindow):
         if not selected_candidates:
             return
 
+        self._playlist_import_active = True
         dialog.set_busy(
             True,
             (
@@ -1443,7 +1498,7 @@ class MainWindow(QMainWindow):
             )
         )
         thread.error_occurred.connect(
-            lambda message: self._handle_youtube_error(
+            lambda message: self._handle_youtube_playlist_error(
                 dialog,
                 message,
             )
@@ -1587,9 +1642,10 @@ class MainWindow(QMainWindow):
 
         track = result
         dialog.accept()
+        self._append_library_track(track)
         self._enqueue_genre_analysis(track)
-        self._load_library()
-        self._load_recommendations()
+        self._load_queue()
+        self._maybe_refresh_recommendations()
 
         QMessageBox.information(
             self,
@@ -1605,6 +1661,8 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog,
         result: object,
     ) -> None:
+        self._playlist_import_active = False
+
         if not isinstance(result, YouTubePlaylistImportResult):
             self._handle_youtube_error(
                 dialog,
@@ -1612,8 +1670,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._load_library()
-        self._load_recommendations()
+        self._load_queue()
+        QTimer.singleShot(
+            0,
+            self._maybe_refresh_recommendations,
+        )
 
         unmatched = dialog.unmatched_playlist_tracks
         if result.failed or unmatched:
@@ -1679,6 +1740,7 @@ class MainWindow(QMainWindow):
         if not isinstance(track, Track):
             return
 
+        self._append_library_track(track)
         self._enqueue_genre_analysis(track)
 
         if dialog.playlist_name and candidate.playlist_position is not None:
@@ -1699,9 +1761,6 @@ class MainWindow(QMainWindow):
                 dialog.imported_playlist_track_ids(),
             )
 
-        self._load_library()
-        self._load_recommendations()
-
     def _enqueue_genre_analysis(
         self,
         track: Track,
@@ -1712,6 +1771,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._analysis_pending_track_ids.add(track.id)
         self._genre_statuses[track.id] = "Queued"
         self._set_genre_status(track.id, "Queued")
         if self.selected_track_id == track.id:
@@ -1859,6 +1919,15 @@ class MainWindow(QMainWindow):
             )
             return
 
+    def _maybe_refresh_recommendations(self) -> None:
+        if self._playlist_import_active:
+            return
+
+        if self._analysis_pending_track_ids:
+            return
+
+        self._load_recommendations()
+
     def _handle_genre_analysis_result(
         self,
         track_id: str,
@@ -1890,15 +1959,18 @@ class MainWindow(QMainWindow):
         )
 
         try:
-            self.track_management_service.update_detected_genres(
-                track_id=track_id,
-                detected_genres=detected_genres,
-                track_embedding=tuple(
-                    float(value)
-                    for value in analysis_result.genre_result.track_embedding
-                ),
-                mood=analysis_result.mood_result.mood,
+            updated_track = (
+                self.track_management_service.update_detected_genres(
+                    track_id=track_id,
+                    detected_genres=detected_genres,
+                    track_embedding=tuple(
+                        float(value)
+                        for value in analysis_result.genre_result.track_embedding
+                    ),
+                    mood=analysis_result.mood_result.mood,
+                )
             )
+            self.recommendation_service.update_track(updated_track)
         except (OSError, RuntimeError, ValueError) as error:
             self._handle_genre_analysis_error(
                 track_id,
@@ -1906,18 +1978,19 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._analysis_pending_track_ids.discard(track_id)
         self._genre_statuses[track_id] = "Completed"
         self._genre_predictions[track_id] = (
             analysis_result
         )
-        self._set_genre_status(track_id, "Completed")
+        self._update_library_track_row(updated_track)
         if self.selected_track_id == track_id:
             self.analyze_genres_button.setEnabled(True)
 
-        self._load_library()
-        self._load_recommendations()
+        is_batch_item = self._finish_genre_batch_item(track_id)
+        self._maybe_refresh_recommendations()
 
-        if self._finish_genre_batch_item(track_id):
+        if is_batch_item:
             return
 
         track = self.store.get_track(track_id)
@@ -1942,11 +2015,18 @@ class MainWindow(QMainWindow):
         track_id: str,
         message: str,
     ) -> None:
+        self._analysis_pending_track_ids.discard(track_id)
         self._genre_statuses[track_id] = "Failed"
-        self._set_genre_status(track_id, "Failed")
+        track = self.store.get_track(track_id)
+        if track is not None:
+            self._update_library_track_row(track)
+        else:
+            self._set_genre_status(track_id, "Failed")
         if self.selected_track_id == track_id:
             self.analyze_genres_button.setEnabled(True)
-        if self._finish_genre_batch_item(track_id):
+        is_batch_item = self._finish_genre_batch_item(track_id)
+        self._maybe_refresh_recommendations()
+        if is_batch_item:
             return
         self.statusBar().showMessage(
             f"Track analysis failed: {message}"
@@ -1958,6 +2038,15 @@ class MainWindow(QMainWindow):
         message: str,
     ) -> None:
         dialog.show_error(message)
+
+    def _handle_youtube_playlist_error(
+        self,
+        dialog: YouTubeSearchDialog,
+        message: str,
+    ) -> None:
+        self._playlist_import_active = False
+        self._maybe_refresh_recommendations()
+        self._handle_youtube_error(dialog, message)
 
     def _edit_selected_track(self) -> None:
         if self.selected_track_id is None:
@@ -2025,7 +2114,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._load_library()
+        self._update_library_track_row(updated_track)
         self._load_recommendations()
 
         QMessageBox.information(
@@ -2095,11 +2184,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self.recommendation_service.remove_track(track.id)
+        self._remove_library_track_row(track.id)
         self.selected_track_id = None
         if self.current_track_id == track.id:
             self.current_track_id = None
             self.playback_queue_service.clear()
-        self._load_library()
+        self._load_queue()
         self._load_recommendations()
         self.statusBar().showMessage(
             f"Deleted: {track.artist} — {track.title}"
@@ -2209,6 +2300,7 @@ class MainWindow(QMainWindow):
                 user_id=self.user_id,
                 track_id=track.id,
                 interaction_type=InteractionType.PLAY,
+                mood_context=self._get_active_mood_context(),
             )
         except ValueError as error:
             self.statusBar().showMessage(
@@ -2259,6 +2351,17 @@ class MainWindow(QMainWindow):
             f"Volume: {value}%"
         )
 
+    def _get_active_mood_context(self) -> str | None:
+        queue = self.playback_queue_service.queue
+
+        if (
+            queue is None
+            or queue.mode != QueueMode.SESSION
+        ):
+            return None
+
+        return self.session_mood_name
+
     def _record_interaction(
         self,
         interaction_type: InteractionType,
@@ -2276,6 +2379,7 @@ class MainWindow(QMainWindow):
                 user_id=self.user_id,
                 track_id=self.current_track_id,
                 interaction_type=interaction_type,
+                mood_context=self._get_active_mood_context(),
             )
         except ValueError as error:
             QMessageBox.warning(

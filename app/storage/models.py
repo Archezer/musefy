@@ -1,6 +1,14 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -33,6 +41,15 @@ class UserRecord(Base):
 
 class TrackRecord(Base):
     __tablename__ = "tracks"
+
+    __table_args__ = (
+        Index(
+            "uq_tracks_source_source_id",
+            "source",
+            "source_id",
+            unique=True,
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(64),
@@ -67,6 +84,10 @@ class TrackRecord(Base):
         nullable=True,
     )
     source: Mapped[str] = mapped_column(String(100))
+    source_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
     source_url: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
@@ -108,6 +129,10 @@ class InteractionRecord(Base):
         )
     )
     interaction_type: Mapped[str] = mapped_column(String(20))
+    mood_context: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True)
     )

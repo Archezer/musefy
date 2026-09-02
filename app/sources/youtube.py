@@ -317,7 +317,7 @@ class YouTubeSearchProvider:
                 break
 
         if result is None:
-            video_id = _extract_video_id(normalized_url)
+            video_id = extract_youtube_video_id(normalized_url)
 
             if video_id is not None:
                 return YouTubeCandidate(
@@ -673,7 +673,7 @@ def _validate_youtube_playlist_url(url: str) -> None:
         )
 
 
-def _extract_video_id(url: str) -> str | None:
+def extract_youtube_video_id(url: str) -> str | None:
     parsed_url = urlparse(url)
     hostname = (parsed_url.hostname or "").lower()
 

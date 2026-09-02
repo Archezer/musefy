@@ -86,6 +86,44 @@ def create_database() -> None:
                 )
             )
 
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "tracks"
+            )
+        }
+
+        if "source_id" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN source_id VARCHAR(255)"
+                )
+            )
+
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_tracks_source_source_id "
+                "ON tracks (source, source_id)"
+            )
+        )
+
+        interaction_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "interactions"
+            )
+        }
+
+        if "mood_context" not in interaction_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE interactions "
+                    "ADD COLUMN mood_context VARCHAR(50)"
+                )
+            )
+
 def create_session() -> Session:
     return SessionFactory()
 
