@@ -67,6 +67,7 @@ class SQLAlchemyMusicStore:
             id=track.id,
             title=track.title,
             artist=track.artist,
+            created_at=track.created_at,
             genres_json=json.dumps(track.genres),
             detected_genres_json=json.dumps(
                 [
@@ -427,6 +428,24 @@ class SQLAlchemyMusicStore:
             session.add(record)
             session.commit()
 
+    def delete_interactions(
+        self,
+        user_id: str,
+        track_id: str,
+        interaction_type: str,
+    ) -> int:
+        statement = delete(InteractionRecord).where(
+            InteractionRecord.user_id == user_id,
+            InteractionRecord.track_id == track_id,
+            InteractionRecord.interaction_type == interaction_type,
+        )
+
+        with self.session_factory() as session:
+            result = session.execute(statement)
+            session.commit()
+
+        return int(result.rowcount or 0)
+
     def list_interactions(self) -> list[Interaction]:
         statement = select(InteractionRecord).order_by(
             InteractionRecord.created_at
@@ -473,6 +492,7 @@ class SQLAlchemyMusicStore:
             id=record.id,
             title=record.title,
             artist=record.artist,
+            created_at=record.created_at,
             genres=tuple(json.loads(record.genres_json)),
             detected_genres=detected_genres,
             track_embedding=track_embedding,

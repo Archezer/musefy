@@ -109,6 +109,20 @@ def create_database() -> None:
                 )
             )
 
+        if "created_at" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN created_at DATETIME"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE tracks SET created_at = CURRENT_TIMESTAMP "
+                    "WHERE created_at IS NULL"
+                )
+            )
+
         connection.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "

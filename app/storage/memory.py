@@ -208,6 +208,25 @@ class InMemoryMusicStore:
 
         self.interactions.append(interaction)
 
+    def delete_interactions(
+        self,
+        user_id: str,
+        track_id: str,
+        interaction_type: str,
+    ) -> int:
+        before_count = len(self.interactions)
+        self.interactions = [
+            interaction
+            for interaction in self.interactions
+            if not (
+                interaction.user_id == user_id
+                and interaction.track_id == track_id
+                and interaction.interaction_type.value
+                == interaction_type
+            )
+        ]
+        return before_count - len(self.interactions)
+
     def list_tracks(self) -> list[Track]:
         return list(self.tracks.values())
 

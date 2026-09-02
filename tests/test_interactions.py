@@ -236,3 +236,34 @@ def test_stateful_interactions_are_idempotent_per_mood_context():
     assert repeated_sad_result.created is False
     assert happy_result.created is True
     assert len(store.list_interactions()) == 2
+
+
+def test_like_state_can_be_read_and_removed_across_mood_contexts():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="track-1",
+            title="Test Track",
+            artist="Test Artist",
+        )
+    )
+    service = InteractionService(store)
+
+    service.record(
+        "user-1",
+        "track-1",
+        InteractionType.LIKE,
+        mood_context="calm",
+    )
+    service.record(
+        "user-1",
+        "track-1",
+        InteractionType.LIKE,
+        mood_context="energy",
+    )
+
+    assert service.is_liked("user-1", "track-1") is True
+    assert service.remove_like("user-1", "track-1") is True
+    assert service.is_liked("user-1", "track-1") is False
+    assert store.list_interactions() == []

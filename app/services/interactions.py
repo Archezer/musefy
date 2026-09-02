@@ -81,6 +81,48 @@ class InteractionService:
             created=True,
         )
 
+    def is_liked(self, user_id: str, track_id: str) -> bool:
+        normalized_user_id = user_id.strip()
+        normalized_track_id = track_id.strip()
+
+        if not normalized_user_id:
+            raise ValueError("User ID must not be empty")
+
+        if not normalized_track_id:
+            raise ValueError("Track ID must not be empty")
+
+        return self._find_existing_like(
+            user_id=normalized_user_id,
+            track_id=normalized_track_id,
+        ) is not None
+
+    def remove_like(self, user_id: str, track_id: str) -> bool:
+        normalized_user_id = user_id.strip()
+        normalized_track_id = track_id.strip()
+
+        if not normalized_user_id:
+            raise ValueError("User ID must not be empty")
+
+        if not normalized_track_id:
+            raise ValueError("Track ID must not be empty")
+
+        if self.store.get_user(normalized_user_id) is None:
+            raise ValueError(
+                f"User does not exist: {normalized_user_id}"
+            )
+
+        if self.store.get_track(normalized_track_id) is None:
+            raise ValueError(
+                f"Track does not exist: {normalized_track_id}"
+            )
+
+        removed_count = self.store.delete_interactions(
+            normalized_user_id,
+            normalized_track_id,
+            InteractionType.LIKE.value,
+        )
+        return removed_count > 0
+
     def _find_existing_state(
         self,
         user_id: str,
@@ -96,6 +138,22 @@ class InteractionService:
                 == interaction_type
                 and interaction.mood_context
                 == mood_context
+            ):
+                return interaction
+
+        return None
+
+    def _find_existing_like(
+        self,
+        user_id: str,
+        track_id: str,
+    ) -> Interaction | None:
+        for interaction in self.store.list_interactions():
+            if (
+                interaction.user_id == user_id
+                and interaction.track_id == track_id
+                and interaction.interaction_type
+                == InteractionType.LIKE
             ):
                 return interaction
 

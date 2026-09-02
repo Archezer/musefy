@@ -80,3 +80,41 @@ def test_start_rejects_an_empty_queue() -> None:
         match="Playback queue must contain at least one track",
     ):
         PlaybackQueueService().start(())
+
+
+def test_previous_keeps_the_five_most_recent_tracks() -> None:
+    service = PlaybackQueueService()
+    service.start(tuple(f"track-{index}" for index in range(1, 8)))
+
+    for _ in range(6):
+        assert service.advance() is not None
+
+    previous_ids = []
+    for _ in range(5):
+        queue = service.previous()
+        assert queue is not None
+        assert queue.current_track_id is not None
+        previous_ids.append(queue.current_track_id)
+
+    assert previous_ids == ["track-6", "track-5", "track-4", "track-3", "track-2"]
+    assert service.previous() is None
+
+
+def test_history_limit_must_be_positive() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Queue history limit must be positive",
+    ):
+        PlaybackQueueService(history_limit=0)
+
+
+def test_clear_upcoming_keeps_the_current_track() -> None:
+    service = PlaybackQueueService()
+    service.start(("current", "playlist-next"))
+    service.enqueue("manual-next")
+
+    service.clear_upcoming()
+
+    assert service.queue is not None
+    assert service.queue.current_track_id == "current"
+    assert service.upcoming_track_ids() == ()

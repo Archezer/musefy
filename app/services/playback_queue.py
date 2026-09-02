@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import replace
 
@@ -5,9 +6,12 @@ from app.domain.models import PlaybackQueue, QueueMode
 
 
 class PlaybackQueueService:
-    def __init__(self) -> None:
+    def __init__(self, *, history_limit: int = 5) -> None:
+        if history_limit < 1:
+            raise ValueError("Queue history limit must be positive")
+
         self._queue: PlaybackQueue | None = None
-        self._history: list[str] = []
+        self._history = deque[str](maxlen=history_limit)
 
     @property
     def queue(self) -> PlaybackQueue | None:
@@ -117,6 +121,20 @@ class PlaybackQueueService:
     def clear(self) -> None:
         self._queue = None
         self._history.clear()
+
+    def clear_upcoming(self) -> None:
+        if self._queue is None:
+            return
+
+        if self._queue.current_track_id is None:
+            self._queue = None
+            return
+
+        self._queue = replace(
+            self._queue,
+            remaining_track_ids=(),
+            queued_track_ids=(),
+        )
 
     def upcoming_track_ids(self) -> tuple[str, ...]:
         if self._queue is None:

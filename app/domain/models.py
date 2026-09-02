@@ -42,6 +42,9 @@ class Track:
     id: str
     title: str
     artist: str
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
     genres: tuple[str, ...] = ()
     detected_genres: tuple[DetectedGenre, ...] = ()
     track_embedding: tuple[float, ...] | None = None

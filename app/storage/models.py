@@ -57,6 +57,9 @@ class TrackRecord(Base):
     )
     title: Mapped[str] = mapped_column(String(500))
     artist: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+    )
     genres_json: Mapped[str] = mapped_column(
         Text,
         default="[]",

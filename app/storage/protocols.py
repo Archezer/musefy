@@ -75,6 +75,14 @@ class MusicStore(Protocol):
     def add_interaction(self, interaction: Interaction) -> None:
         ...
 
+    def delete_interactions(
+        self,
+        user_id: str,
+        track_id: str,
+        interaction_type: str,
+    ) -> int:
+        ...
+
     def list_tracks(self) -> Iterable[Track]:
         ...
 
