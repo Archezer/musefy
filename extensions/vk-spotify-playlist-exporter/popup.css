@@ -1,0 +1,65 @@
+/* Popup styles for the VK + Spotify playlist exporter. */
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+body {
+  width: 320px;
+  margin: 0;
+  background: #1f1f1f;
+  color: #f1f3f4;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+
+p {
+  margin: 0;
+}
+
+.hint,
+.privacy {
+  color: #b9c0c9;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+button {
+  width: 100%;
+  margin: 16px 0 0;
+  padding: 9px 12px;
+  border: 1px solid #4ca8df;
+  border-radius: 6px;
+  background: #2374a5;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.status {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #8dd1ff;
+  font-size: 12px;
+}
+
+.status.error {
+  color: #ff9d9d;
+}
+
+.privacy {
+  margin-top: 12px;
+}

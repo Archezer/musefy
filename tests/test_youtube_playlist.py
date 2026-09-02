@@ -128,6 +128,34 @@ class FakeDownloadProvider:
     def __init__(self) -> None:
         self.download_calls = 0
 
+    def get_resource_type(self, url: str) -> str:
+        if "/playlist" in url:
+            return "playlist"
+
+        return "track"
+
+    def candidate_from_url(self, url: str) -> YouTubeCandidate:
+        return YouTubeCandidate(
+            video_id="video-1",
+            title="First track",
+            channel_title="Artist One",
+            duration_ms=None,
+            view_count=None,
+            url=url,
+        )
+
+    def playlist(self, url: str) -> list[YouTubeCandidate]:
+        return [
+            YouTubeCandidate(
+                video_id="video-1",
+                title="First track",
+                channel_title="Artist One",
+                duration_ms=None,
+                view_count=None,
+                url=url,
+            )
+        ]
+
     def download(
         self,
         candidate: YouTubeCandidate,
@@ -138,6 +166,26 @@ class FakeDownloadProvider:
         path = output_dir / f"{candidate.video_id}.mp3"
         path.touch()
         return path
+
+
+def test_load_url_auto_detects_youtube_track_or_playlist() -> None:
+    provider = FakeDownloadProvider()
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        provider,
+    )
+
+    imported_track = service.load_url(
+        "https://www.youtube.com/watch?v=video-1"
+    )
+    playlist_candidates = service.load_url(
+        "https://www.youtube.com/playlist?list=playlist-1"
+    )
+
+    assert isinstance(imported_track, Track)
+    assert isinstance(playlist_candidates, list)
+    assert len(playlist_candidates) == 1
+    assert provider.download_calls == 1
 
 
 class FakeYoutubeDownloadWriter:
@@ -281,8 +329,13 @@ def test_youtube_import_skips_existing_video_without_downloading(
 
 class FakeSpotifyProvider:
     def get_resource_type(self, url: str) -> str:
-        assert url == "spotify-playlist"
         return "playlist"
+
+    def has_saved_credentials(self) -> bool:
+        return False
+
+    def authenticate(self) -> None:
+        return None
 
     def get_playlist(self, url: str) -> SpotifyPlaylist:
         return SpotifyPlaylist(
@@ -347,6 +400,21 @@ def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
         0,
         1,
     ]
+
+
+def test_load_url_auto_detects_spotify_playlist() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+        FakeSpotifyProvider(),
+    )
+
+    result = service.load_url(
+        "https://open.spotify.com/playlist/playlist-1"
+    )
+
+    assert isinstance(result, SpotifyPlaylistSearchResult)
+    assert result.playlist_name == "Imported playlist"
 
 
 def test_spotify_album_search_uses_album_tracks() -> None:

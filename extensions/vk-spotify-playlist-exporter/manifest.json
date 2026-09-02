@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Music Recs — VK + Spotify Playlist Exporter",
+  "description": "Exports visible VK Music and Spotify playlist metadata for Local Music Recommendation System.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Export VK playlist",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://vk.ru/*",
+    "https://vk.com/*",
+    "https://open.spotify.com/*",
+    "https://play.spotify.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://vk.ru/*",
+        "https://vk.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://open.spotify.com/*",
+        "https://play.spotify.com/*"
+      ],
+      "js": [
+        "spotify-content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

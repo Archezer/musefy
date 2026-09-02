@@ -105,11 +105,9 @@ class TrackMetadataDialog(QDialog):
 
 class YouTubeSearchDialog(QDialog):
     search_requested = Signal(str)
-    spotify_search_requested = Signal(str)
-    spotify_oauth_search_requested = Signal(str)
+    authenticate_requested = Signal(str)
+    url_load_requested = Signal(str)
     import_requested = Signal(object)
-    url_import_requested = Signal(str)
-    playlist_requested = Signal(str)
     playlist_import_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -124,7 +122,7 @@ class YouTubeSearchDialog(QDialog):
         self._local_playlist_id: str | None = None
         self._imported_playlist_tracks: dict[int, str] = {}
 
-        self.setWindowTitle("Add track from YouTube")
+        self.setWindowTitle("Add from YouTube or Spotify")
         self.resize(760, 520)
 
         layout = QVBoxLayout(self)
@@ -137,20 +135,11 @@ class YouTubeSearchDialog(QDialog):
         )
         form_layout.addRow("Search:", self.query_edit)
 
-        self.spotify_url_edit = QLineEdit()
-        self.spotify_url_edit.setPlaceholderText(
-            "Spotify track, album, or playlist URL"
-        )
-        form_layout.addRow(
-            "Spotify URL:",
-            self.spotify_url_edit,
-        )
-
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText(
-            "https://www.youtube.com/watch?v=..."
+            "YouTube or Spotify track, playlist, or album URL"
         )
-        form_layout.addRow("Direct URL:", self.url_edit)
+        form_layout.addRow("URL:", self.url_edit)
 
         layout.addLayout(form_layout)
 
@@ -162,35 +151,21 @@ class YouTubeSearchDialog(QDialog):
         search_layout = QHBoxLayout()
         search_layout.addWidget(self.search_button)
 
-        self.url_button = QPushButton("Download URL")
-        self.url_button.clicked.connect(
-            self._request_url_import
+        self.authenticate_button = QPushButton("Authenticate")
+        self.authenticate_button.setToolTip(
+            "Authorize Spotify for private or collaborative playlists."
         )
-        search_layout.addWidget(self.url_button)
+        self.authenticate_button.clicked.connect(
+            self._request_authenticate
+        )
+        search_layout.addWidget(self.authenticate_button)
 
-        self.spotify_button = QPushButton("Load Spotify")
-        self.spotify_button.setToolTip(
-            "Import a public track, album, or playlist without signing in."
+        self.load_button = QPushButton("Load")
+        self.load_button.setToolTip(
+            "Automatically detect YouTube or Spotify resource type."
         )
-        self.spotify_button.clicked.connect(
-            self._request_spotify_search
-        )
-        search_layout.addWidget(self.spotify_button)
-
-        self.spotify_oauth_button = QPushButton("Load Spotify (sign in)")
-        self.spotify_oauth_button.setToolTip(
-            "Sign in to import private or collaborative playlists."
-        )
-        self.spotify_oauth_button.clicked.connect(
-            self._request_spotify_oauth_search
-        )
-        search_layout.addWidget(self.spotify_oauth_button)
-
-        self.playlist_button = QPushButton("Load playlist")
-        self.playlist_button.clicked.connect(
-            self._request_playlist
-        )
-        search_layout.addWidget(self.playlist_button)
+        self.load_button.clicked.connect(self._request_url_load)
+        search_layout.addWidget(self.load_button)
         search_layout.addStretch()
         layout.addLayout(search_layout)
 
@@ -205,7 +180,7 @@ class YouTubeSearchDialog(QDialog):
         layout.addWidget(self.results_list)
 
         self.status_label = QLabel(
-            "Enter a query and press Search."
+            "Search for a track or paste a YouTube/Spotify URL."
         )
         layout.addWidget(self.status_label)
 
@@ -242,31 +217,18 @@ class YouTubeSearchDialog(QDialog):
 
         self.search_requested.emit(query)
 
-    def _request_spotify_search(self) -> None:
-        url = self.spotify_url_edit.text().strip()
+    def _request_authenticate(self) -> None:
+        url = self.url_edit.text().strip()
 
         if not url:
             QMessageBox.warning(
                 self,
-                "Spotify search failed",
-                "Spotify URL must not be empty.",
+                "Authentication failed",
+                "Paste a YouTube or Spotify URL first.",
             )
             return
 
-        self.spotify_search_requested.emit(url)
-
-    def _request_spotify_oauth_search(self) -> None:
-        url = self.spotify_url_edit.text().strip()
-
-        if not url:
-            QMessageBox.warning(
-                self,
-                "Spotify OAuth failed",
-                "Spotify URL must not be empty.",
-            )
-            return
-
-        self.spotify_oauth_search_requested.emit(url)
+        self.authenticate_requested.emit(url)
 
     def _request_import(self) -> None:
         candidates = self.selected_candidates()
@@ -279,31 +241,18 @@ class YouTubeSearchDialog(QDialog):
         else:
             self.import_requested.emit(candidates[0])
 
-    def _request_url_import(self) -> None:
+    def _request_url_load(self) -> None:
         url = self.url_edit.text().strip()
 
         if not url:
             QMessageBox.warning(
                 self,
-                "Download failed",
-                "YouTube URL must not be empty.",
+                "Load failed",
+                "URL must not be empty.",
             )
             return
 
-        self.url_import_requested.emit(url)
-
-    def _request_playlist(self) -> None:
-        url = self.url_edit.text().strip()
-
-        if not url:
-            QMessageBox.warning(
-                self,
-                "Playlist loading failed",
-                "YouTube playlist URL must not be empty.",
-            )
-            return
-
-        self.playlist_requested.emit(url)
+        self.url_load_requested.emit(url)
 
     def _handle_selection_changed(self) -> None:
         selected_count = len(self.selected_candidates())
@@ -453,12 +402,9 @@ class YouTubeSearchDialog(QDialog):
     ) -> None:
         self._busy = busy
         self.search_button.setEnabled(not busy)
-        self.spotify_button.setEnabled(not busy)
-        self.spotify_oauth_button.setEnabled(not busy)
-        self.url_button.setEnabled(not busy)
-        self.playlist_button.setEnabled(not busy)
+        self.authenticate_button.setEnabled(not busy)
+        self.load_button.setEnabled(not busy)
         self.query_edit.setEnabled(not busy)
-        self.spotify_url_edit.setEnabled(not busy)
         self.url_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)

@@ -1,303 +1,373 @@
-# Music Recommendation System
+# Local Music Recommendation System
 
-Desktop-приложение для локальной музыкальной библиотеки: импорт треков,
-взаимодействия `Play / Skip / Like`, рекомендации и анализ музыкального стиля
-с помощью MAEST.
+A Windows desktop application for a **local music library**. It imports audio
+from files, YouTube and Spotify links, analyses each track locally, and builds
+recommendations without uploading the library or listening history to a cloud
+service.
 
-## Что важно знать после клонирования
+The app is designed around three complementary signals:
 
-GitHub хранит исходный код и небольшие конфигурационные файлы, но не хранит:
+- **MAEST** generates genre predictions and a 768-dimensional musical embedding
+  for every track;
+- **Music2Emo** estimates valence, arousal and mood-oriented tags;
+- local playback events and playlist context personalise ranking over time.
 
-- виртуальное окружение `.venv`;
-- локальную базу `data/music.db`;
-- аудиотеку `data/library/`;
-- cookies YouTube;
-- тяжёлый файл модели `data/models/maest/maest.onnx`.
+The project is a personal-library tool. Respect YouTube, Spotify and copyright
+rules when importing content.
 
-Поэтому на новом компьютере зависимости и модель нужно подготовить один раз.
-Повторно устанавливать их при каждом запуске не нужно.
+## Features
 
-## Требования
+- Import local audio files (`mp3`, `m4a`, `mp4`, `flac`, `wav`, `ogg`, `opus`).
+- Search YouTube, import a direct YouTube link, or load a YouTube playlist.
+- Import a Spotify track, album or playlist: Spotify supplies metadata, then
+  the app searches YouTube for matching audio candidates.
+- Use Firefox YouTube cookies automatically when a browser session is required.
+- Analyse new tracks in the background with CUDA when it is available.
+- Store genre hierarchy, mood profile and one reusable MAEST embedding per
+  track in a local SQLite database.
+- Browse the library, create playlists, delete tracks, and manage a separate
+  playback queue.
+- Play normally, shuffle, smart shuffle, or start a mood session.
+- Get three recommendation styles: global recommendations, track radio, and
+  mood-first recommendations.
+
+## How the recommendation system works
+
+Analysis happens once when a track is added or when **Reanalyze all** is used.
+The resulting features are saved locally, so ordinary recommendations do not
+run a neural network again.
+
+```text
+audio file
+  ├─ MAEST ──────> genre predictions + 768-D embedding
+  └─ Music2Emo ──> valence, arousal, mood tags and mood profiles
+                         ↓
+                  local SQLite database
+                         ↓
+playback / likes / skips / playlists / selected mood
+                         ↓
+                     ranked queue
+```
+
+### Global recommendations
+
+The main library recommendation feed combines local interactions, artist and
+genre affinity, exploration, and cooldown rules. It intentionally learns from
+the library the user actually owns.
+
+### Track radio
+
+Starting radio from a track ranks other tracks primarily by cosine similarity
+of their MAEST embeddings. This is useful when the user wants music that sounds
+musically close to the selected track, regardless of its popularity score.
+
+### Mood sessions
+
+Mood sessions prioritise mood features rather than the global library score.
+Feedback inside a mood session is stored separately, so liking a calm study
+track does not make it dominate the general library feed. The available profiles
+include melancholic, calm, happy, energetic, dark, romantic, focus and party.
+
+### Queue and smart shuffle
+
+Shuffle never rewrites a playlist. It creates a temporary playback order in the
+queue. Smart shuffle also inserts a suitable bridge track from the library after
+every two playlist tracks, while leaving the original playlist untouched.
+
+The **Back** button restarts the current track when it has already progressed;
+press it again to return to the previous queue item. **Next** only moves through
+the queue; **Skip** additionally records negative feedback.
+
+## Requirements
 
 - Windows 10/11 x64;
-- Python 3.12;
+- Python 3.12 or 3.13;
 - [uv](https://docs.astral.sh/uv/);
-- NVIDIA GPU и свежий NVIDIA Driver — рекомендуется для быстрого MAEST
-  inference;
-- Firefox — если нужно автоматически использовать YouTube-сессию;
-- FFmpeg с shared DLL-библиотеками — для чтения аудио через TorchCodec.
+- FFmpeg shared build for TorchCodec audio decoding;
+- NVIDIA GPU with a current driver is strongly recommended for fast analysis;
+- Firefox is recommended for reliable YouTube authentication when YouTube asks
+  to verify the browser session.
 
-PyTorch и `onnxruntime-gpu` устанавливаются как Python-зависимости проекта.
-Отдельно устанавливать CUDA Toolkit обычно не требуется: CUDA-зависимости
-поставляются вместе с PyTorch, но NVIDIA Driver должен быть установлен.
+PyTorch, CUDA runtime packages and ONNX Runtime GPU are installed by the Python
+environment. A separate CUDA Toolkit is normally not required, but the NVIDIA
+driver must be present.
 
-## Установка
+## Installation
 
-Клонируй репозиторий и перейди в его папку:
+Clone the repository and enter it:
 
 ```powershell
 git clone https://github.com/Archezer/music-recommendation-system.git
 cd music-recommendation-system
 ```
 
-Установи зависимости из `uv.lock`:
+Install the locked Python environment:
 
 ```powershell
 $env:UV_CACHE_DIR = "$pwd\.uv-cache"
 uv sync --locked
 ```
 
-Команда создаст `.venv` и установит в том числе:
+### Install FFmpeg
 
-- PyTorch с CUDA 12.6;
-- TorchAudio и TorchCodec;
-- ONNX Runtime GPU;
-- PySide6;
-- yt-dlp;
-- библиотеки для notebook и визуализации.
-
-### Проверка CUDA для ONNX Runtime
-
-```powershell
-uv run python -c "import torch, onnxruntime as ort; print('Torch CUDA:', torch.cuda.is_available()); print('ONNX providers:', ort.get_available_providers())"
-```
-
-Ожидаемый результат содержит:
-
-```text
-Torch CUDA: True
-CUDAExecutionProvider
-```
-
-MAEST выбирает `CUDAExecutionProvider`, если он доступен, и использует CPU как
-резервный вариант. Подробнее: [ONNX Runtime CUDA Execution Provider](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
-
-## FFmpeg и TorchCodec
-
-Установи именно shared-сборку FFmpeg:
+Install the shared Windows build used by TorchCodec:
 
 ```powershell
 winget install --id Gyan.FFmpeg.Shared -e
 ```
 
-Полностью закрой и заново открой VS Code/PowerShell, затем проверь:
+Close and reopen the terminal (or VS Code), then verify it:
 
 ```powershell
 ffmpeg -version
 ```
 
-Если команда не найдена, добавь папку `bin` установленного FFmpeg в
-пользовательский `PATH`. Нужны DLL-библиотеки `avcodec`, `avformat`, `avutil`
-и другие, поэтому обычного Python-пакета `ffmpeg` недостаточно.
+If PowerShell still cannot find `ffmpeg`, make sure the package's `bin` folder
+is in `PATH`, then reopen the terminal again. This is a system installation,
+not a package to add through `uv`.
 
-## Файл MAEST
+### Add the model files
 
-Модель MAEST занимает больше 300 МБ и намеренно исключена из обычного Git.
-Создай папку:
-
-```powershell
-New-Item -ItemType Directory -Force data\models\maest
-```
-
-Положи файл:
+Large model weights are deliberately excluded from Git. Obtain the approved
+model artifacts separately and place them at these paths before running
+analysis:
 
 ```text
 data/models/maest/maest.onnx
+data/models/music2emo/inference/data/btc_model_large_voca.pt
 ```
 
-В проект подключён обновлённый checkpoint
-`discogs-maest-30s-pw-519l-2.onnx`. Файл `data/models/maest/maest.json` уже
-входит в репозиторий и содержит названия 519 классов Discogs23. ONNX-файл
-нужно передать отдельно или скачать из релиза проекта, когда он будет
-опубликован.
+The repository already contains the accompanying MAEST labels and Music2Emo
+support files. Do not commit model binaries, cookies, tokens, your database, or
+audio library; `.gitignore` excludes them on purpose.
 
-## Запуск приложения
-
-Запускай из корня проекта:
+### Optional CUDA check
 
 ```powershell
-$env:UV_CACHE_DIR = "$pwd\.uv-cache"
+uv run python -c "import torch, onnxruntime as ort; print('Torch CUDA:', torch.cuda.is_available()); print('ONNX providers:', ort.get_available_providers())"
+```
+
+For GPU inference, the output should include `Torch CUDA: True` and
+`CUDAExecutionProvider`. The app automatically falls back to CPU if CUDA is
+unavailable, but genre and mood analysis will be much slower.
+
+## Run the desktop app
+
+```powershell
 uv run python -m app.desktop
 ```
 
-Папки `data/`, `data/library/` и база создаются автоматически при первом
-запуске.
-
-## Notebook с pipeline MAEST
-
-Для наглядной проверки открой:
+The app stores its local state in:
 
 ```text
-notebooks/maest_pipeline.ipynb
+data/music.db                 SQLite library, playlists and interactions
+data/library/                 imported audio files
+data/youtube_cookies.txt      optional exported YouTube cookies
+data/spotify_token.json       optional Spotify OAuth token
 ```
 
-В VS Code выбери kernel из `.venv`, затем выполни ячейки по порядку. Notebook
-показывает:
+None of these files are meant to be committed or shared.
 
-```text
-audio file
-    -> 30-second overlapping windows
-    -> log-mel spectrogram
-    -> MAEST ONNX inference
-    -> 519 genre scores
-    -> ranked genres for the track
-```
+## Importing music
 
-Текущие формы данных:
+Open **Add from YouTube or Spotify** from the desktop app. The dialog accepts a
+search query or one URL and detects the source automatically.
 
-```text
-windows:       (N, 480000)
-mel:           (N, 1876, 96)
-window_scores: (N, 519)
-mean_scores:   (519,)
-```
+### Local files
 
-Итоговые предсказания фильтруются по `score >= 0.1`. Для каждого также
-сохраняются rank и rank-weight. В базе и UI используется родительский жанр
-(например, `Folk, World, & Country`), а поджанр используется рекомендациями
-только при `score >= 0.25`. Это не позволяет слабому предсказанию вроде
-`Flamenco` становиться главным жанром трека.
+Use the local-file import action and select supported audio files. The app
+copies them into `data/library/`, reads tags where possible, saves the track in
+the database, and schedules analysis in the background.
 
-## YouTube: поиск и скачивание
+### YouTube search and direct URLs
 
-Приложение поддерживает:
+- Enter text and press **Search** to review YouTube candidates.
+- Paste a normal YouTube video URL and press **Load** to import its audio.
+- Paste a canonical playlist URL such as
+  `https://www.youtube.com/playlist?list=...` and press **Load** to retrieve
+  its items before downloading selected tracks.
 
-- поиск по названию;
-- скачивание выбранного результата;
-- скачивание по прямому YouTube URL;
-- Firefox cookies как основной источник авторизации;
-- локальный cookies-файл как резервный источник.
+The importer requests audio-only formats and prefers M4A/AAC where available;
+it does not intentionally save the full video. A YouTube video already present
+in the library is recognised by source ID, so it is not duplicated. If the
+database record exists but the local audio file was removed, importing it again
+restores that record's file.
 
-### Вариант 1: cookies из Firefox
+Playlist import shows successful and failed items and offers a retry for failed
+ones. Some videos may still be unavailable because they are private,
+region-restricted, age-restricted, removed, or require a browser session.
 
-1. Установи Firefox.
-2. Войди в YouTube.
-3. Открой YouTube в Firefox хотя бы один раз.
-4. При скачивании приложение сначала попробует использовать Firefox-профиль.
+#### Firefox cookies for YouTube
 
-Если появляется ошибка о невозможности скопировать cookies, полностью закрой
-Firefox и повтори операцию. База cookies Firefox может быть заблокирована самим
-браузером.
+YouTube occasionally returns an error such as *“Sign in to confirm you're not
+a bot.”* The app first tries to read cookies from the default Firefox profile.
 
-### Вариант 2: локальный cookies-файл
+1. Install Firefox if needed.
+2. Sign in to YouTube in Firefox and confirm the browser can open the target
+   video normally.
+3. **Close Firefox completely** before importing in the app.
+4. Retry the import.
 
-Если Firefox не сработал, экспортируй cookies YouTube в Netscape-формате и
-сохрани файл по адресу:
+Firefox locks its cookie database while it is running; this is why closing it is
+required at the moment of cookie extraction. You do not need to keep Firefox
+closed while listening to music. Open it again after the import if you like;
+for another import that needs fresh browser cookies, close it again first.
 
-```text
-data/youtube_cookies.txt
-```
-
-Файл игнорируется Git и не должен отправляться на GitHub. Приложение подхватит
-его автоматически. Также путь можно задать переменной:
+If Firefox cannot be used, export your own fresh YouTube cookies in Netscape
+cookie-file format to `data/youtube_cookies.txt`, then retry. An alternative
+location can be configured with:
 
 ```powershell
 $env:YTDLP_COOKIES_FILE = "C:\path\to\youtube_cookies.txt"
 ```
 
-Полезные инструкции yt-dlp:
+Cookie files and browser sessions are sensitive credentials. Never commit them,
+send them to another person, or use cookies from an account you do not control.
 
-- [How do I pass cookies to yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)
-- [Exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)
+### Spotify links and authorization
 
-## Spotify: треки и плейлисты
+Paste a Spotify track, album or playlist URL into the same URL field and press
+**Load**.
 
-В поле `Spotify URL` можно вставить ссылку на трек, альбом или плейлист.
+Spotify is used for **track metadata and playlist order**, not as an audio
+download source. For every Spotify item, the app searches YouTube, lets the
+user review candidates where appropriate, and imports the matched audio from
+YouTube. Check each match and make sure your use complies with the platforms'
+terms and applicable law.
 
-- для трека приложение получает название и исполнителя через Spotify oEmbed,
-  затем показывает несколько совпадений YouTube;
-- для альбома приложение получает все доступные треки в исходном порядке;
-- для открытого плейлиста кнопка `Load Spotify` постранично читает метаданные,
-  которые использует веб-плеер Spotify, без входа;
-- если Spotify временно блокирует этот неофициальный путь, приложение использует
-  доступные preview-метаданные как резервный вариант;
-- кнопка `Load Spotify (sign in)` открывает авторизацию Spotify и остаётся
-  надёжным способом для private- и collaborative-плейлистов;
-- затем приложение подбирает по одному лучшему совпадению YouTube для каждого
-  найденного трека и сохраняет исходный порядок в локальном плейлисте;
-- найденные совпадения можно снять галочками перед скачиванием;
-- исходные названия и исполнители Spotify сохраняются, даже если аудио скачано
-  с YouTube.
+Public Spotify links can often work without authentication. Spotify OAuth is
+recommended for a more reliable metadata fallback and is required for private
+or collaborative playlists that your account can access.
 
-Для OAuth один раз создай приложение в
-[Spotify Developer Dashboard](https://developer.spotify.com/dashboard). В
-настройках приложения добавь Redirect URI:
+#### Configure Spotify OAuth once
 
-```text
-http://127.0.0.1:8888/callback
-```
+1. Create an application in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Add this Redirect URI to the application's settings exactly:
 
-Скопируй `SPOTIFY_CLIENT_ID` в локальный `.env` рядом с `.env.example`:
+   ```text
+   http://127.0.0.1:8888/callback
+   ```
 
-```text
-SPOTIFY_CLIENT_ID=your-client-id
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
-```
+3. Copy `.env.example` to `.env` in the project root and set the client ID:
 
-`Client Secret` для desktop OAuth с PKCE не используется. При первом нажатии
-`Load Spotify (sign in)` приложение откроет браузер, пользователь нажмёт
-`Allow`, а refresh token сохранится в `data/spotify_token.json`. Этот файл
-игнорируется Git. Spotify-аудио не скачивается: из Spotify берутся только
-названия и исполнители, после чего приложение ищет аудио на YouTube.
-В Development Mode добавь Spotify-аккаунт пользователя в `Settings` →
-`Users Management` → `Add new user`; владелец приложения должен иметь Spotify
-Premium.
+   ```dotenv
+   SPOTIFY_CLIENT_ID=your_spotify_client_id
+   SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+   ```
 
-## Локальная библиотека и удаление
+4. In the import dialog, use **Authenticate** with a Spotify URL. The app opens
+   the default browser, uses OAuth with PKCE, and waits for the local callback.
+5. Approve access. The token is stored locally in `data/spotify_token.json` and
+   used automatically by later Spotify imports.
 
-Импортированные аудиофайлы копируются в `data/library/`.
+No Spotify client secret is required. If the Spotify application is still in
+Development Mode, add the Spotify account as a test user in the Developer
+Dashboard. Never commit `.env` or `data/spotify_token.json`.
 
-Кнопка `Delete` удаляет одновременно:
+### VK Music and Spotify browser exporter
 
-- файл, если он существует;
-- запись трека из базы;
-- связанные записи взаимодействий.
+The development extension in
+[`extensions/vk-spotify-playlist-exporter`](extensions/vk-spotify-playlist-exporter) exports
+the visible metadata of the currently open VK Music or Spotify playlist to a
+JSON file. It collects only track order, artist, title and duration; it does not
+read cookies, tokens, audio URLs or audio files.
 
-Если файл уже отсутствует, запись трека всё равно удаляется из базы.
+For Spotify, this is an alternative to API-based metadata import: it works from
+the user's already-open Spotify Web Player and therefore does not require the
+project's Spotify client ID, OAuth callback, or Dashboard test-user allowlist.
+Install and usage instructions are in the extension's
+[README](extensions/vk-spotify-playlist-exporter/README.md).
 
-## Диагностика
+## Analysis pipeline
 
-### `ModuleNotFoundError: No module named 'app'`
+New and restored tracks are analysed asynchronously, so the UI remains usable
+while another track is being imported.
 
-Запускай команды из корня проекта и используй модульный запуск:
+1. Audio is decoded to mono 16 kHz.
+2. The track is split into overlapping 30-second windows; it is not reduced to
+   only its first 30 seconds.
+3. MAEST processes all windows, averages their results, stores ranked genres,
+   and stores one normalized 768-dimensional embedding for the whole track.
+4. Music2Emo derives valence, arousal, tags and the final mood profiles.
+
+MAEST and Music2Emo prefer CUDA when available. The heavier mood components are
+released after approximately five minutes without analysis work, so they do not
+stay resident forever. Existing database values are reused until a track is
+explicitly reanalysed.
+
+For a visual, step-by-step inspection of the MAEST preprocessing and output,
+open [notebooks/maest_pipeline.ipynb](notebooks/maest_pipeline.ipynb).
+
+## Library management
+
+- **Delete** removes the selected track's database record, its playlist and
+  interaction entries, and its local file when it is located in `data/library/`.
+  If the file is already missing, Delete still removes the orphaned record.
+- Right-click a track to add it to the end of the queue. During a playlist
+  session, manually queued tracks play next after the current item.
+- Use **Reanalyze all** after replacing models or changing analysis logic.
+
+## Development checks
+
+Run these from the project root:
 
 ```powershell
-uv run python -m app.desktop
-uv run python -m pytest -q
+uv run pytest -q
+uv run ruff check app tests
 ```
 
-### `Could not load libtorchcodec`
+If imports fail only in a direct `pytest` invocation, use `uv run pytest` from
+the repository root so the project environment and package path are active.
 
-Проверь, что установлен shared FFmpeg и команда `ffmpeg -version` работает в
-том же терминале, из которого запускается приложение.
+## Troubleshooting
 
-### Нет `CUDAExecutionProvider`
+### `ffmpeg` is not recognised
 
-Проверь, что установлен `onnxruntime-gpu`, а не только CPU-пакет:
+Install `Gyan.FFmpeg.Shared`, confirm that its `bin` directory is in `PATH`, and
+restart the terminal or VS Code. Then run `ffmpeg -version` again.
 
-```powershell
-uv sync --locked
-uv run python -c "import onnxruntime as ort; print(ort.get_available_providers())"
-```
+### `TorchCodec is required` or a TorchCodec DLL cannot load
 
-### YouTube просит войти или подтверждает, что пользователь не бот
+Run `uv sync --locked`, install the FFmpeg shared build, and restart the
+terminal. Verify `ffmpeg -version` before retrying the app.
 
-Обнови Firefox cookies или экспортируй свежий файл в
-`data/youtube_cookies.txt`. Не добавляй cookies в Git.
+### YouTube says that sign-in or cookies are required
 
-## Текущий статус ML-части
+Sign in to YouTube in Firefox, close Firefox completely, and retry. If that
+does not work, replace `data/youtube_cookies.txt` with a fresh export from your
+own browser session. Cookies can expire, and YouTube availability varies by
+video and region.
 
-Уже готово:
+### YouTube says it cannot copy the Firefox cookie database
 
-- загрузка и ресэмплинг аудио в 16 кГц;
-- окна по 30 секунд с перекрытием 15 секунд;
-- MAEST ONNX inference;
-- использование CUDA через ONNX Runtime;
-- score threshold и учёт ранга;
-- разделение полного названия на родительский жанр и поджанр;
-- массовый reanalysis всех локальных треков из UI;
-- автоматический анализ жанров после локального и YouTube-импорта;
-- демонстрационный notebook.
+Firefox is still running in the background. Close every Firefox window and
+ensure its process has exited, then retry. Use the exported-cookie fallback if
+Firefox cannot be closed.
 
-Следующий этап — подключить автоматическое определение жанров к импорту
-треков и сохранять жанровые признаки для рекомендательной модели.
+### Spotify OAuth cannot finish
+
+Confirm that `.env` contains `SPOTIFY_CLIENT_ID` and that the Redirect URI in
+the Spotify dashboard exactly matches `http://127.0.0.1:8888/callback`. Also
+ensure port `8888` is free while authentication is running.
+
+### Genre analysis runs on CPU
+
+Run the CUDA check above. Update the NVIDIA driver if `torch.cuda.is_available()`
+is `False` or `CUDAExecutionProvider` is absent. CPU mode is supported but
+slower.
+
+### A model file is missing
+
+Restore the required files under `data/models/` from the project's approved
+model-artifact source. They are intentionally not stored in Git because of
+their size.
+
+## Privacy and responsible use
+
+The database, audio files, embeddings, moods, cookies and Spotify token remain
+on the local machine unless you choose to copy them elsewhere. Browser cookies
+and OAuth tokens grant access to an account: treat them like passwords.
+
+This project does not remove platform restrictions. Content availability,
+authentication requirements and import success are controlled by YouTube,
+Spotify, rights holders and local law.

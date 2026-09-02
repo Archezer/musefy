@@ -2,14 +2,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 
 from app.domain.models import Track
 from app.ingestion.audio import AudioIngestionService
 from app.sources.spotify import (
+    SUPPORTED_SPOTIFY_HOSTS,
     SpotifyMetadataProvider,
     SpotifyTrack,
 )
 from app.sources.youtube import (
+    SUPPORTED_YOUTUBE_HOSTS,
     YouTubeCandidate,
     YouTubeSearchProvider,
     extract_youtube_video_id,
@@ -85,6 +88,61 @@ class YouTubeImportService:
         return SpotifySearchResult(
             query=spotify_track.search_query,
             candidates=tuple(candidates),
+        )
+
+    def load_url(
+        self,
+        url: str,
+    ) -> (
+        Track
+        | list[YouTubeCandidate]
+        | SpotifySearchResult
+        | SpotifyPlaylistSearchResult
+    ):
+        normalized_url = url.strip()
+        source = self._get_url_source(normalized_url)
+
+        if source == "youtube":
+            resource_type = self.provider.get_resource_type(
+                normalized_url
+            )
+            if resource_type == "track":
+                return self.download_and_import_url(normalized_url)
+
+            return self.get_playlist(normalized_url)
+
+        return self.search_from_spotify(
+            normalized_url,
+            use_oauth=(
+                self.spotify_provider.has_saved_credentials()
+            ),
+        )
+
+    def authenticate_url(self, url: str) -> str:
+        source = self._get_url_source(url.strip())
+
+        if source == "youtube":
+            return (
+                "YouTube uses browser cookies automatically; "
+                "no separate sign-in is required."
+            )
+
+        self.spotify_provider.authenticate()
+        return "Spotify authorization completed."
+
+    @staticmethod
+    def _get_url_source(url: str) -> str:
+        parsed_url = urlparse(url)
+        hostname = (parsed_url.hostname or "").casefold()
+
+        if hostname in SUPPORTED_YOUTUBE_HOSTS:
+            return "youtube"
+
+        if hostname in SUPPORTED_SPOTIFY_HOSTS:
+            return "spotify"
+
+        raise ValueError(
+            "URL must be a supported YouTube or Spotify link."
         )
 
     def search_playlist_from_spotify(

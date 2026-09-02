@@ -1249,14 +1249,14 @@ class MainWindow(QMainWindow):
                 query,
             )
         )
-        dialog.spotify_search_requested.connect(
-            lambda url: self._start_spotify_search(
+        dialog.authenticate_requested.connect(
+            lambda url: self._start_url_authentication(
                 dialog,
                 url,
             )
         )
-        dialog.spotify_oauth_search_requested.connect(
-            lambda url: self._start_spotify_oauth_search(
+        dialog.url_load_requested.connect(
+            lambda url: self._start_url_load(
                 dialog,
                 url,
             )
@@ -1267,18 +1267,6 @@ class MainWindow(QMainWindow):
                     dialog,
                     candidate,
                 )
-            )
-        )
-        dialog.url_import_requested.connect(
-            lambda url: self._start_youtube_url_import(
-                dialog,
-                url,
-            )
-        )
-        dialog.playlist_requested.connect(
-            lambda url: self._start_youtube_playlist_load(
-                dialog,
-                url,
             )
         )
         dialog.playlist_import_requested.connect(
@@ -1318,7 +1306,7 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
-    def _start_spotify_search(
+    def _start_url_authentication(
         self,
         dialog: YouTubeSearchDialog,
         url: str,
@@ -1326,17 +1314,14 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Reading Spotify playlist...")
+        dialog.set_busy(True, "Authenticating URL source...")
 
         thread = YouTubeTaskThread(
-            lambda: (
-                self.youtube_import_service
-                .search_from_spotify(url)
-            ),
+            lambda: self.youtube_import_service.authenticate_url(url),
             self,
         )
         thread.result_ready.connect(
-            lambda result: self._handle_spotify_search_result(
+            lambda result: self._handle_authentication_result(
                 dialog,
                 result,
             )
@@ -1349,7 +1334,7 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
-    def _start_spotify_oauth_search(
+    def _start_url_load(
         self,
         dialog: YouTubeSearchDialog,
         url: str,
@@ -1357,17 +1342,14 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Opening Spotify authorization...")
+        dialog.set_busy(True, "Detecting and loading URL...")
 
         thread = YouTubeTaskThread(
-            lambda: self.youtube_import_service.search_from_spotify(
-                url,
-                use_oauth=True,
-            ),
+            lambda: self.youtube_import_service.load_url(url),
             self,
         )
         thread.result_ready.connect(
-            lambda result: self._handle_spotify_search_result(
+            lambda result: self._handle_url_load_result(
                 dialog,
                 result,
             )
@@ -1398,34 +1380,6 @@ class MainWindow(QMainWindow):
         )
         thread.result_ready.connect(
             lambda result: self._handle_youtube_import_result(
-                dialog,
-                result,
-            )
-        )
-        thread.error_occurred.connect(
-            lambda message: self._handle_youtube_error(
-                dialog,
-                message,
-            )
-        )
-        self._start_youtube_thread(thread, dialog)
-
-    def _start_youtube_playlist_load(
-        self,
-        dialog: YouTubeSearchDialog,
-        url: str,
-    ) -> None:
-        if self._youtube_thread is not None:
-            return
-
-        dialog.set_busy(True, "Loading YouTube playlist...")
-
-        thread = YouTubeTaskThread(
-            lambda: self.youtube_import_service.get_playlist(url),
-            self,
-        )
-        thread.result_ready.connect(
-            lambda result: self._handle_youtube_playlist_result(
                 dialog,
                 result,
             )
@@ -1505,37 +1459,6 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
-    def _start_youtube_url_import(
-        self,
-        dialog: YouTubeSearchDialog,
-        url: str,
-    ) -> None:
-        if self._youtube_thread is not None:
-            return
-
-        dialog.set_busy(True, "Downloading YouTube URL...")
-
-        thread = YouTubeTaskThread(
-            lambda: (
-                self.youtube_import_service
-                .download_and_import_url(url)
-            ),
-            self,
-        )
-        thread.result_ready.connect(
-            lambda result: self._handle_youtube_import_result(
-                dialog,
-                result,
-            )
-        )
-        thread.error_occurred.connect(
-            lambda message: self._handle_youtube_error(
-                dialog,
-                message,
-            )
-        )
-        self._start_youtube_thread(thread, dialog)
-
     def _start_youtube_thread(
         self,
         thread: YouTubeTaskThread,
@@ -1557,6 +1480,50 @@ class MainWindow(QMainWindow):
 
         if dialog.isVisible():
             dialog.set_busy(False, dialog.status_label.text())
+
+    def _handle_authentication_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, str):
+            self._handle_youtube_error(
+                dialog,
+                "Authentication returned an invalid result.",
+            )
+            return
+
+        dialog.set_busy(False, result)
+        QMessageBox.information(
+            dialog,
+            "Authentication",
+            result,
+        )
+
+    def _handle_url_load_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if isinstance(result, Track):
+            self._handle_youtube_import_result(dialog, result)
+            return
+
+        if isinstance(
+            result,
+            (SpotifySearchResult, SpotifyPlaylistSearchResult),
+        ):
+            self._handle_spotify_search_result(dialog, result)
+            return
+
+        if isinstance(result, list):
+            self._handle_youtube_playlist_result(dialog, result)
+            return
+
+        self._handle_youtube_error(
+            dialog,
+            "URL loading returned an invalid result.",
+        )
 
     def _handle_youtube_search_result(
         self,

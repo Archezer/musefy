@@ -362,6 +362,21 @@ class YouTubeSearchProvider:
             url=normalized_url,
         )
 
+    def get_resource_type(self, url: str) -> str:
+        normalized_url = url.strip()
+        _validate_youtube_url(normalized_url)
+        parsed_url = urlparse(normalized_url)
+
+        if extract_youtube_video_id(normalized_url) is not None:
+            return "track"
+
+        if parse_qs(parsed_url.query).get("list"):
+            return "playlist"
+
+        raise ValueError(
+            "URL must point to a YouTube track or playlist."
+        )
+
     def download(
         self,
         candidate: YouTubeCandidate,

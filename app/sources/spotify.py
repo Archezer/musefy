@@ -121,6 +121,23 @@ class SpotifyOAuthClient:
 
         return self._authorize()
 
+    def has_saved_credentials(self) -> bool:
+        token = self._load_token()
+        if token is None:
+            return False
+
+        access_token = str(token.get("access_token") or "")
+        expires_at = float(token.get("expires_at") or 0.0)
+        refresh_token = str(token.get("refresh_token") or "")
+
+        return bool(
+            refresh_token
+            or (
+                access_token
+                and expires_at > time.time() + 60
+            )
+        )
+
     def get_json(
         self,
         path: str,
@@ -381,6 +398,12 @@ class SpotifyMetadataProvider:
         self.oauth_client = oauth_client or SpotifyOAuthClient(
             timeout=timeout,
         )
+
+    def authenticate(self) -> None:
+        self.oauth_client.get_access_token()
+
+    def has_saved_credentials(self) -> bool:
+        return self.oauth_client.has_saved_credentials()
 
     def get_track(self, url: str) -> SpotifyTrack:
         normalized_url = url.strip()
