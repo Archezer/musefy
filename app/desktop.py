@@ -9,6 +9,7 @@ from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
+from app.services.playlist_bridge import PlaylistBridgeServer
 from app.services.recommendations import RecommendationService
 from app.services.track_similarity import TrackSimilarityService
 from app.services.tracks import TrackManagementService
@@ -48,6 +49,17 @@ def main() -> None:
     )
 
     qt_application = QApplication(sys.argv)
+
+    try:
+        playlist_bridge = PlaylistBridgeServer()
+        playlist_bridge.start()
+    except OSError as error:
+        print(
+            f"Playlist browser bridge is unavailable: {error}",
+            file=sys.stderr,
+        )
+    else:
+        qt_application.aboutToQuit.connect(playlist_bridge.stop)
 
     window = MainWindow(
         store=store,

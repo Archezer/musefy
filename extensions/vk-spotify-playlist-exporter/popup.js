@@ -1,6 +1,7 @@
 // This popup chooses the source from the active playlist tab.
 const exportButton = document.querySelector("#export-button");
 const statusElement = document.querySelector("#status");
+const DESKTOP_BRIDGE_URL = "http://127.0.0.1:8765/api/playlist-import";
 
 function setStatus(text, { error = false } = {}) {
   statusElement.textContent = text;
@@ -14,6 +15,10 @@ function sourceForUrl(url) {
 
   if (/^https:\/\/(?:open|play)\.spotify\.com\//i.test(url ?? "")) {
     return "spotify";
+  }
+
+  if (/^https:\/\/music\.yandex\.ru\//i.test(url ?? "")) {
+    return "yandex";
   }
 
   return null;
@@ -32,7 +37,9 @@ function downloadExport(payload) {
   const url = URL.createObjectURL(
     new Blob([content], { type: "application/json" }),
   );
-  const filename = `music-recs-vk/${filenamePart(payload.playlist.title)}.json`;
+  const filename = `music-recs-${payload.playlist.source}/${filenamePart(
+    payload.playlist.title,
+  )}.json`;
 
   chrome.downloads.download({ url, filename, saveAs: true }, () => {
     URL.revokeObjectURL(url);
@@ -48,11 +55,45 @@ function downloadExport(payload) {
   });
 }
 
+async function saveExportToDesktop(payload) {
+  const response = await fetch(DESKTOP_BRIDGE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok || !result.ok) {
+    throw new Error(result.error || "Desktop app is unavailable.");
+  }
+
+  setStatus(
+    `Saved ${result.track_count} tracks to ${result.relative_path}.`,
+  );
+}
+
+async function saveExport(payload) {
+  try {
+    await saveExportToDesktop(payload);
+  } catch {
+    setStatus("Desktop app is unavailable; saving JSON to Downloads…");
+    downloadExport(payload);
+  }
+}
+
 async function sendToPlaylistTab(tabId, source) {
   const message = {
-    type: source === "vk" ? "VK_EXPORT_PLAYLIST" : "SPOTIFY_EXPORT_PLAYLIST",
+    type: {
+      vk: "VK_EXPORT_PLAYLIST",
+      spotify: "SPOTIFY_EXPORT_PLAYLIST",
+      yandex: "YANDEX_EXPORT_PLAYLIST",
+    }[source],
   };
-  const file = source === "vk" ? "content.js" : "spotify-content.js";
+  const file = {
+    vk: "content.js",
+    spotify: "spotify-content.js",
+    yandex: "yandex-content.js",
+  }[source];
 
   try {
     return await chrome.tabs.sendMessage(tabId, message);
@@ -83,17 +124,22 @@ exportButton.addEventListener("click", async () => {
     const source = sourceForUrl(tab?.url);
 
     if (!tab?.id || !source) {
-      throw new Error("Open a VK Music or Spotify playlist first.");
+      throw new Error("Open a VK Music, Spotify or Yandex Music playlist first.");
     }
 
-    setStatus(`Loading ${source === "vk" ? "VK" : "Spotify"} playlist…`);
+    const sourceName = {
+      vk: "VK",
+      spotify: "Spotify",
+      yandex: "Yandex Music",
+    }[source];
+    setStatus(`Loading ${sourceName} playlist…`);
     const payload = await sendToPlaylistTab(tab.id, source);
 
     if (!payload?.ok) {
       throw new Error(payload?.error || "VK playlist export failed.");
     }
 
-    downloadExport(payload.export);
+    await saveExport(payload.export);
   } catch (error) {
     setStatus(error.message || "VK playlist export failed.", { error: true });
   } finally {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Music Recs — VK + Spotify Playlist Exporter",
-  "description": "Exports visible VK Music and Spotify playlist metadata for Local Music Recommendation System.",
+  "name": "Music Recs — Playlist Exporter",
+  "description": "Exports visible VK Music, Spotify and Yandex Music playlist metadata for Local Music Recommendation System.",
   "version": "0.1.0",
   "action": {
     "default_title": "Export VK playlist",
@@ -19,7 +19,9 @@
     "https://vk.ru/*",
     "https://vk.com/*",
     "https://open.spotify.com/*",
-    "https://play.spotify.com/*"
+    "https://play.spotify.com/*",
+    "https://music.yandex.ru/*",
+    "http://127.0.0.1:8765/*"
   ],
   "content_scripts": [
     {
@@ -39,6 +41,15 @@
       ],
       "js": [
         "spotify-content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://music.yandex.ru/*"
+      ],
+      "js": [
+        "yandex-content.js"
       ],
       "run_at": "document_idle"
     }

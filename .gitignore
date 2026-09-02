@@ -132,3 +132,6 @@ data/youtube_cookies.txt
 
 # Spotify OAuth refresh token
 data/spotify_token.json
+
+# Browser playlist exports
+playlist_exports/

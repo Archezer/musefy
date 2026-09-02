@@ -1,8 +1,8 @@
-# Music Recs — VK + Spotify Playlist Exporter
+# Music Recs — Playlist Exporter
 
 This is a development build of a Chromium/Firefox Manifest V3 extension for
-exporting **playlist metadata** from the currently open VK Music or Spotify
-page.
+exporting **playlist metadata** from the currently open VK Music, Spotify or
+Yandex Music page.
 
 It exports only:
 
@@ -10,10 +10,10 @@ It exports only:
 - track order;
 - artist;
 - title;
-- visible duration, when VK shows one.
+- visible duration, when the source shows one.
 
-It does not read, export, transmit, or store cookies, passwords, VK/Spotify
-tokens, audio URLs, or audio files.
+It does not read, export, transmit, or store cookies, passwords, VK/Spotify/
+Yandex tokens, audio URLs, or audio files.
 
 ## Install locally in Chrome or Edge
 
@@ -30,7 +30,9 @@ tokens, audio URLs, or audio files.
 1. Open a VK Music playlist in the browser.
 2. In VK, click **Show all** if VK displays that control.
 3. Open the extension and click **Export current playlist**.
-4. Let it scroll until the count stops increasing, then save the JSON file.
+4. Let it scroll until the count stops increasing. If the desktop app is
+   running, the export is saved automatically inside the project's
+   `playlist_exports` folder, next to `extensions`.
 
 The extension verifies that the **Show all** control is no longer visible before
 exporting. It attaches itself to the current VK tab when export begins, so it
@@ -43,11 +45,27 @@ the script attaches; it is an optional shortcut.
 1. Open a Spotify playlist in the browser.
 2. Log in only if the page itself requires it.
 3. Open the extension and select **Export current playlist**.
-4. Let it scroll until the count stops increasing, then save the JSON file.
+4. Let it scroll until the count stops increasing. If the desktop app is
+   running, the export is saved automatically inside the project's
+   `playlist_exports` folder, next to `extensions`.
 
-The JSON file is an intermediate format for a future import action in the
-desktop app. The planned importer will search YouTube for each
-`artist — title` pair; it will not download audio from VK or Spotify.
+### Yandex Music
+
+1. Open a Yandex Music playlist in the browser.
+2. Log in only if the page itself requires it.
+3. Open the extension and select **Export current playlist**.
+4. Let it scroll until the count stops increasing. If the desktop app is
+   running, the export is saved automatically inside the project's
+   `playlist_exports` folder, next to `extensions`.
+
+The Yandex extractor reads only the playlist's labelled track region. Tracks
+from recommendations below the playlist are not included.
+
+If the desktop app is closed or cannot be reached, the extension falls back to
+the browser's Downloads folder. The JSON file is an intermediate format for a
+future import action in the desktop app. The planned importer will search YouTube for each
+`artist — title` pair; it will not download audio from VK, Spotify or Yandex
+Music.
 
 ## Why Spotify OAuth is not needed here
 
@@ -59,8 +77,8 @@ Player.
 
 ## Development notes
 
-VK and Spotify DOM structures are not public APIs and can change. The
+VK, Spotify and Yandex Music DOM structures are not public APIs and can change.
 extractors intentionally fail with a clear message if they cannot find
 artist/title rows instead of exporting an empty or guessed playlist. Do not
-widen the extension's permissions to read cookies or browse outside VK and
-Spotify.
+widen the extension's permissions to read cookies or browse outside the three
+supported music sites.

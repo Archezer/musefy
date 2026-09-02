@@ -264,12 +264,15 @@ No Spotify client secret is required. If the Spotify application is still in
 Development Mode, add the Spotify account as a test user in the Developer
 Dashboard. Never commit `.env` or `data/spotify_token.json`.
 
-### VK Music and Spotify browser exporter
+### VK Music, Spotify and Yandex Music browser exporter
 
 The development extension in
 [`extensions/vk-spotify-playlist-exporter`](extensions/vk-spotify-playlist-exporter) exports
-the visible metadata of the currently open VK Music or Spotify playlist to a
-JSON file. It collects only track order, artist, title and duration; it does not
+the visible metadata of the currently open VK Music, Spotify or Yandex Music playlist to a
+JSON file. When the desktop app is running, the extension sends the export to a
+localhost bridge and saves it under `playlist_exports/<source>` next to the
+`extensions` folder. If the app is not
+running, it falls back to the browser's Downloads folder. It collects only track order, artist, title and duration; it does not
 read cookies, tokens, audio URLs or audio files.
 
 For Spotify, this is an alternative to API-based metadata import: it works from

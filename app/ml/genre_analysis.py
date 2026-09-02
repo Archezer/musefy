@@ -1,3 +1,5 @@
+import gc
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from app.ml.music2emo import (
     Music2EmoAnalysisResult,
     Music2EmoMoodAnalyzer,
 )
+
+MODEL_IDLE_TIMEOUT_SECONDS = 180.0
 
 
 @dataclass(frozen=True)
@@ -29,8 +33,11 @@ class GenreAnalysisService:
         self.min_score = min_score
 
         self.loader = AudioWindowLoader()
-        self.classifier = MaestClassifier()
-        self.mood_analyzer = Music2EmoMoodAnalyzer()
+        self.classifier: MaestClassifier | None = None
+        self._classifier_last_used_at: float | None = None
+        self.mood_analyzer = Music2EmoMoodAnalyzer(
+            idle_timeout_seconds=MODEL_IDLE_TIMEOUT_SECONDS,
+        )
 
     def analyze_result(
         self,
@@ -48,11 +55,14 @@ class GenreAnalysisService:
             .numpy()
         )
 
-        return self.classifier.analyze(
+        classifier = self._ensure_classifier()
+        result = classifier.analyze(
             mel_array,
             top_k=self.top_k,
             min_score=self.min_score,
         )
+        self._classifier_last_used_at = time.monotonic()
+        return result
 
     def analyze(
         self,
@@ -80,6 +90,33 @@ class GenreAnalysisService:
         )
 
     def unload_idle_models(self) -> bool:
-        return self.mood_analyzer.unload_if_idle()
+        mood_unloaded = self.mood_analyzer.unload_if_idle()
+        classifier_unloaded = self._unload_classifier_if_idle()
+        return mood_unloaded or classifier_unloaded
+
+    def _ensure_classifier(self) -> MaestClassifier:
+        if self.classifier is None:
+            self.classifier = MaestClassifier()
+
+        self._classifier_last_used_at = time.monotonic()
+        return self.classifier
+
+    def _unload_classifier_if_idle(self) -> bool:
+        if (
+            self.classifier is None or
+            self._classifier_last_used_at is None
+        ):
+            return False
+
+        if (
+            time.monotonic() - self._classifier_last_used_at
+            < self.mood_analyzer.idle_timeout_seconds
+        ):
+            return False
+
+        self.classifier = None
+        self._classifier_last_used_at = None
+        gc.collect()
+        return True
 
     
