@@ -62,10 +62,10 @@ The Yandex extractor reads only the playlist's labelled track region. Tracks
 from recommendations below the playlist are not included.
 
 If the desktop app is closed or cannot be reached, the extension falls back to
-the browser's Downloads folder. The JSON file is an intermediate format for a
-future import action in the desktop app. The planned importer will search YouTube for each
-`artist — title` pair; it will not download audio from VK, Spotify or Yandex
-Music.
+the browser's Downloads folder. In the desktop app, click **Import exported
+playlist**, select the JSON file, and the existing YouTube search/download
+pipeline will resolve each `artist — title` pair. The browser extension never
+downloads audio from VK, Spotify or Yandex Music.
 
 ## Why Spotify OAuth is not needed here
 

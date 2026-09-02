@@ -275,6 +275,11 @@ localhost bridge and saves it under `playlist_exports/<source>` next to the
 running, it falls back to the browser's Downloads folder. It collects only track order, artist, title and duration; it does not
 read cookies, tokens, audio URLs or audio files.
 
+In the desktop app, click **Import exported playlist** and select one of these
+JSON files. The app then reuses the existing YouTube search, download, library
+analysis and local-playlist pipeline, while reporting tracks that could not be
+matched or downloaded.
+
 For Spotify, this is an alternative to API-based metadata import: it works from
 the user's already-open Spotify Web Player and therefore does not require the
 project's Spotify client ID, OAuth callback, or Dashboard test-user allowlist.

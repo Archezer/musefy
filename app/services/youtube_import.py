@@ -17,6 +17,7 @@ from app.sources.youtube import (
     YouTubeSearchProvider,
     extract_youtube_video_id,
 )
+from app.services.playlist_exports import read_playlist_export
 
 
 @dataclass(frozen=True)
@@ -157,10 +158,38 @@ class YouTubeImportService:
             )
         else:
             playlist = self.spotify_provider.get_playlist(url)
+        return self._search_playlist_tracks(
+            playlist.name,
+            playlist.tracks,
+        )
+
+    def search_playlist_export(
+        self,
+        path: Path,
+    ) -> SpotifyPlaylistSearchResult:
+        exported_playlist = read_playlist_export(path)
+        tracks = tuple(
+            SpotifyTrack(
+                title=track.title,
+                artist=track.artist,
+            )
+            for track in exported_playlist.tracks
+        )
+
+        return self._search_playlist_tracks(
+            exported_playlist.title,
+            tracks,
+        )
+
+    def _search_playlist_tracks(
+        self,
+        playlist_name: str,
+        tracks: tuple[SpotifyTrack, ...],
+    ) -> SpotifyPlaylistSearchResult:
         candidates = []
         failed = []
 
-        for position, spotify_track in enumerate(playlist.tracks):
+        for position, spotify_track in enumerate(tracks):
             try:
                 matches = self.provider.search(
                     spotify_track.search_query,
@@ -191,7 +220,7 @@ class YouTubeImportService:
             )
 
         return SpotifyPlaylistSearchResult(
-            playlist_name=playlist.name,
+            playlist_name=playlist_name,
             candidates=tuple(candidates),
             failed=tuple(failed),
         )

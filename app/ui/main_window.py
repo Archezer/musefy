@@ -67,6 +67,7 @@ from app.services.youtube_import import (
     YouTubePlaylistImportResult,
 )
 from app.sources.youtube import YouTubeCandidate
+from app.storage.paths import PLAYLIST_EXPORTS_DIR
 from app.storage.protocols import MusicStore
 from app.ui.dialogs import (
     PlaylistImportResultDialog,
@@ -232,6 +233,13 @@ class MainWindow(QMainWindow):
             self._import_from_youtube
         )
 
+        exported_playlist_button = QPushButton(
+            "Import exported playlist"
+        )
+        exported_playlist_button.clicked.connect(
+            self._import_exported_playlist
+        )
+
         self.edit_button = QPushButton("Edit track")
         self.edit_button.clicked.connect(
             self._edit_selected_track
@@ -264,6 +272,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(import_button)
         toolbar.addWidget(youtube_button)
+        toolbar.addWidget(exported_playlist_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.delete_button)
         toolbar.addWidget(self.analyze_genres_button)
@@ -1277,6 +1286,61 @@ class MainWindow(QMainWindow):
         )
 
         dialog.exec()
+
+    def _import_exported_playlist(self) -> None:
+        export_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open exported playlist",
+            str(PLAYLIST_EXPORTS_DIR),
+            "Playlist exports (*.json)",
+        )
+
+        if not export_path:
+            return
+
+        dialog = YouTubeSearchDialog(self)
+        dialog.set_busy(True, "Reading exported playlist...")
+        dialog.playlist_import_requested.connect(
+            lambda candidates: self._start_youtube_playlist_import(
+                dialog,
+                candidates,
+            )
+        )
+
+        thread = YouTubeTaskThread(
+            lambda: self.youtube_import_service.search_playlist_export(
+                Path(export_path)
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_exported_playlist_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+        dialog.exec()
+
+    def _handle_exported_playlist_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SpotifyPlaylistSearchResult):
+            self._handle_youtube_error(
+                dialog,
+                "Exported playlist search returned an invalid result.",
+            )
+            return
+
+        self._handle_spotify_search_result(dialog, result)
 
     def _start_youtube_search(
         self,
