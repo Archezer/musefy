@@ -114,6 +114,7 @@ from app.ui.components import (
     SvgIconButton,
     TrackNumberPlayWidget,
     TrackIdentityWidget,
+    LiquidGlassPanel,
     track_cover_pixmap,
     svg_icon,
 )
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
         self._analysis_pending_track_ids: set[str] = set()
         self._playlist_import_active = False
         self._music_map_mode = "background"
+        self._liquid_glass_enabled = True
         self._player_duration_ms = 0
         self._genre_analysis_service = (
             GenreAnalysisService(
@@ -305,7 +307,7 @@ class MainWindow(QMainWindow):
             self._select_track_from_map
         )
         self._map_blur = QGraphicsBlurEffect(self.music_map)
-        self._map_blur.setBlurRadius(1.0)
+        self._map_blur.setBlurRadius(4.5)
         self.music_map.setGraphicsEffect(self._map_blur)
         map_layout.addWidget(self.music_map)
         self._map_opacity = QGraphicsOpacityEffect(self.map_layer)
@@ -454,6 +456,15 @@ class MainWindow(QMainWindow):
             self._remove_selected_playlist_track,
         )
         playlist_menu.addSeparator()
+        self.liquid_glass_action = playlist_menu.addAction(
+            "Liquid glass panels",
+        )
+        self.liquid_glass_action.setCheckable(True)
+        self.liquid_glass_action.setChecked(self._liquid_glass_enabled)
+        self.liquid_glass_action.toggled.connect(
+            self._set_liquid_glass_enabled
+        )
+        playlist_menu.addSeparator()
         playlist_menu.addAction(
             "Reload application code",
             self._restart_application,
@@ -479,14 +490,13 @@ class MainWindow(QMainWindow):
         )
         self.playlist_carousel_layout = QHBoxLayout(self.playlist_carousel)
         self.playlist_carousel_layout.setContentsMargins(0, 0, 0, 0)
-        # Let the transparent graph halos overlap between cards; the actual
-        # card surfaces still keep a compact visual gap.
+        # Keep the carousel compact while preserving a small breathing space
+        # between the card surfaces.
         self.playlist_carousel_layout.setSpacing(-13)
         self.playlist_scroll.setWidget(self.playlist_carousel)
         playlist_strip_layout.addWidget(self.playlist_scroll)
         # Leave enough vertical room for the cover and its caption; the old
         # viewport was a few pixels shorter than the card itself.
-        # Leave a transparent ring around each card for its hover graph.
         playlist_strip.setFixedHeight(140)
         main_layout.addWidget(playlist_strip)
 
@@ -494,6 +504,7 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
 
         library_widget = self._build_library_panel()
+        self._library_panel = library_widget
         self.playlist_list = QListWidget(app_root)
         self.playlist_list.itemSelectionChanged.connect(
             self._handle_playlist_selection
@@ -502,6 +513,7 @@ class MainWindow(QMainWindow):
         self.playlist_track_list = QListWidget(app_root)
         self.playlist_track_list.hide()
         queue_panel = self._build_queue_panel()
+        self._queue_panel = queue_panel
 
         splitter.addWidget(library_widget)
         splitter.addWidget(queue_panel)
@@ -551,7 +563,6 @@ class MainWindow(QMainWindow):
         )
         self.map_exit_button.hide()
         self.queue_dialog = QueueDialog(self)
-
         self.setCentralWidget(app_root)
         self.statusBar().showMessage("Ready")
         self.statusBar().hide()
@@ -618,6 +629,7 @@ class MainWindow(QMainWindow):
             diameter=48,
             flat=True,
             icon_offset_y=-7,
+            flat_background_inset=7,
             parent=player_bar,
         )
         self.player_play_button.clicked.connect(self._toggle_playback)
@@ -778,7 +790,7 @@ class MainWindow(QMainWindow):
             "hidden": 0.0,
         }[mode]
         target_body_opacity = 0.0 if mode == "focus" else 1.0
-        target_blur_radius = 0.0 if mode == "focus" else 1.0
+        target_blur_radius = 0.0 if mode == "focus" else 4.5
         self.map_layer.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents,
             mode != "focus",
@@ -856,8 +868,12 @@ class MainWindow(QMainWindow):
                 return
 
     def _build_library_panel(self) -> QWidget:
-        panel = QFrame()
+        panel = LiquidGlassPanel()
         panel.setObjectName("libraryPanel")
+        panel.setProperty(
+            "liquidGlass",
+            "true" if self._liquid_glass_enabled else "false",
+        )
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 8, 0, 4)
         layout.setSpacing(10)
@@ -886,7 +902,7 @@ class MainWindow(QMainWindow):
         self.track_table.setObjectName("libraryTable")
         self.track_table.setColumnCount(7)
         self.track_table.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.track_table.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -992,8 +1008,13 @@ class MainWindow(QMainWindow):
             selected = row_index == self.track_table.currentRow()
             hovered = row_index == self._hovered_track_row
             state = "selected" if selected else "hover" if hovered else ""
+            row_color = (
+                QColor("#303334")
+                if selected
+                else QColor(255, 255, 255, 18)
+            )
             background = (
-                QBrush(QColor("#303334" if selected else "#292D2F"))
+                QBrush(row_color)
                 if state
                 else QBrush()
             )
@@ -1018,8 +1039,12 @@ class MainWindow(QMainWindow):
                 index_widget.set_play_visible(bool(state))
 
     def _build_queue_panel(self) -> QWidget:
-        panel = QFrame()
+        panel = LiquidGlassPanel()
         panel.setObjectName("queuePanel")
+        panel.setProperty(
+            "liquidGlass",
+            "true" if self._liquid_glass_enabled else "false",
+        )
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 9, 8, 4)
         layout.setSpacing(8)
@@ -1063,6 +1088,22 @@ class MainWindow(QMainWindow):
         panel.setMaximumWidth(300)
 
         return panel
+
+    def _set_liquid_glass_enabled(self, enabled: bool) -> None:
+        """Switch the two main panels between glass and solid backgrounds."""
+
+        self._liquid_glass_enabled = bool(enabled)
+        property_value = "true" if self._liquid_glass_enabled else "false"
+        for panel in (
+            getattr(self, "_library_panel", None),
+            getattr(self, "_queue_panel", None),
+        ):
+            if panel is None:
+                continue
+            panel.setProperty("liquidGlass", property_value)
+            panel.style().unpolish(panel)
+            panel.style().polish(panel)
+            panel.update()
 
     def _load_library(self) -> None:
         tracks = list(self.store.list_tracks())

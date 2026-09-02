@@ -43,6 +43,11 @@ QFrame#glassPanel {
     border-radius: 0;
 }
 QFrame#libraryPanel, QFrame#queuePanel {
+    background: #111416;
+    border: none;
+    border-radius: 15px;
+}
+QFrame#libraryPanel[liquidGlass="true"], QFrame#queuePanel[liquidGlass="true"] {
     background: qlineargradient(
         x1: 0, y1: 0, x2: 0, y2: 1,
         stop: 0 rgba(17, 20, 22, 0),
@@ -93,7 +98,7 @@ QTableWidget#libraryTable {
     font-size: 12px;
 }
 QWidget#trackRowCell[rowState="hover"] {
-    background-color: #292D2F;
+    background-color: rgba(255, 255, 255, 18);
 }
 QWidget#trackRowCell[rowState="selected"] {
     background-color: #303334;
@@ -306,25 +311,30 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0px;
     height: 0px;
 }
+QTableWidget#libraryTable QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 7px 2px 7px 0;
+    border-radius: 5px;
+}
+QTableWidget#libraryTable QScrollBar::handle:vertical {
+    background: rgba(139, 235, 203, 112);
+    border: 1px solid rgba(208, 255, 237, 145);
+    min-height: 34px;
+    border-radius: 5px;
+}
+QTableWidget#libraryTable QScrollBar::handle:vertical:hover {
+    background: rgba(139, 235, 203, 178);
+    border-color: rgba(226, 255, 243, 210);
+}
+QTableWidget#libraryTable QScrollBar::add-page:vertical,
+QTableWidget#libraryTable QScrollBar::sub-page:vertical {
+    background: transparent;
+}
 QFrame#playlistCard {
-    background-color: rgba(255, 255, 255, 7);
-    border: 1px solid rgba(255, 255, 255, 20);
+    background: transparent;
+    border: none;
     border-radius: 12px;
-}
-QFrame#playlistCard:hover {
-    background-color: rgba(255, 255, 255, 16);
-    border-color: rgba(255, 255, 255, 47);
-}
-QFrame#playlistCard[graphHover="true"] {
-    background-color: rgba(255, 255, 255, 16);
-    border-color: rgba(255, 255, 255, 47);
-}
-QFrame#playlistCard[selected="true"] {
-    background-color: rgba(255, 255, 255, 22);
-    border-color: rgba(255, 255, 255, 68);
-}
-QFrame#playlistCard[moodCard="true"] {
-    background-color: rgba(255, 255, 255, 11);
 }
 QMenu {
     background-color: #29292D;
