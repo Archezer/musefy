@@ -99,6 +99,7 @@ data/track_covers/
 data/models/**/*.onnx
 data/models/**/*.pt
 data/models/**/*.pth
+data/models/**/*.ckpt
 data/models/**/*.bin
 data/models/**/*.safetensors
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 # without borrowing Spotify's green or the usual blue desktop-app accents.
 DARK_THEME = """
 * {
-    font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-family: "Candara", "Trebuchet MS", "Segoe UI Variable", "Segoe UI", sans-serif;
     color: #ECECEE;
 }
 QMainWindow, QWidget#appRoot {
@@ -38,8 +38,9 @@ QFrame#playlistStrip {
     border: none;
 }
 QFrame#glassPanel {
-    background-color: #111416;
-    border-color: #2B3232;
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
 }
 QFrame#playerBar {
     background-color: #0D1012;
@@ -54,6 +55,11 @@ QLabel#sectionCaption {
     color: #AFAFB5;
     font-size: 11px;
     font-weight: 650;
+}
+QLabel#playlistSectionTitle {
+    color: #E2E8E5;
+    font-size: 12px;
+    font-weight: 700;
 }
 QLabel#appSubtitle, QLabel#playerArtist, QLabel#playlistCardName {
     color: #A3A3AA;
@@ -136,8 +142,8 @@ QTableWidget, QListWidget {
 }
 QTableWidget#libraryTable {
     background-color: #111416;
-    border-color: #080A0C;
-    selection-background-color: #252B2B;
+    border-color: #252C2D;
+    selection-background-color: #303334;
     selection-color: #F2F4F3;
 }
 QListWidget#queueList {
@@ -152,7 +158,7 @@ QTableCornerButton::section {
 }
 QTableWidget::item, QListWidget::item {
     padding: 5px 7px;
-    border-radius: 7px;
+    border-radius: 0;
 }
 QTableWidget::item {
     border-top: 1px solid #080A0C;
@@ -160,11 +166,14 @@ QTableWidget::item {
     border-right: none;
     border-bottom: none;
 }
-QTableWidget::item:hover, QListWidget::item:hover {
+QTableWidget::item:hover {
+    background-color: #25292A;
+}
+QListWidget::item:hover {
     background-color: rgba(255, 255, 255, 8);
 }
 QTableWidget::item:selected, QListWidget::item:selected {
-    background-color: #252B2B;
+    background-color: #303334;
     color: #F2F4F3;
     outline: none;
     border-left: none;

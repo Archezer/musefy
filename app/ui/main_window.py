@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
+from PySide6.QtGui import QBrush, QColor, QKeyEvent
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog,
@@ -100,6 +101,9 @@ from app.ui.components import (
     PlaylistCard,
     QueueDialog,
     MarqueeLabel,
+    FadingVolumeSlider,
+    HoverTableWidget,
+    RailIconButton,
     SvgIconButton,
     TrackIdentityWidget,
     track_cover_pixmap,
@@ -304,28 +308,32 @@ class MainWindow(QMainWindow):
             Qt.WidgetAttribute.WA_TranslucentBackground
         )
         content_layout = QVBoxLayout(self.content_overlay)
-        content_layout.setContentsMargins(12, 10, 12, 78)
+        content_layout.setContentsMargins(8, 8, 8, 78)
         content_layout.setSpacing(8)
 
         body = QWidget()
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(9)
+        body.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground
+        )
+        body_layout.setSpacing(0)
 
-        sidebar = QFrame()
+        sidebar = QFrame(body)
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(60)
+        sidebar.setFixedSize(56, 180)
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(3, 12, 3, 12)
-        sidebar_layout.setSpacing(10)
+        sidebar_layout.setContentsMargins(0, 4, 0, 4)
+        sidebar_layout.setSpacing(2)
         sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        import_button = QToolButton()
+        import_button = RailIconButton(
+            IMPORT_ICON,
+            tooltip="Import music",
+            variant="download",
+            icon_size=52,
+        )
         import_button.setObjectName("railButton")
-        import_button.setIcon(svg_icon(IMPORT_ICON, 24))
-        import_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        import_button.setToolTip("Import music")
-        import_button.setFixedSize(48, 44)
         import_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         import_menu = QMenu(import_button)
         local_action = import_menu.addAction("Local audio file", self._import_track)
@@ -339,12 +347,13 @@ class MainWindow(QMainWindow):
         import_button.setMenu(import_menu)
         sidebar_layout.addWidget(import_button, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        library_button = QToolButton()
+        library_button = RailIconButton(
+            LIBRARY_ICON,
+            tooltip="Library actions",
+            variant="library",
+            icon_size=52,
+        )
         library_button.setObjectName("railButton")
-        library_button.setIcon(svg_icon(LIBRARY_ICON, 24))
-        library_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        library_button.setToolTip("Library actions")
-        library_button.setFixedSize(48, 44)
         library_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         library_menu = QMenu(library_button)
         self.edit_button = library_menu.addAction(
@@ -377,18 +386,17 @@ class MainWindow(QMainWindow):
         library_button.setMenu(library_menu)
         sidebar_layout.addWidget(library_button, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        self.map_cycle_button = QToolButton()
+        self.map_cycle_button = RailIconButton(
+            MAP_ICON,
+            tooltip="Toggle the music graph background",
+            variant="map",
+            icon_size=52,
+        )
         self.map_cycle_button.setObjectName("mapCycleButton")
         self.map_cycle_button.setProperty("railButton", True)
-        self.map_cycle_button.setIcon(svg_icon(MAP_ICON, 24))
-        self.map_cycle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.map_cycle_button.setFixedSize(48, 44)
-        self.map_cycle_button.setToolTip("Toggle the music graph background")
         self.map_cycle_button.clicked.connect(self._toggle_music_map)
         sidebar_layout.addWidget(self.map_cycle_button, 0, Qt.AlignmentFlag.AlignHCenter)
         sidebar_layout.addStretch(1)
-        body_layout.addWidget(sidebar)
-
         main_column = QWidget()
         main_layout = QVBoxLayout(main_column)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -397,13 +405,15 @@ class MainWindow(QMainWindow):
         playlist_strip = QFrame()
         playlist_strip.setObjectName("playlistStrip")
         playlist_strip_layout = QVBoxLayout(playlist_strip)
-        playlist_strip_layout.setContentsMargins(9, 5, 9, 5)
+        # Keep the compact rail clear of the playlist row while leaving the
+        # library and queue panels aligned to the same outer inset.
+        playlist_strip_layout.setContentsMargins(64, 5, 9, 5)
         playlist_strip_layout.setSpacing(3)
         playlist_header = QHBoxLayout()
         playlist_header.setContentsMargins(0, 0, 0, 0)
         playlist_header.setSpacing(4)
         playlist_label = QLabel("Playlists")
-        playlist_label.setObjectName("sectionCaption")
+        playlist_label.setObjectName("playlistSectionTitle")
         playlist_header.addWidget(playlist_label)
         playlist_header.addStretch()
 
@@ -477,6 +487,8 @@ class MainWindow(QMainWindow):
         splitter.setSizes([900, 285])
         main_layout.addWidget(splitter, 1)
         body_layout.addWidget(main_column, 1)
+        sidebar.setGeometry(0, 0, 56, 180)
+        sidebar.raise_()
         content_layout.addWidget(body, 1)
         self._content_body = body
         self._content_body_opacity = QGraphicsOpacityEffect(body)
@@ -498,6 +510,18 @@ class MainWindow(QMainWindow):
         self._player_bar = self._build_player_bar()
         self._player_bar.setParent(app_root)
         self._player_bar.show()
+        self.map_exit_button = RailIconButton(
+            MAP_ICON,
+            tooltip="Return to library",
+            variant="map",
+            icon_size=52,
+            parent=app_root,
+        )
+        self.map_exit_button.setObjectName("mapExitButton")
+        self.map_exit_button.clicked.connect(
+            lambda: self._set_music_map_mode("background")
+        )
+        self.map_exit_button.hide()
         self.queue_dialog = QueueDialog(self)
 
         self.setCentralWidget(app_root)
@@ -527,13 +551,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.player_cover)
 
         metadata_layout = QVBoxLayout()
-        metadata_layout.setContentsMargins(0, 3, 0, 0)
-        metadata_layout.setSpacing(1)
+        metadata_layout.setContentsMargins(0, 2, 0, 0)
+        metadata_layout.setSpacing(0)
         self.player_title_label = MarqueeLabel("Nothing playing")
         self.player_title_label.setObjectName("playerTitle")
-        self.player_title_label.setFixedHeight(20)
+        self.player_title_label.setFixedHeight(18)
         self.player_artist_label = QLabel("Choose a track or playlist")
         self.player_artist_label.setObjectName("playerArtist")
+        self.player_artist_label.setFixedHeight(14)
         metadata_layout.addWidget(self.player_title_label)
         metadata_layout.addWidget(self.player_artist_label)
         layout.addLayout(metadata_layout, 2)
@@ -651,7 +676,7 @@ class MainWindow(QMainWindow):
         volume_button.setEnabled(False)
         layout.addWidget(volume_button)
 
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider = FadingVolumeSlider()
         self.volume_slider.setObjectName("volumeSlider")
         self.volume_slider.setFixedWidth(96)
         self.volume_slider.setRange(0, 100)
@@ -679,6 +704,17 @@ class MainWindow(QMainWindow):
                 max(0, root_rect.width() - 24),
                 bar_height,
             )
+        if hasattr(self, "map_exit_button"):
+            self.map_exit_button.setGeometry(16, 16, 56, 56)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            event.key() == Qt.Key.Key_Escape
+            and getattr(self, "_music_map_mode", "background") == "focus"
+        ):
+            self._set_music_map_mode("background")
+            return
+        super().keyPressEvent(event)
 
     def _set_music_map_mode(
         self,
@@ -719,15 +755,18 @@ class MainWindow(QMainWindow):
             self._content_body_opacity.setOpacity(target_body_opacity)
             self._map_blur.setBlurRadius(target_blur_radius)
             self.map_layer.setVisible(mode != "hidden")
+            self.map_exit_button.setVisible(mode == "focus")
             if mode == "focus":
                 self.map_layer.raise_()
                 self._player_bar.raise_()
+                self.map_exit_button.raise_()
             else:
                 self.map_layer.lower()
                 self._player_bar.raise_()
             return
 
         self.map_layer.show()
+        self.map_exit_button.setVisible(mode == "focus")
         self._map_opacity_animation.stop()
         self._map_opacity_animation.setStartValue(
             self._map_opacity.opacity()
@@ -751,6 +790,7 @@ class MainWindow(QMainWindow):
         if mode == "focus":
             self.map_layer.raise_()
             self._player_bar.raise_()
+            self.map_exit_button.raise_()
         else:
             self.map_layer.lower()
             self._player_bar.raise_()
@@ -782,14 +822,14 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("glassPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(0, 8, 0, 4)
         layout.setSpacing(10)
 
         library_title = QLabel("Music library")
         library_title.setObjectName("appTitle")
         layout.addWidget(library_title)
 
-        self.track_table = QTableWidget()
+        self.track_table = HoverTableWidget()
         self.track_table.setObjectName("libraryTable")
         self.track_table.setColumnCount(7)
         self.track_table.setHorizontalHeaderLabels(
@@ -849,6 +889,8 @@ class MainWindow(QMainWindow):
             QTableWidget.EditTrigger.NoEditTriggers
         )
         self.track_table.setAlternatingRowColors(False)
+        self._hovered_track_row = -1
+        self.track_table.row_hovered.connect(self._set_track_row_hover)
         self.track_table.itemSelectionChanged.connect(
             self._handle_track_selection
         )
@@ -863,11 +905,32 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def _set_track_row_hover(self, row_index: int) -> None:
+        if row_index == self._hovered_track_row:
+            return
+
+        for candidate in (self._hovered_track_row, row_index):
+            if candidate < 0 or candidate >= self.track_table.rowCount():
+                continue
+            for column in range(self.track_table.columnCount()):
+                item = self.track_table.item(candidate, column)
+                if item is None:
+                    continue
+                if candidate == row_index:
+                    selected = candidate == self.track_table.currentRow()
+                    item.setBackground(
+                        QBrush(QColor("#343738" if selected else "#292D2F"))
+                    )
+                else:
+                    item.setBackground(QBrush())
+
+        self._hovered_track_row = row_index
+
     def _build_queue_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("glassPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(8, 8, 8, 4)
         layout.setSpacing(8)
 
         header = QHBoxLayout()
@@ -1013,11 +1076,9 @@ class MainWindow(QMainWindow):
         track_identity.play_requested.connect(
             lambda track_id=track.id: self._play_track_now(track_id)
         )
-        self.track_table.setCellWidget(
-            row_index,
-            1,
-            track_identity,
-        )
+        self.track_table.setItem(row_index, 1, QTableWidgetItem())
+        self.track_table.setCellWidget(row_index, 1, track_identity)
+        self.track_table.register_row_widget(track_identity, row_index)
         self.track_table.setItem(
             row_index,
             2,
@@ -1057,7 +1118,9 @@ class MainWindow(QMainWindow):
             )
         )
         queue_cell_layout.addWidget(queue_button)
+        self.track_table.setItem(row_index, 5, QTableWidgetItem())
         self.track_table.setCellWidget(row_index, 5, queue_cell)
+        self.track_table.register_row_widget(queue_cell, row_index)
         self.track_table.setItem(
             row_index,
             6,
