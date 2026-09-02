@@ -118,11 +118,11 @@ def _color_with_alpha(value: str, alpha: int) -> QColor:
 class RailIconButton(QToolButton):
     """A rail action with a quiet, per-icon graph-shaped hover glow."""
 
-    BUTTON_SIZE = 52
+    BUTTON_SIZE = 42
     # Keep the glyph in a bounded, centered area.  The SVG artwork uses an
     # 18px coordinate grid; the graph-shaped hover surface is painted by the
     # same widget, so it never gets detached from the icon.
-    ICON_SIZE = 30
+    ICON_SIZE = 24
     CONTENT_OFFSET_X = 0
 
     _GRAPH_VARIANTS = {
@@ -237,8 +237,16 @@ class RailIconButton(QToolButton):
             self._variant,
             self._GRAPH_VARIANTS["map"],
         )
+        # Give the hover graph a little breathing room around the smaller
+        # glyph, while keeping its expanded contour inside the button.
+        hover_scale = 1.2
         coordinates = [
-            (self.width() * x, self.height() * y)
+            (
+                self.width()
+                * (0.5 + (x - 0.5) * hover_scale),
+                self.height()
+                * (0.5 + (y - 0.5) * hover_scale),
+            )
             for x, y in points
         ]
 

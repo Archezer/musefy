@@ -1,4 +1,6 @@
+import os
 import random
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -325,7 +327,7 @@ class MainWindow(QMainWindow):
         rail_size = RailIconButton.BUTTON_SIZE
         sidebar.setFixedSize(rail_size, rail_size * 3 + 12)
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(0, 4, 0, 4)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(2)
         sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -436,6 +438,11 @@ class MainWindow(QMainWindow):
         playlist_menu.addAction(
             "Remove selected playlist track",
             self._remove_selected_playlist_track,
+        )
+        playlist_menu.addSeparator()
+        playlist_menu.addAction(
+            "Reload application code",
+            self._restart_application,
         )
         playlist_menu_button.setMenu(playlist_menu)
         playlist_header.addWidget(playlist_menu_button)
@@ -3399,6 +3406,14 @@ class MainWindow(QMainWindow):
     def _refresh_content(self) -> None:
         self._load_library()
         self._load_recommendations()
+
+    def _restart_application(self) -> None:
+        """Restart this process so edited Python modules are re-imported."""
+
+        os.execv(
+            sys.executable,
+            [sys.executable, "-m", "app.desktop"],
+        )
 
     @staticmethod
     def _format_duration(
