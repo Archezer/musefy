@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QIcon,
+    QCursor,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -117,6 +118,13 @@ def _color_with_alpha(value: str, alpha: int) -> QColor:
 class RailIconButton(QToolButton):
     """A rail action with a quiet, per-icon graph-shaped hover glow."""
 
+    BUTTON_SIZE = 52
+    # Keep the glyph in a bounded, centered area.  The SVG artwork uses an
+    # 18px coordinate grid; the graph-shaped hover surface is painted by the
+    # same widget, so it never gets detached from the icon.
+    ICON_SIZE = 30
+    CONTENT_OFFSET_X = 0
+
     _GRAPH_VARIANTS = {
         "download": (
             (
@@ -157,7 +165,7 @@ class RailIconButton(QToolButton):
         *,
         tooltip: str,
         variant: str,
-        icon_size: int = 30,
+        icon_size: int = ICON_SIZE,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -177,7 +185,7 @@ class RailIconButton(QToolButton):
         self.setToolTip(tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setFixedSize(56, 56)
+        self.setFixedSize(self.BUTTON_SIZE, self.BUTTON_SIZE)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
@@ -187,13 +195,18 @@ class RailIconButton(QToolButton):
         if self._graph_opacity > 0.0:
             self._paint_graph_hover(painter, self._graph_opacity)
 
-        # Keep the icon almost edge-to-edge in the compact rail.  The SVGs
-        # already contain their own breathing room, so a larger widget inset
-        # made the glyphs look much smaller than the button itself.
-        padding = max(2, (self.width() - self._icon_size) // 2)
+        content_offset = self.CONTENT_OFFSET_X
+        icon_size = min(self._icon_size, self.width(), self.height())
+        icon_left = (self.width() - icon_size) // 2 + content_offset
+        icon_top = (self.height() - icon_size) // 2
         self._renderer.render(
             painter,
-            self.rect().adjusted(padding, padding, -padding, -padding),
+            self.rect().adjusted(
+                icon_left,
+                icon_top,
+                -(self.width() - icon_left - icon_size),
+                -(self.height() - icon_top - icon_size),
+            ),
         )
 
     @Property(float)
@@ -349,6 +362,10 @@ class HoverTableWidget(QTableWidget):
                 QEvent.Type.MouseMove,
             ):
                 self.row_hovered.emit(self._row_widgets[watched])
+            elif event.type() == QEvent.Type.Leave:
+                local_pos = self.viewport().mapFromGlobal(QCursor.pos())
+                if not self.viewport().rect().contains(local_pos):
+                    self.row_hovered.emit(-1)
 
         return super().eventFilter(watched, event)
 
@@ -567,19 +584,19 @@ def svg_icon(svg: str, size: int = 18) -> QIcon:
 
 
 IMPORT_ICON = """
-<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#A2F6D9"/><stop offset=".52" stop-color="#55CDB0"/><stop offset="1" stop-color="#327E76"/></linearGradient></defs>
  <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 16v3h14v-3" stroke="url(#accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
 LIBRARY_ICON = """
-<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#A2F6D9"/><stop offset=".52" stop-color="#55CDB0"/><stop offset="1" stop-color="#327E76"/></linearGradient></defs>
  <rect x="4" y="5" width="4" height="15" rx="1" stroke="url(#accent)" stroke-width="1.4"/><rect x="9.5" y="3.5" width="5" height="16.5" rx="1" stroke="url(#accent)" stroke-width="1.4"/><path d="m17.2 4.7 3 1-4.1 13.1-3-1 4.1-13.1Z" stroke="url(#accent)" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 8h2m4.5-1h3m2.2 2.1 2.2.7" stroke="url(#accent)" stroke-width="1.1" stroke-linecap="round"/>
 </svg>
 """
 MAP_ICON = """
-<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
  <circle cx="12" cy="12" r="8.6" stroke="url(#accent)" stroke-width="1.35"/>
  <path d="M12 3.4v2.1M12 18.5v2.1M3.4 12h2.1M18.5 12h2.1" stroke="url(#accent)" stroke-width="1.2" stroke-linecap="round"/>
@@ -842,7 +859,7 @@ class MoodPlaylistCard(QFrame):
         cover.setPixmap(self._mood_pixmap(cover.size()))
         layout.addWidget(cover)
 
-        title = QLabel("Now")
+        title = QLabel("Mood")
         title.setObjectName("playlistCardName")
         title.setFixedHeight(16)
         layout.addWidget(title)
@@ -870,8 +887,71 @@ class MoodPlaylistCard(QFrame):
         return pixmap
 
 
+class TrackNumberPlayWidget(QWidget):
+    """A table-row index that turns into the row's play action."""
+
+    play_requested = Signal()
+    CONTENT_OFFSET_X = -5
+
+    def __init__(
+        self,
+        number: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("trackRowCell")
+        self.setMinimumWidth(48)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self._number_label = QLabel(str(number), self)
+        self._number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._number_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+        self._play_button = SvgIconButton(
+            PLAY_ICON,
+            tooltip="Play track",
+            diameter=32,
+            flat=True,
+            parent=self,
+        )
+        self._play_button.clicked.connect(self.play_requested)
+        self._play_button.hide()
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        content_offset = self.CONTENT_OFFSET_X
+        self._number_label.setGeometry(
+            content_offset,
+            0,
+            self.width(),
+            self.height(),
+        )
+        button_size = self._play_button.sizeHint()
+        x = max(
+            0,
+            (self.width() - button_size.width()) // 2 + content_offset,
+        )
+        y = max(0, (self.height() - button_size.height()) // 2)
+        self._play_button.setGeometry(
+            x,
+            y,
+            button_size.width(),
+            button_size.height(),
+        )
+
+    def set_play_visible(self, visible: bool) -> None:
+        self._number_label.setVisible(not visible)
+        self._play_button.setVisible(visible)
+
+
 class TrackIdentityWidget(QWidget):
-    """A compact play affordance with a title and muted artist label."""
+    """A title and muted artist label, optionally with a play affordance."""
 
     play_requested = Signal()
 
@@ -882,23 +962,28 @@ class TrackIdentityWidget(QWidget):
         *,
         cover_path: str | None = None,
         compact: bool = False,
+        include_play_button: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._title = title
         self._artist = artist
+        self._include_play_button = include_play_button
+        self.setObjectName("trackRowCell")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(6)
+        layout.setSpacing(6 if include_play_button else 2)
 
-        play_button = SvgIconButton(
-            PLAY_ICON,
-            tooltip="Play track",
-            diameter=28 if compact else 30,
-            flat=True,
-        )
-        play_button.clicked.connect(self.play_requested)
-        layout.addWidget(play_button)
+        if include_play_button:
+            play_button = SvgIconButton(
+                PLAY_ICON,
+                tooltip="Play track",
+                diameter=28 if compact else 30,
+                flat=True,
+            )
+            play_button.clicked.connect(self.play_requested)
+            layout.addWidget(play_button)
 
         text_container = QWidget()
         text_container.setAttribute(
@@ -922,8 +1007,8 @@ class TrackIdentityWidget(QWidget):
                 QSizePolicy.Policy.Ignored,
                 QSizePolicy.Policy.Fixed,
             )
-        self._title_label.setFixedHeight(17)
-        self._artist_label.setFixedHeight(13)
+        self._title_label.setFixedHeight(20)
+        self._artist_label.setFixedHeight(16)
         self._title_label.setToolTip(title)
         self._artist_label.setToolTip(artist)
         text_layout.addWidget(self._title_label)
@@ -932,7 +1017,10 @@ class TrackIdentityWidget(QWidget):
 
     def resizeEvent(self, event: object) -> None:
         super().resizeEvent(event)
-        available_width = max(8, self.width() - 44)
+        available_width = max(
+            8,
+            self.width() - (44 if self._include_play_button else 4),
+        )
         self._title_label.setText(
             QFontMetrics(self._title_label.font()).elidedText(
                 self._title,

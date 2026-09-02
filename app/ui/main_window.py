@@ -105,6 +105,7 @@ from app.ui.components import (
     HoverTableWidget,
     RailIconButton,
     SvgIconButton,
+    TrackNumberPlayWidget,
     TrackIdentityWidget,
     track_cover_pixmap,
     svg_icon,
@@ -321,7 +322,8 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame(body)
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedSize(56, 180)
+        rail_size = RailIconButton.BUTTON_SIZE
+        sidebar.setFixedSize(rail_size, rail_size * 3 + 12)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 4, 0, 4)
         sidebar_layout.setSpacing(2)
@@ -331,7 +333,7 @@ class MainWindow(QMainWindow):
             IMPORT_ICON,
             tooltip="Import music",
             variant="download",
-            icon_size=52,
+            icon_size=RailIconButton.ICON_SIZE,
         )
         import_button.setObjectName("railButton")
         import_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -351,7 +353,7 @@ class MainWindow(QMainWindow):
             LIBRARY_ICON,
             tooltip="Library actions",
             variant="library",
-            icon_size=52,
+            icon_size=RailIconButton.ICON_SIZE,
         )
         library_button.setObjectName("railButton")
         library_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -390,7 +392,7 @@ class MainWindow(QMainWindow):
             MAP_ICON,
             tooltip="Toggle the music graph background",
             variant="map",
-            icon_size=52,
+            icon_size=RailIconButton.ICON_SIZE,
         )
         self.map_cycle_button.setObjectName("mapCycleButton")
         self.map_cycle_button.setProperty("railButton", True)
@@ -405,16 +407,13 @@ class MainWindow(QMainWindow):
         playlist_strip = QFrame()
         playlist_strip.setObjectName("playlistStrip")
         playlist_strip_layout = QVBoxLayout(playlist_strip)
-        # Keep the compact rail clear of the playlist row while leaving the
-        # library and queue panels aligned to the same outer inset.
-        playlist_strip_layout.setContentsMargins(64, 5, 9, 5)
+        # The main column already shares the outer 8px content inset with the
+        # player bar; do not add the rail width a second time here.
+        playlist_strip_layout.setContentsMargins(0, 5, 9, 5)
         playlist_strip_layout.setSpacing(3)
         playlist_header = QHBoxLayout()
         playlist_header.setContentsMargins(0, 0, 0, 0)
         playlist_header.setSpacing(4)
-        playlist_label = QLabel("Playlists")
-        playlist_label.setObjectName("playlistSectionTitle")
-        playlist_header.addWidget(playlist_label)
         playlist_header.addStretch()
 
         playlist_menu_button = QToolButton()
@@ -487,7 +486,12 @@ class MainWindow(QMainWindow):
         splitter.setSizes([900, 285])
         main_layout.addWidget(splitter, 1)
         body_layout.addWidget(main_column, 1)
-        sidebar.setGeometry(0, 0, 56, 180)
+        sidebar.setGeometry(
+            0,
+            0,
+            RailIconButton.BUTTON_SIZE,
+            RailIconButton.BUTTON_SIZE * 3 + 12,
+        )
         sidebar.raise_()
         content_layout.addWidget(body, 1)
         self._content_body = body
@@ -514,7 +518,7 @@ class MainWindow(QMainWindow):
             MAP_ICON,
             tooltip="Return to library",
             variant="map",
-            icon_size=52,
+            icon_size=RailIconButton.ICON_SIZE,
             parent=app_root,
         )
         self.map_exit_button.setObjectName("mapExitButton")
@@ -572,32 +576,44 @@ class MainWindow(QMainWindow):
         previous_button = SvgIconButton(
             PREVIOUS_ICON,
             tooltip="Previous track",
-            diameter=30,
+            diameter=36,
             flat=True,
             parent=player_bar,
         )
         previous_button.clicked.connect(self._go_previous)
-        control_layout.addWidget(previous_button)
+        control_layout.addWidget(
+            previous_button,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
 
         self.player_play_button = SvgIconButton(
             PLAY_ICON,
             tooltip="Play or pause",
-            diameter=34,
+            diameter=42,
             flat=True,
             parent=player_bar,
         )
         self.player_play_button.clicked.connect(self._toggle_playback)
-        control_layout.addWidget(self.player_play_button)
+        control_layout.addWidget(
+            self.player_play_button,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
 
         next_button = SvgIconButton(
             NEXT_ICON,
             tooltip="Next track",
-            diameter=30,
+            diameter=36,
             flat=True,
             parent=player_bar,
         )
         next_button.clicked.connect(self._go_next)
-        control_layout.addWidget(next_button)
+        control_layout.addWidget(
+            next_button,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
         control_layout.addStretch()
         center_layout.addLayout(control_layout)
 
@@ -699,13 +715,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_player_bar"):
             bar_height = self._player_bar.height()
             self._player_bar.setGeometry(
-                12,
+                8,
                 root_rect.height() - bar_height - 8,
-                max(0, root_rect.width() - 24),
+                max(0, root_rect.width() - 16),
                 bar_height,
             )
         if hasattr(self, "map_exit_button"):
-            self.map_exit_button.setGeometry(16, 16, 56, 56)
+            self.map_exit_button.setGeometry(
+                16,
+                16,
+                RailIconButton.BUTTON_SIZE,
+                RailIconButton.BUTTON_SIZE,
+            )
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if (
@@ -848,7 +869,7 @@ class MainWindow(QMainWindow):
             Qt.FocusPolicy.NoFocus
         )
         self.track_table.verticalHeader().setVisible(False)
-        self.track_table.verticalHeader().setDefaultSectionSize(52)
+        self.track_table.verticalHeader().setDefaultSectionSize(62)
         header = self.track_table.horizontalHeader()
         header.setSectionResizeMode(
             0,
@@ -878,6 +899,7 @@ class MainWindow(QMainWindow):
         header.resizeSection(3, 100)
         header.resizeSection(4, 66)
         header.resizeSection(5, 44)
+        header.resizeSection(0, 50)
         self.track_table.setColumnHidden(6, True)
         self.track_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
@@ -891,6 +913,9 @@ class MainWindow(QMainWindow):
         self.track_table.setAlternatingRowColors(False)
         self._hovered_track_row = -1
         self.track_table.row_hovered.connect(self._set_track_row_hover)
+        self.track_table.cellEntered.connect(
+            lambda row, _column: self._set_track_row_hover(row)
+        )
         self.track_table.itemSelectionChanged.connect(
             self._handle_track_selection
         )
@@ -909,22 +934,49 @@ class MainWindow(QMainWindow):
         if row_index == self._hovered_track_row:
             return
 
-        for candidate in (self._hovered_track_row, row_index):
-            if candidate < 0 or candidate >= self.track_table.rowCount():
-                continue
-            for column in range(self.track_table.columnCount()):
-                item = self.track_table.item(candidate, column)
-                if item is None:
-                    continue
-                if candidate == row_index:
-                    selected = candidate == self.track_table.currentRow()
-                    item.setBackground(
-                        QBrush(QColor("#343738" if selected else "#292D2F"))
-                    )
-                else:
-                    item.setBackground(QBrush())
-
+        previous_row = self._hovered_track_row
         self._hovered_track_row = row_index
+        self._refresh_track_row_visuals((previous_row, row_index))
+
+    def _refresh_track_row_visuals(
+        self,
+        row_indices: tuple[int, ...] | None = None,
+    ) -> None:
+        """Keep the row background and its embedded widgets in one state."""
+
+        if row_indices is None:
+            row_indices = tuple(range(self.track_table.rowCount()))
+
+        for row_index in dict.fromkeys(row_indices):
+            if row_index < 0 or row_index >= self.track_table.rowCount():
+                continue
+            selected = row_index == self.track_table.currentRow()
+            hovered = row_index == self._hovered_track_row
+            state = "selected" if selected else "hover" if hovered else ""
+            background = (
+                QBrush(QColor("#303334" if selected else "#292D2F"))
+                if state
+                else QBrush()
+            )
+
+            for column in range(self.track_table.columnCount()):
+                item = self.track_table.item(row_index, column)
+                if item is not None:
+                    item.setBackground(background)
+
+                cell_widget = self.track_table.cellWidget(
+                    row_index,
+                    column,
+                )
+                if cell_widget is not None:
+                    cell_widget.setProperty("rowState", state)
+                    cell_widget.style().unpolish(cell_widget)
+                    cell_widget.style().polish(cell_widget)
+                    cell_widget.update()
+
+            index_widget = self.track_table.cellWidget(row_index, 0)
+            if isinstance(index_widget, TrackNumberPlayWidget):
+                index_widget.set_play_visible(bool(state))
 
     def _build_queue_panel(self) -> QWidget:
         panel = QFrame()
@@ -982,10 +1034,13 @@ class MainWindow(QMainWindow):
         self.recommendation_service.refresh()
 
         self.track_table.setRowCount(0)
+        self._hovered_track_row = -1
         self.track_table.setRowCount(len(tracks))
 
         for row_index, track in enumerate(tracks):
             self._populate_track_row(row_index, track)
+
+        self._refresh_track_row_visuals()
 
         self._load_queue()
         self._load_history()
@@ -1054,10 +1109,7 @@ class MainWindow(QMainWindow):
         row_index: int,
         track: Track,
     ) -> None:
-        number_item = QTableWidgetItem(str(row_index + 1))
-        number_item.setTextAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        number_item = QTableWidgetItem()
         number_item.setData(
             Qt.ItemDataRole.UserRole,
             track.id,
@@ -1068,10 +1120,20 @@ class MainWindow(QMainWindow):
             0,
             number_item,
         )
+        index_widget = TrackNumberPlayWidget(row_index + 1)
+        index_widget.play_requested.connect(
+            lambda track_id=track.id, row=row_index: (
+                self.track_table.selectRow(row),
+                self._play_track_now(track_id),
+            )
+        )
+        self.track_table.setCellWidget(row_index, 0, index_widget)
+        self.track_table.register_row_widget(index_widget, row_index)
         track_identity = TrackIdentityWidget(
             track.title,
             track.artist,
             cover_path=track.cover_path,
+            include_play_button=False,
         )
         track_identity.play_requested.connect(
             lambda track_id=track.id: self._play_track_now(track_id)
@@ -1102,6 +1164,10 @@ class MainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
         queue_cell = QWidget()
+        queue_cell.setObjectName("trackRowCell")
+        queue_cell.setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground
+        )
         queue_cell_layout = QHBoxLayout(queue_cell)
         queue_cell_layout.setContentsMargins(0, 0, 0, 0)
         queue_cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1874,6 +1940,7 @@ class MainWindow(QMainWindow):
             self.delete_button.setEnabled(False)
             self.queue_selected_button.setEnabled(False)
             self.analyze_genres_button.setEnabled(False)
+            self._refresh_track_row_visuals()
             self._load_recommendations()
             return
 
@@ -1882,6 +1949,7 @@ class MainWindow(QMainWindow):
         self.selected_track_id = title_item.data(
             Qt.ItemDataRole.UserRole
         )
+        self._refresh_track_row_visuals()
         self.edit_button.setEnabled(True)
         self.delete_button.setEnabled(True)
         self.queue_selected_button.setEnabled(True)

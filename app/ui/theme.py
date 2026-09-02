@@ -5,7 +5,7 @@ from __future__ import annotations
 # without borrowing Spotify's green or the usual blue desktop-app accents.
 DARK_THEME = """
 * {
-    font-family: "Candara", "Trebuchet MS", "Segoe UI Variable", "Segoe UI", sans-serif;
+    font-family: "Segoe UI", Arial, sans-serif;
     color: #ECECEE;
 }
 QMainWindow, QWidget#appRoot {
@@ -70,11 +70,21 @@ QLabel#playerTitle {
 }
 QLabel#trackCellTitle, QLabel#nextTrackTitle {
     color: #EEEEF0;
+    font-size: 13px;
     font-weight: 600;
 }
 QLabel#trackCellArtist, QLabel#nextTrackArtist, QLabel#nextTrackCaption {
     color: #96969E;
-    font-size: 10px;
+    font-size: 12px;
+}
+QTableWidget#libraryTable {
+    font-size: 12px;
+}
+QWidget#trackRowCell[rowState="hover"] {
+    background-color: #292D2F;
+}
+QWidget#trackRowCell[rowState="selected"] {
+    background-color: #303334;
 }
 QPushButton, QComboBox {
     background-color: rgba(255, 255, 255, 10);
@@ -90,7 +100,11 @@ QPushButton:hover, QComboBox:hover {
 QPushButton:pressed {
     background-color: rgba(255, 255, 255, 31);
 }
-QToolButton#railButton, QToolButton#mapCycleButton,
+QToolButton#railButton, QToolButton#mapCycleButton {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
 QToolButton#plainActionButton {
     background: transparent;
     border: none;
@@ -98,13 +112,11 @@ QToolButton#plainActionButton {
     min-width: 0;
     min-height: 0;
 }
-QToolButton#railButton:hover, QToolButton#mapCycleButton:hover,
 QToolButton#plainActionButton:hover {
     background: rgba(112, 224, 190, 25);
     border: none;
     border-radius: 22px;
 }
-QToolButton#railButton:pressed, QToolButton#mapCycleButton:pressed,
 QToolButton#plainActionButton:pressed {
     background: rgba(112, 224, 190, 42);
     border: none;
@@ -166,9 +178,6 @@ QTableWidget::item {
     border-right: none;
     border-bottom: none;
 }
-QTableWidget::item:hover {
-    background-color: #25292A;
-}
 QListWidget::item:hover {
     background-color: rgba(255, 255, 255, 8);
 }
@@ -184,6 +193,9 @@ QHeaderView::section {
     color: #A9A9B0;
     border: none;
     padding: 7px;
+}
+QHeaderView::section:first {
+    padding-left: 13px;
 }
 QSplitter::handle:horizontal {
     width: 1px;
@@ -242,17 +254,38 @@ QScrollArea {
 QScrollArea > QWidget, QScrollArea > QWidget > QWidget {
     background: transparent;
 }
-QScrollBar:vertical, QScrollBar:horizontal {
-    background: #0E1113;
+QScrollBar:vertical {
+    background: #0B0E10;
     border: none;
+    width: 12px;
+    margin: 4px 2px;
+    border-radius: 6px;
+}
+QScrollBar:horizontal {
+    background: #0B0E10;
+    border: none;
+    height: 12px;
+    margin: 2px 4px;
+    border-radius: 6px;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #343B3B;
-    border-radius: 4px;
-    min-height: 22px;
-    min-width: 22px;
+    background: #3B4847;
+    border: 1px solid #566764;
+    border-radius: 6px;
+    min-height: 34px;
+    min-width: 34px;
 }
-QScrollBar::add-line, QScrollBar::sub-line {
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background: #526563;
+    border-color: #6D8981;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: #111719;
+    border-radius: 6px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0px;
     height: 0px;
 }
