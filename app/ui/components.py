@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     Property,
     QPropertyAnimation,
+    QRect,
     QSize,
     Qt,
     QTimer,
@@ -25,6 +27,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QRegion,
     QRadialGradient,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -58,11 +61,13 @@ class SvgIconButton(QAbstractButton):
         tooltip: str,
         diameter: int = 38,
         flat: bool = False,
+        icon_offset_y: int = 0,
         parent: QFrame | None = None,
     ) -> None:
         super().__init__(parent)
         self._diameter = diameter
         self._flat = flat
+        self._icon_offset_y = icon_offset_y
         self._renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
         self.setToolTip(tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -91,9 +96,9 @@ class SvgIconButton(QAbstractButton):
             if self.isDown() or self.underMouse():
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(background)
-                painter.drawEllipse(
-                    self.rect().adjusted(2, 2, -2, -2)
-                )
+                background_rect = self.rect().adjusted(2, 2, -2, -2)
+                background_rect.translate(0, self._icon_offset_y)
+                painter.drawEllipse(background_rect)
         else:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(background)
@@ -103,9 +108,16 @@ class SvgIconButton(QAbstractButton):
                 12,
             )
         padding = 6 if self._flat else 10
+        icon_rect = self.rect().adjusted(
+            padding,
+            padding,
+            -padding,
+            -padding,
+        )
+        icon_rect.translate(0, self._icon_offset_y)
         self._renderer.render(
             painter,
-            self.rect().adjusted(padding, padding, -padding, -padding),
+            icon_rect,
         )
 
 
@@ -648,7 +660,218 @@ def playlist_badge_text(name: str) -> str:
     return "".join(word[0] for word in words[:2]).upper()
 
 
-class PlaylistCard(QFrame):
+def _cover_palette(pixmap: QPixmap) -> tuple[QColor, QColor, QColor]:
+    """Extract three bright, distinct colors from a playlist cover."""
+
+    image = pixmap.toImage()
+    buckets: dict[tuple[int, int, int], int] = {}
+    if not image.isNull():
+        step_x = max(1, image.width() // 16)
+        step_y = max(1, image.height() // 10)
+        for y in range(0, image.height(), step_y):
+            for x in range(0, image.width(), step_x):
+                color = image.pixelColor(x, y)
+                if color.alpha() < 20:
+                    continue
+                red, green, blue, _ = color.getRgb()
+                bucket = (
+                    (red // 32) * 32,
+                    (green // 32) * 32,
+                    (blue // 32) * 32,
+                )
+                buckets[bucket] = buckets.get(bucket, 0) + 1
+
+    candidates = sorted(
+        buckets,
+        key=lambda rgb: (
+            buckets[rgb]
+            * (1.0 + max(rgb) / 255.0)
+        ),
+        reverse=True,
+    )
+    selected: list[QColor] = []
+    for red, green, blue in candidates:
+        color = QColor(red, green, blue)
+        if any(
+            abs(color.red() - current.red())
+            + abs(color.green() - current.green())
+            + abs(color.blue() - current.blue())
+            < 72
+            for current in selected
+        ):
+            continue
+        hue, saturation, value, _ = color.getHsv()
+        color.setHsv(
+            0 if hue < 0 else hue,
+            max(115, saturation),
+            max(95, value),
+        )
+        selected.append(color)
+        if len(selected) == 3:
+            break
+
+    fallback = (
+        QColor("#4EA98C"),
+        QColor("#477CB2"),
+        QColor("#8C5AAB"),
+    )
+    return tuple(selected + list(fallback))[:3]  # type: ignore[return-value]
+
+
+def _paint_palette_graph(
+    painter: QPainter,
+    width: int,
+    height: int,
+    colors: tuple[QColor, QColor, QColor],
+    seed: str,
+    opacity: float,
+) -> None:
+    """Paint a soft, randomized graph using a cover's palette."""
+
+    if width <= 2 or height <= 2 or opacity <= 0.0:
+        return
+
+    rng = random.Random(seed)
+    node_count = rng.randint(4, 8)
+    sides = ["top", "right", "bottom", "left"]
+    sides.extend(
+        rng.choice(("top", "right", "bottom", "left"))
+        for _ in range(node_count - len(sides))
+    )
+    rng.shuffle(sides)
+    points: list[tuple[float, float]] = []
+    for side in sides:
+        if side in ("top", "bottom"):
+            x = rng.uniform(0.08, 0.92)
+            y = rng.uniform(0.02, 0.09) if side == "top" else rng.uniform(0.88, 0.98)
+        else:
+            x = rng.uniform(0.02, 0.09) if side == "left" else rng.uniform(0.91, 0.98)
+            y = rng.uniform(0.18, 0.82)
+        points.append((width * x, height * y))
+
+    edge = colors[0].lighter(175)
+    edge.setAlpha(round(225 * opacity))
+    painter.setPen(QPen(edge, 1.25, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    edges = [(index, (index + 1) % len(points)) for index in range(len(points))]
+    for _ in range(rng.randint(0, max(1, len(points) // 2))):
+        start = rng.randrange(len(points))
+        end = rng.randrange(len(points))
+        if start != end and (start, end) not in edges and (end, start) not in edges:
+            edges.append((start, end))
+    for start, end in edges:
+        start_x, start_y = points[start]
+        end_x, end_y = points[end]
+        painter.drawLine(round(start_x), round(start_y), round(end_x), round(end_y))
+
+    for index, (x, y) in enumerate(points):
+        node_color = colors[index % len(colors)].lighter(160)
+        glow = QRadialGradient(x, y, 11.0)
+        glow.setColorAt(0.0, _color_with_alpha(node_color, round(205 * opacity)))
+        glow.setColorAt(0.52, _color_with_alpha(node_color, round(105 * opacity)))
+        glow.setColorAt(1.0, _color_with_alpha(node_color, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(round(x - 11), round(y - 11), 22, 22)
+        node_fill = QRadialGradient(x - 1.5, y - 1.5, 5.5)
+        node_fill.setColorAt(
+            0.0,
+            _color_with_alpha(node_color.lighter(175), round(250 * opacity)),
+        )
+        node_fill.setColorAt(
+            0.62,
+            _color_with_alpha(node_color, round(238 * opacity)),
+        )
+        node_fill.setColorAt(
+            1.0,
+            _color_with_alpha(node_color.darker(145), round(185 * opacity)),
+        )
+        painter.setBrush(node_fill)
+        painter.drawEllipse(round(x - 3), round(y - 3), 6, 6)
+
+
+class _PlaylistGraphHoverMixin:
+    def _setup_graph_hover(
+        self,
+        cover: QPixmap,
+        seed: str,
+        inner_rect: QRect,
+    ) -> None:
+        self._graph_colors = _cover_palette(cover)
+        self._graph_seed = seed
+        self._graph_inner_rect = inner_rect
+        self._graph_opacity = 0.0
+        self._graph_animation = QPropertyAnimation(self, b"graphOpacity", self)
+        self._graph_animation.setDuration(260)
+        self._graph_animation.setEasingCurve(
+            QEasingCurve(QEasingCurve.Type.InOutCubic)
+        )
+        self.setMouseTracking(True)
+
+    @Property(float)
+    def graphOpacity(self) -> float:  # noqa: N802 - Qt property name
+        return self._graph_opacity
+
+    @graphOpacity.setter
+    def graphOpacity(self, value: float) -> None:  # noqa: N802
+        self._graph_opacity = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def enterEvent(self, event: object) -> None:
+        super().enterEvent(event)
+        # Keep the hovered graph above neighboring playlist widgets while
+        # the inner card surface remains the final layer over its own graph.
+        self.raise_()
+        self.setProperty("graphHover", True)
+        self._set_surface_hovered(True)
+        self._graph_animation.stop()
+        self._graph_animation.setStartValue(self._graph_opacity)
+        self._graph_animation.setEndValue(1.0)
+        self._graph_animation.start()
+
+    def leaveEvent(self, event: object) -> None:
+        super().leaveEvent(event)
+        self.setProperty("graphHover", False)
+        self._set_surface_hovered(False)
+        self._graph_animation.stop()
+        self._graph_animation.setStartValue(self._graph_opacity)
+        self._graph_animation.setEndValue(0.0)
+        self._graph_animation.start()
+
+    def paintEvent(self, event: object) -> None:
+        super().paintEvent(event)
+        if self._graph_opacity <= 0.0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.save()
+        graph_region = QRegion(self.rect())
+        graph_region = graph_region.subtracted(
+            QRegion(self._graph_inner_rect)
+        )
+        painter.setClipRegion(graph_region)
+        _paint_palette_graph(
+            painter,
+            self.width(),
+            self.height(),
+            self._graph_colors,
+            self._graph_seed,
+            self._graph_opacity,
+        )
+        painter.restore()
+        painter.end()
+
+    def _set_surface_hovered(self, hovered: bool) -> None:
+        surface = getattr(self, "_card_surface", None)
+        if surface is None:
+            return
+        surface.setProperty("graphHover", hovered)
+        surface.style().unpolish(surface)
+        surface.style().polish(surface)
+        surface.update()
+
+
+class PlaylistCard(_PlaylistGraphHoverMixin, QFrame):
     """A horizontally-scrollable playlist tile with a stored or generated cover."""
 
     activated = Signal(str)
@@ -664,18 +887,31 @@ class PlaylistCard(QFrame):
         super().__init__(parent)
         self.playlist_id = playlist_id
         self._full_name = name
-        self.setObjectName("playlistCard")
+        self.setObjectName("playlistCardGraph")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(104, 82)
+        self.setFixedSize(126, 104)
 
-        layout = QVBoxLayout(self)
+        self._card_surface = QFrame(self)
+        self._card_surface.setObjectName("playlistCard")
+        self._card_surface.setGeometry(11, 11, 104, 82)
+        self._card_surface.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+        layout = QVBoxLayout(self._card_surface)
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(92, 50)
         self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cover_label.setPixmap(self._cover_pixmap(name, cover_path))
+        cover = self._cover_pixmap(name, cover_path)
+        self.cover_label.setPixmap(cover)
+        self._setup_graph_hover(
+            cover,
+            playlist_id,
+            self._card_surface.geometry(),
+        )
         layout.addWidget(self.cover_label)
 
         self.name_label = QLabel(name)
@@ -699,9 +935,9 @@ class PlaylistCard(QFrame):
         )
 
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self._card_surface.setProperty("selected", selected)
+        self._card_surface.style().unpolish(self._card_surface)
+        self._card_surface.style().polish(self._card_surface)
 
     def mouseReleaseEvent(self, event: object) -> None:
         super().mouseReleaseEvent(event)
@@ -841,7 +1077,7 @@ CALM_MOOD_SVG = """
 """
 
 
-class MoodPlaylistCard(QFrame):
+class MoodPlaylistCard(_PlaylistGraphHoverMixin, QFrame):
     """The first, calm entry point for an ad-hoc mood session."""
 
     mood_selected = Signal(str)
@@ -853,18 +1089,31 @@ class MoodPlaylistCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self._mood_names = mood_names
-        self.setObjectName("playlistCard")
-        self.setProperty("moodCard", True)
+        self.setObjectName("playlistCardGraph")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(104, 82)
+        self.setFixedSize(126, 104)
 
-        layout = QVBoxLayout(self)
+        self._card_surface = QFrame(self)
+        self._card_surface.setObjectName("playlistCard")
+        self._card_surface.setProperty("moodCard", True)
+        self._card_surface.setGeometry(11, 11, 104, 82)
+        self._card_surface.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+        layout = QVBoxLayout(self._card_surface)
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
         cover = QLabel()
         cover.setFixedSize(92, 50)
-        cover.setPixmap(self._mood_pixmap(cover.size()))
+        cover_pixmap = self._mood_pixmap(cover.size())
+        cover.setPixmap(cover_pixmap)
+        self._setup_graph_hover(
+            cover_pixmap,
+            "mood",
+            self._card_surface.geometry(),
+        )
         layout.addWidget(cover)
 
         title = QLabel("Mood")

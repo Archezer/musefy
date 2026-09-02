@@ -16,7 +16,13 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QBrush, QColor, QKeyEvent
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog,
@@ -95,7 +101,6 @@ from app.ui.components import (
     PAUSE_ICON,
     PLAY_ICON,
     PREVIOUS_ICON,
-    QUEUE_ICON,
     SPOTIFY_ICON,
     VOLUME_ICON,
     YOUTUBE_ICON,
@@ -115,7 +120,7 @@ from app.ui.components import (
 from app.ui.music_map import MusicMapWidget
 from app.ui.theme import DARK_THEME
 
-MAX_AUDIO_GAIN = 0.15
+MAX_AUDIO_GAIN = 0.22
 DEFAULT_VOLUME_PERCENT = 50
 MAP_MODES = ("background", "focus", "hidden")
 
@@ -271,6 +276,15 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_THEME)
 
         self._build_interface()
+        self._space_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Space),
+            self,
+        )
+        self._space_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self._space_shortcut.setAutoRepeat(False)
+        self._space_shortcut.activated.connect(self._toggle_playback)
         self._load_playlists()
         self._load_library()
         self._load_recommendations()
@@ -465,12 +479,15 @@ class MainWindow(QMainWindow):
         )
         self.playlist_carousel_layout = QHBoxLayout(self.playlist_carousel)
         self.playlist_carousel_layout.setContentsMargins(0, 0, 0, 0)
-        self.playlist_carousel_layout.setSpacing(9)
+        # Let the transparent graph halos overlap between cards; the actual
+        # card surfaces still keep a compact visual gap.
+        self.playlist_carousel_layout.setSpacing(-13)
         self.playlist_scroll.setWidget(self.playlist_carousel)
         playlist_strip_layout.addWidget(self.playlist_scroll)
         # Leave enough vertical room for the cover and its caption; the old
         # viewport was a few pixels shorter than the card itself.
-        playlist_strip.setFixedHeight(116)
+        # Leave a transparent ring around each card for its hover graph.
+        playlist_strip.setFixedHeight(140)
         main_layout.addWidget(playlist_strip)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -537,6 +554,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(app_root)
         self.statusBar().showMessage("Ready")
+        self.statusBar().hide()
         self._set_music_map_mode("background", animated=False)
 
     def _build_player_bar(self) -> QFrame:
@@ -597,8 +615,9 @@ class MainWindow(QMainWindow):
         self.player_play_button = SvgIconButton(
             PLAY_ICON,
             tooltip="Play or pause",
-            diameter=42,
+            diameter=48,
             flat=True,
+            icon_offset_y=-7,
             parent=player_bar,
         )
         self.player_play_button.clicked.connect(self._toggle_playback)
@@ -661,16 +680,6 @@ class MainWindow(QMainWindow):
         )
         self.like_button.clicked.connect(self._toggle_like_current_track)
         layout.addWidget(self.like_button)
-
-        queue_button = SvgIconButton(
-            QUEUE_ICON,
-            tooltip="Show queue",
-            diameter=30,
-            flat=True,
-            parent=player_bar,
-        )
-        queue_button.clicked.connect(self._show_queue)
-        layout.addWidget(queue_button)
 
         player_menu_button = QToolButton()
         player_menu_button.setObjectName("plainActionButton")
@@ -848,18 +857,40 @@ class MainWindow(QMainWindow):
 
     def _build_library_panel(self) -> QWidget:
         panel = QFrame()
-        panel.setObjectName("glassPanel")
+        panel.setObjectName("libraryPanel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 8, 0, 4)
         layout.setSpacing(10)
 
         library_title = QLabel("Music library")
         library_title.setObjectName("appTitle")
-        layout.addWidget(library_title)
+        library_header = QHBoxLayout()
+        library_header.setContentsMargins(8, 0, 0, 0)
+        library_header.setSpacing(8)
+        library_header.addWidget(
+            library_title,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
+        self.library_count_label = QLabel("0 tracks")
+        self.library_count_label.setObjectName("sectionCaption")
+        library_header.addWidget(
+            self.library_count_label,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
+        library_header.addStretch()
+        layout.addLayout(library_header)
 
         self.track_table = HoverTableWidget()
         self.track_table.setObjectName("libraryTable")
         self.track_table.setColumnCount(7)
+        self.track_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.track_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.track_table.setHorizontalHeaderLabels(
             [
                 "#",
@@ -907,6 +938,7 @@ class MainWindow(QMainWindow):
         header.resizeSection(4, 66)
         header.resizeSection(5, 44)
         header.resizeSection(0, 50)
+        self.track_table.setColumnHidden(5, True)
         self.track_table.setColumnHidden(6, True)
         self.track_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
@@ -987,9 +1019,9 @@ class MainWindow(QMainWindow):
 
     def _build_queue_panel(self) -> QWidget:
         panel = QFrame()
-        panel.setObjectName("glassPanel")
+        panel.setObjectName("queuePanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setContentsMargins(8, 9, 8, 4)
         layout.setSpacing(8)
 
         header = QHBoxLayout()
@@ -1003,14 +1035,10 @@ class MainWindow(QMainWindow):
         header.addWidget(self.queue_count_label)
         layout.addLayout(header)
 
-        queue_caption = QLabel("Up next")
-        queue_caption.setObjectName("sectionCaption")
-        layout.addWidget(queue_caption)
-
         self.queue_list = QListWidget()
         self.queue_list.setObjectName("queueList")
         self.queue_list.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.queue_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1052,9 +1080,10 @@ class MainWindow(QMainWindow):
         self._load_queue()
         self._load_history()
         self._refresh_music_map()
-        self.statusBar().showMessage(
-            f"Loaded {len(tracks)} tracks"
+        self.library_count_label.setText(
+            f"{len(tracks)} track{'s' if len(tracks) != 1 else ''}"
         )
+        self.statusBar().showMessage("Library refreshed")
 
     def _load_history(self) -> None:
         if not hasattr(self, "history_list"):
@@ -1170,30 +1199,6 @@ class MainWindow(QMainWindow):
             if item is not None:
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        queue_cell = QWidget()
-        queue_cell.setObjectName("trackRowCell")
-        queue_cell.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground
-        )
-        queue_cell_layout = QHBoxLayout(queue_cell)
-        queue_cell_layout.setContentsMargins(0, 0, 0, 0)
-        queue_cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        queue_button = SvgIconButton(
-            QUEUE_ICON,
-            tooltip="Add to queue",
-            diameter=28,
-            flat=True,
-            parent=queue_cell,
-        )
-        queue_button.clicked.connect(
-            lambda checked=False, track_id=track.id: self._enqueue_track(
-                track_id
-            )
-        )
-        queue_cell_layout.addWidget(queue_button)
-        self.track_table.setItem(row_index, 5, QTableWidgetItem())
-        self.track_table.setCellWidget(row_index, 5, queue_cell)
-        self.track_table.register_row_widget(queue_cell, row_index)
         self.track_table.setItem(
             row_index,
             6,
@@ -3345,7 +3350,18 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _output_volume(value: int) -> float:
-        return max(0, min(value, 100)) / 100 * MAX_AUDIO_GAIN
+        normalized = max(0, min(value, 100)) / 100
+        if normalized <= 0.5:
+            # The first half is deliberately gentle, giving the user a
+            # useful range for quiet listening.
+            quiet_position = normalized / 0.5
+            response = 0.5 * quiet_position**2
+        else:
+            # Above 50%, move through the audible range more decisively
+            # while retaining the 20% higher maximum gain.
+            loud_position = (normalized - 0.5) / 0.5
+            response = 0.5 + 0.5 * loud_position**0.72
+        return response * MAX_AUDIO_GAIN
 
     def _get_active_mood_context(self) -> str | None:
         queue = self.playback_queue_service.queue

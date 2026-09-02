@@ -42,6 +42,18 @@ QFrame#glassPanel {
     border: none;
     border-radius: 0;
 }
+QFrame#libraryPanel, QFrame#queuePanel {
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 rgba(17, 20, 22, 0),
+        stop: .28 rgba(17, 20, 22, 88),
+        stop: .5 rgba(17, 20, 22, 236),
+        stop: .56 rgba(17, 20, 22, 255),
+        stop: 1 rgba(17, 20, 22, 255)
+    );
+    border: none;
+    border-radius: 15px;
+}
 QFrame#playerBar {
     background-color: #0D1012;
     border-color: rgba(255, 255, 255, 18);
@@ -153,20 +165,25 @@ QTableWidget, QListWidget {
     padding: 3px;
 }
 QTableWidget#libraryTable {
-    background-color: #111416;
-    border-color: #252C2D;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     selection-background-color: #303334;
     selection-color: #F2F4F3;
 }
 QListWidget#queueList {
-    background-color: #101315;
-    border-color: #080A0C;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     selection-background-color: #252B2B;
     selection-color: #F2F4F3;
 }
 QTableWidget QHeaderView, QHeaderView,
 QTableCornerButton::section {
-    background-color: #171A1D;
+    background: transparent;
+}
+QTableWidget#libraryTable QHeaderView::section {
+    background: transparent;
 }
 QTableWidget::item, QListWidget::item {
     padding: 5px 7px;
@@ -295,6 +312,10 @@ QFrame#playlistCard {
     border-radius: 12px;
 }
 QFrame#playlistCard:hover {
+    background-color: rgba(255, 255, 255, 16);
+    border-color: rgba(255, 255, 255, 47);
+}
+QFrame#playlistCard[graphHover="true"] {
     background-color: rgba(255, 255, 255, 16);
     border-color: rgba(255, 255, 255, 47);
 }
