@@ -6,8 +6,9 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = PROJECT_ROOT / "data" / "models" / "maest"
+from app.storage.paths import DATA_DIR
+
+MODEL_DIR = DATA_DIR / "models" / "maest"
 
 
 @dataclass(frozen=True)

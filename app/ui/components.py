@@ -784,6 +784,14 @@ IMPORT_ICON = """
  <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 16v3h14v-3" stroke="url(#accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
+_MUSEFY_MARK_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "assets"
+    / "musefy-mark.svg"
+)
+MUSEFY_MARK_SVG = _MUSEFY_MARK_PATH.read_text(encoding="utf-8")
+_MUSEFY_ICON_PATH = _MUSEFY_MARK_PATH.with_name("musefy-icon.svg")
+MUSEFY_ICON_SVG = _MUSEFY_ICON_PATH.read_text(encoding="utf-8")
 PLAYLIST_SCROLL_LEFT_ICON = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M15.25 5.75 9 12l6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>

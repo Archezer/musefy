@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
             self._handle_playback_state_changed
         )
 
-        self.setWindowTitle("Music Recommendation System")
+        self.setWindowTitle("Musefy")
         self.resize(1240, 800)
         self.setStyleSheet(DARK_THEME)
 
@@ -4842,6 +4842,10 @@ class MainWindow(QMainWindow):
 
     def _restart_application(self) -> None:
         """Restart this process so edited Python modules are re-imported."""
+
+        if getattr(sys, "frozen", False):
+            os.execv(sys.executable, [sys.executable])
+            return
 
         os.execv(
             sys.executable,

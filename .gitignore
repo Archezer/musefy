@@ -28,6 +28,7 @@ var/
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+assets/musefy-mark.ico
 
 # Installer logs
 pip-log.txt
@@ -132,6 +133,7 @@ desktop.ini
 # YouTube session data
 data/youtube_cookies.txt
 .uv-cache/
+.build_tools/
 
 # Spotify OAuth refresh token
 data/spotify_token.json

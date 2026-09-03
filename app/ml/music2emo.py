@@ -21,9 +21,9 @@ from app.ml.mood_profiles import (
     music2emo_to_vector,
     predict_mood_profiles,
 )
+from app.storage.paths import DATA_DIR
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_ROOT = PROJECT_ROOT / "data" / "models" / "music2emo"
+MODEL_ROOT = DATA_DIR / "models" / "music2emo"
 MERT_NAME = "m-a-p/MERT-v1-95M"
 MERT_SAMPLE_RATE = 24_000
 CHORD_SAMPLE_RATE = 22_050

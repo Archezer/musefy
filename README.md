@@ -1,4 +1,4 @@
-# Local Music Recommendation System
+# Musefy
 
 A Windows desktop application for a **local music library**. It imports audio
 from files, YouTube, Spotify and SoundCloud links, analyses each track locally, and builds
@@ -130,18 +130,48 @@ not a package to add through `uv`.
 
 ### Add the model files
 
-Large model weights are deliberately excluded from Git. Obtain the approved
-model artifacts separately and place them at these paths before running
-analysis:
+Large model weights are deliberately excluded from Git. Download the approved
+artifacts from their official sources and place them at these paths before
+running analysis:
 
 ```text
 data/models/maest/maest.onnx
 data/models/music2emo/inference/data/btc_model_large_voca.pt
 ```
 
-The repository already contains the accompanying MAEST labels and Music2Emo
-support files. Do not commit model binaries, cookies, tokens, your database, or
-audio library; `.gitignore` excludes them on purpose.
+The exact files used by Musefy are:
+
+- [MAEST 30s, PaSST, 519 styles (ONNX)](https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx)
+  (about 348 MB), saved as `data/models/maest/maest.onnx`;
+- [Music2Emo chord model](https://huggingface.co/amaai-lab/music2emo/resolve/main/inference/data/btc_model_large_voca.pt?download=true)
+  (about 12 MB), saved as
+  `data/models/music2emo/inference/data/btc_model_large_voca.pt`.
+
+From PowerShell, both files can be downloaded in one step after `uv sync
+--locked`:
+
+```powershell
+New-Item -ItemType Directory -Force `
+  data\models\maest, data\models\music2emo\inference\data
+
+curl.exe -L --fail -o data\models\maest\maest.onnx `
+  "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx"
+
+curl.exe -L --fail -o data\models\music2emo\inference\data\btc_model_large_voca.pt `
+  "https://huggingface.co/amaai-lab/music2emo/resolve/main/inference/data/btc_model_large_voca.pt?download=true"
+```
+
+The repository already contains the MAEST labels and Music2Emo support files,
+including `saved_models/J_all.ckpt`. The MERT backbone is downloaded
+automatically by Transformers on the first analysis from
+[`m-a-p/MERT-v1-95M`](https://huggingface.co/m-a-p/MERT-v1-95M); that first
+analysis therefore requires an Internet connection and several hundred MB of
+free disk space. Do not commit model binaries, cookies, tokens, your database,
+or audio library; `.gitignore` excludes them on purpose.
+
+The model licenses are different, so review the linked model cards before
+redistributing a bundle: MAEST is CC BY-NC-SA 4.0, Music2Emo is Apache 2.0,
+and MERT is CC BY-NC 4.0.
 
 ### Optional CUDA check
 
@@ -158,6 +188,29 @@ unavailable, but genre and mood analysis will be much slower.
 ```powershell
 uv run python -m app.desktop
 ```
+
+### Build a pinned Windows bundle
+
+The repository includes the flat turquoise lyre mark (`assets/musefy-lyre.svg`)
+and its dark tile background (`assets/musefy-background.png`). A repeatable
+PyInstaller script combines them into the Windows ICO. From the project
+environment, run:
+
+```powershell
+uv run python scripts/build_musefy.py
+```
+
+For a one-click build from Explorer, double-click `build_musefy.bat` in the
+project root. It uses the local `.venv` when available and otherwise falls
+back to `uv`.
+
+The portable onedir bundle is written to `dist/Musefy/Musefy.exe`. User data
+and ML models are intentionally kept outside the executable because they can
+be very large; copy a `data/` folder next to the executable or set
+`MUSEFY_DATA_DIR`. Right-click `Musefy.exe` in Explorer and choose **Pin to
+taskbar** (or **Create shortcut**). If Windows still shows an old icon, unpin
+the previous Musefy shortcut and pin the freshly built executable again; the
+taskbar can cache shortcut icons.
 
 The app stores its local state in:
 
@@ -380,9 +433,10 @@ slower.
 
 ### A model file is missing
 
-Restore the required files under `data/models/` from the project's approved
-model-artifact source. They are intentionally not stored in Git because of
-their size.
+Run the download block in [Add the model files](#add-the-model-files). The
+required artifacts are the [MAEST ONNX file](https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx)
+and the [Music2Emo chord model](https://huggingface.co/amaai-lab/music2emo/resolve/main/inference/data/btc_model_large_voca.pt?download=true).
+They are intentionally not stored in Git because of their size.
 
 ## Privacy and responsible use
 

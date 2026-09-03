@@ -1,5 +1,9 @@
+import ctypes
 import sys
+from ctypes import wintypes
+from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.domain.models import User
@@ -8,8 +12,8 @@ from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
 from app.services.playback_queue import PlaybackQueueService
-from app.services.playlists import PlaylistManagementService
 from app.services.playlist_bridge import PlaylistBridgeServer
+from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
 from app.services.soundcloud_import import SoundCloudImportService
 from app.services.track_similarity import TrackSimilarityService
@@ -20,9 +24,11 @@ from app.storage.database import (
     create_session,
 )
 from app.storage.repository import SQLAlchemyMusicStore
+from app.ui.components import MUSEFY_ICON_SVG, svg_icon
 from app.ui.main_window import MainWindow
 
 CURRENT_USER_ID = "user-1"
+_NATIVE_MUSEFY_ICON_HANDLE = None
 
 
 def main() -> None:
@@ -58,7 +64,12 @@ def main() -> None:
         track_radio=track_radio,
     )
 
+    _set_windows_app_user_model_id()
     qt_application = QApplication(sys.argv)
+    qt_application.setApplicationName("Musefy")
+    qt_application.setApplicationDisplayName("Musefy")
+    musefy_icon = _load_musefy_icon()
+    qt_application.setWindowIcon(musefy_icon)
 
     try:
         playlist_bridge = PlaylistBridgeServer()
@@ -83,7 +94,9 @@ def main() -> None:
         playlist_management_service=playlist_management_service,
         user_id=CURRENT_USER_ID,
     )
+    window.setWindowIcon(musefy_icon)
     window.show()
+    _apply_windows_taskbar_icon(window)
 
     sys.exit(qt_application.exec())
 
@@ -100,6 +113,108 @@ def _ensure_current_user(
             display_name="Desktop User",
         )
     )
+
+
+def _load_musefy_icon() -> QIcon:
+    """Load the circular PNG mark, with an SVG fallback for source runs."""
+
+    icon_path = _find_musefy_asset("musefy-icon.png")
+    if icon_path is None:
+        icon_path = _find_musefy_asset("musefy-mark.ico")
+    if icon_path is not None:
+        return QIcon(str(icon_path))
+
+    return svg_icon(MUSEFY_ICON_SVG, size=128)
+
+
+def _find_musefy_asset(filename: str) -> Path | None:
+    roots = (
+        Path(__file__).resolve().parents[1],
+        Path(getattr(sys, "_MEIPASS", "")),
+        Path(sys.executable).resolve().parent / "_internal",
+    )
+    for root in roots:
+        candidate = root / "assets" / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _apply_windows_taskbar_icon(window: MainWindow) -> None:
+    """Set the native HWND icons so Windows cannot fall back to uv/python."""
+
+    global _NATIVE_MUSEFY_ICON_HANDLE
+    if sys.platform != "win32":
+        return
+
+    icon_path = _find_musefy_asset("musefy-mark.ico")
+    if icon_path is None:
+        return
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.LoadImageW.restype = wintypes.HANDLE
+        handle = user32.LoadImageW(
+            None,
+            str(icon_path),
+            1,  # IMAGE_ICON
+            0,
+            0,
+            0x50,  # LR_DEFAULTSIZE | LR_LOADFROMFILE
+        )
+        if not handle:
+            return
+
+        hwnd = int(window.winId())
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.SendMessageW.restype = wintypes.LRESULT
+        user32.SendMessageW(hwnd, 0x0080, 1, handle)  # WM_SETICON / ICON_BIG
+        user32.SendMessageW(hwnd, 0x0080, 0, handle)  # WM_SETICON / ICON_SMALL
+        set_class_long_ptr = getattr(user32, "SetClassLongPtrW", None)
+        if set_class_long_ptr is not None:
+            set_class_long_ptr.argtypes = [
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_void_p,
+            ]
+            set_class_long_ptr.restype = ctypes.c_void_p
+            set_class_long_ptr(hwnd, -14, handle)  # GCLP_HICON
+            set_class_long_ptr(hwnd, -34, handle)  # GCLP_HICONSM
+        _NATIVE_MUSEFY_ICON_HANDLE = handle
+    except (AttributeError, OSError, TypeError, ValueError):
+        # Qt's icon remains active if the optional native shell call fails.
+        return
+
+
+def _set_windows_app_user_model_id() -> None:
+    """Give source and packaged launches one stable taskbar identity."""
+
+    if sys.platform != "win32":
+        return
+
+    try:
+        shell32 = ctypes.windll.shell32
+        shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [
+            wintypes.LPCWSTR
+        ]
+        shell32.SetCurrentProcessExplicitAppUserModelID("Archzer.Musefy")
+    except (AttributeError, OSError):
+        # The desktop app is also runnable on non-Windows platforms and the
+        # shell API may be unavailable there.
+        pass
 
 
 if __name__ == "__main__":

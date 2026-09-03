@@ -14,13 +14,15 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
+from app.storage.paths import DATA_DIR
+
 SUPPORTED_SPOTIFY_HOSTS = {
     "open.spotify.com",
     "play.spotify.com",
     "spotify.link",
 }
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
-DEFAULT_SPOTIFY_TOKEN_PATH = Path("data/spotify_token.json")
+DEFAULT_SPOTIFY_TOKEN_PATH = DATA_DIR / "spotify_token.json"
 SPOTIFY_OAUTH_SCOPES = (
     "playlist-read-private",
     "playlist-read-collaborative",

@@ -11,6 +11,8 @@ from urllib.request import urlopen
 import yt_dlp
 from yt_dlp.utils import DownloadError
 
+from app.storage.paths import DATA_DIR
+
 SUPPORTED_DOWNLOAD_EXTENSIONS = {
     ".flac",
     ".m4a",
@@ -22,8 +24,7 @@ SUPPORTED_DOWNLOAD_EXTENSIONS = {
     ".wav",
 }
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_COOKIES_FILE = PROJECT_ROOT / "data" / "youtube_cookies.txt"
+DEFAULT_COOKIES_FILE = DATA_DIR / "youtube_cookies.txt"
 SUPPORTED_YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
