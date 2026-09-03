@@ -17,12 +17,15 @@ SUPPORTED_DOWNLOAD_EXTENSIONS = {
     ".flac",
     ".m4a",
     ".mp3",
-    # Some videos only expose progressive MP4 with AAC audio.
-    ".mp4",
     ".ogg",
     ".opus",
     ".wav",
 }
+
+YOUTUBE_AUDIO_FORMAT = (
+    "bestaudio[ext=m4a][vcodec=none]/"
+    "bestaudio[acodec*=mp4a][vcodec=none]"
+)
 
 DEFAULT_COOKIES_FILE = DATA_DIR / "youtube_cookies.txt"
 SUPPORTED_YOUTUBE_HOSTS = {
@@ -392,7 +395,7 @@ class YouTubeSearchProvider:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "format": "bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]",
+            "format": YOUTUBE_AUDIO_FORMAT,
             "outtmpl": str(
                 output_dir
                 / f"{candidate.video_id}.%(ext)s"

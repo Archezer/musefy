@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Self
 
+import pytest
+
 import app.sources.youtube as youtube_source
 from app.domain.models import Track
 from app.services.youtube_import import (
@@ -239,8 +241,53 @@ def test_download_prefers_m4a_audio(monkeypatch, tmp_path) -> None:
 
     assert downloaded_path.suffix == ".m4a"
     assert captured_options[0]["format"] == (
-        "bestaudio[ext=m4a]/bestaudio[acodec*=mp4a]"
+        youtube_source.YOUTUBE_AUDIO_FORMAT
     )
+    assert "[vcodec=none]" in captured_options[0]["format"]
+
+
+def test_download_rejects_video_container(monkeypatch, tmp_path) -> None:
+    class FakeYoutubeDownloadWriter:
+        def __init__(self, options: dict) -> None:
+            self.options = options
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def download(self, urls: list[str]) -> None:
+            output_path = Path(
+                self.options["outtmpl"].replace("%(ext)s", "mp4")
+            )
+            output_path.touch()
+
+    def create_downloader(options: dict) -> FakeYoutubeDownloadWriter:
+        return FakeYoutubeDownloadWriter(options)
+
+    monkeypatch.setattr(
+        youtube_source.yt_dlp,
+        "YoutubeDL",
+        create_downloader,
+    )
+    monkeypatch.setattr(
+        youtube_source,
+        "_authentication_sources",
+        lambda: ("none",),
+    )
+
+    candidate = YouTubeCandidate(
+        video_id="video-with-picture",
+        title="Video track",
+        channel_title="Artist",
+        duration_ms=None,
+        view_count=None,
+        url="https://www.youtube.com/watch?v=video-with-picture",
+    )
+
+    with pytest.raises(RuntimeError, match="Downloaded format is not supported"):
+        YouTubeSearchProvider().download(candidate, tmp_path)
 
 
 def test_playlist_import_keeps_successes_when_one_track_fails() -> None:

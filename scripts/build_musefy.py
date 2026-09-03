@@ -73,8 +73,6 @@ def main() -> None:
             f"{assets}{os.pathsep}assets",
             "--paths",
             str(ROOT),
-            "--hidden-import",
-            "scdl.scdl",
             str(ROOT / "app" / "desktop.py"),
         ]
     )

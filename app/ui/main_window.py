@@ -81,7 +81,12 @@ from app.services.interactions import InteractionService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
-from app.services.soundcloud_import import SoundCloudImportService
+from app.services.soundcloud_import import (
+    SoundCloudCandidate,
+    SoundCloudImportService,
+    SoundCloudPlaylist,
+    SoundCloudPlaylistImportResult,
+)
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import (
     SpotifyPlaylistSearchResult,
@@ -182,7 +187,7 @@ class YouTubeTaskThread(QThread):
     def run(self) -> None:
         try:
             result = self.task()
-        except (OSError, RuntimeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             message = str(error) or error.__class__.__name__
             self.error_occurred.emit(message)
         else:
@@ -1209,15 +1214,15 @@ class MainWindow(QMainWindow):
         header.resizeSection(4, 72)
         header.resizeSection(5, 44)
         header.resizeSection(0, 50)
-        # The library is presented in its natural order; column headers are
-        # labels only, not interactive filters/sort controls.
+        # Keep the custom row rendering while allowing the library columns to
+        # be sorted through the existing _handle_library_sort implementation.
         header.setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignVCenter
         )
-        header.setSectionsClickable(False)
-        header.setMouseTracking(False)
-        header.setSortIndicatorShown(False)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._handle_library_sort)
         index_header = self.track_table.horizontalHeaderItem(0)
         if index_header is not None:
             index_header.setTextAlignment(
@@ -3462,9 +3467,15 @@ class MainWindow(QMainWindow):
             )
         )
         dialog.soundcloud_download_requested.connect(
-            lambda source: self._start_soundcloud_download(
+            lambda source: self._start_soundcloud_search(
                 dialog,
                 source,
+            )
+        )
+        dialog.soundcloud_import_requested.connect(
+            lambda candidate: self._start_soundcloud_download(
+                dialog,
+                candidate,
             )
         )
         dialog.authenticate_requested.connect(
@@ -3482,7 +3493,7 @@ class MainWindow(QMainWindow):
             )
         )
         dialog.playlist_import_requested.connect(
-            lambda candidates: self._start_youtube_playlist_import(
+            lambda candidates: self._start_playlist_import(
                 dialog,
                 candidates,
             )
@@ -3493,7 +3504,7 @@ class MainWindow(QMainWindow):
     def _start_soundcloud_download(
         self,
         dialog: YouTubeSearchDialog,
-        source: str,
+        source: str | SoundCloudCandidate,
     ) -> None:
         if self._youtube_thread is not None:
             return
@@ -3518,6 +3529,73 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_soundcloud_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        source: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        if self.soundcloud_import_service.is_playlist_url(source):
+            self._start_soundcloud_playlist_load(dialog, source)
+            return
+
+        if self.soundcloud_import_service.is_supported_url(source):
+            self._start_soundcloud_download(dialog, source)
+            return
+
+        dialog.set_busy(True, "Searching SoundCloud...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.soundcloud_import_service.search(
+                source,
+                max_results=SoundCloudImportService.DEFAULT_SEARCH_RESULTS,
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_soundcloud_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_soundcloud_playlist_load(
+        self,
+        dialog: YouTubeSearchDialog,
+        url: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Loading SoundCloud playlist...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.soundcloud_import_service.playlist(url),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_soundcloud_playlist_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _start_youtube_or_spotify_source(
         self,
         dialog: YouTubeSearchDialog,
@@ -3526,7 +3604,7 @@ class MainWindow(QMainWindow):
         """Route one input field to search or URL loading automatically."""
 
         if self.soundcloud_import_service.is_supported_url(source):
-            self._start_soundcloud_download(dialog, source)
+            self._start_soundcloud_search(dialog, source)
             return
 
         if self.youtube_import_service.is_supported_url(source):
@@ -3704,6 +3782,87 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_playlist_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidates: object,
+    ) -> None:
+        if isinstance(candidates, list) and candidates and all(
+            isinstance(candidate, SoundCloudCandidate)
+            for candidate in candidates
+        ):
+            self._start_soundcloud_playlist_import(dialog, candidates)
+            return
+
+        self._start_youtube_playlist_import(dialog, candidates)
+
+    def _start_soundcloud_playlist_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidates: object,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        if not isinstance(candidates, list):
+            self._handle_youtube_error(
+                dialog,
+                "SoundCloud playlist selection is invalid.",
+            )
+            return
+
+        selected_candidates = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, SoundCloudCandidate)
+        ]
+
+        if not selected_candidates:
+            return
+
+        self._playlist_import_active = True
+        dialog.set_busy(
+            True,
+            (
+                "Downloading SoundCloud playlist: "
+                f"0/{len(selected_candidates)}..."
+            ),
+        )
+
+        def import_playlist() -> SoundCloudPlaylistImportResult:
+            return self.soundcloud_import_service.download_and_import_playlist(
+                selected_candidates,
+                on_progress=thread.progress_updated.emit,
+                on_track_imported=thread.track_imported.emit,
+            )
+
+        thread = YouTubeTaskThread(import_playlist, self)
+        thread.track_imported.connect(
+            lambda candidate, track: (
+                self._handle_playlist_track_imported(
+                    dialog,
+                    candidate,
+                    track,
+                )
+            )
+        )
+        thread.progress_updated.connect(
+            dialog.update_playlist_download_progress
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_soundcloud_playlist_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_playlist_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _start_youtube_playlist_import(
         self,
         dialog: YouTubeSearchDialog,
@@ -3747,7 +3906,7 @@ class MainWindow(QMainWindow):
         thread = YouTubeTaskThread(import_playlist, self)
         thread.track_imported.connect(
             lambda candidate, track: (
-                self._handle_youtube_playlist_track_imported(
+                self._handle_playlist_track_imported(
                     dialog,
                     candidate,
                     track,
@@ -3855,6 +4014,28 @@ class MainWindow(QMainWindow):
             if isinstance(candidate, YouTubeCandidate)
         ]
         dialog.set_candidates(candidates)
+
+    def _handle_soundcloud_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, list):
+            self._handle_youtube_error(
+                dialog,
+                "SoundCloud search returned an invalid result.",
+            )
+            return
+
+        candidates = [
+            candidate
+            for candidate in result
+            if isinstance(candidate, SoundCloudCandidate)
+        ]
+        dialog.set_candidates(
+            candidates,
+            source_label="SoundCloud tracks",
+        )
 
     def _handle_spotify_search_result(
         self,
@@ -4012,10 +4193,97 @@ class MainWindow(QMainWindow):
             message,
         )
 
-    def _handle_youtube_playlist_track_imported(
+    def _handle_soundcloud_playlist_result(
         self,
         dialog: YouTubeSearchDialog,
-        candidate: YouTubeCandidate,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SoundCloudPlaylist):
+            self._handle_youtube_error(
+                dialog,
+                "SoundCloud playlist returned an invalid result.",
+            )
+            return
+
+        dialog.set_search_query(result.name)
+        dialog.set_candidates(
+            list(result.candidates),
+            playlist=True,
+            playlist_name=result.name,
+            playlist_cover_url=result.cover_url,
+            source_label="SoundCloud tracks",
+        )
+
+    def _handle_soundcloud_playlist_import_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        self._playlist_import_active = False
+
+        if not isinstance(result, SoundCloudPlaylistImportResult):
+            self._handle_youtube_error(
+                dialog,
+                "SoundCloud playlist import returned an invalid result.",
+            )
+            return
+
+        self._load_queue()
+        QTimer.singleShot(
+            0,
+            self._maybe_refresh_recommendations,
+        )
+
+        if result.failed:
+            failed_candidates = [
+                candidate for candidate, _ in result.failed
+            ]
+            dialog.set_candidates(
+                failed_candidates,
+                playlist=True,
+                playlist_name=dialog.playlist_name,
+                playlist_cover_url=dialog.playlist_cover_url,
+            )
+            dialog.set_busy(
+                False,
+                f"{len(failed_candidates)} tracks failed.",
+            )
+
+            result_dialog = PlaylistImportResultDialog(
+                len(result.imported),
+                result.failed,
+                dialog,
+            )
+            result_dialog.retry_requested.connect(
+                lambda retry_candidates: QTimer.singleShot(
+                    0,
+                    lambda: self._start_soundcloud_playlist_import(
+                        dialog,
+                        retry_candidates,
+                    ),
+                )
+            )
+            result_dialog.exec()
+            if not result.failed:
+                dialog.accept()
+            return
+
+        dialog.accept()
+
+        message = f"Imported {len(result.imported)} playlist tracks."
+        if dialog.playlist_name:
+            message += f"\nLocal playlist: {dialog.playlist_name}"
+
+        QMessageBox.information(
+            self,
+            "Playlist import completed",
+            message,
+        )
+
+    def _handle_playlist_track_imported(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidate: YouTubeCandidate | SoundCloudCandidate,
         track: object,
     ) -> None:
         if not isinstance(track, Track):

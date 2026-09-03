@@ -18,8 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.ingestion.metadata import AudioMetadata
+from app.services.soundcloud_import import SoundCloudCandidate
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
+
+SearchCandidate = YouTubeCandidate | SoundCloudCandidate
 
 
 class TrackMetadataDialog(QDialog):
@@ -105,7 +108,9 @@ class TrackMetadataDialog(QDialog):
 
 class YouTubeSearchDialog(QDialog):
     source_requested = Signal(str)
+    # Kept under the old name for compatibility with existing integrations.
     soundcloud_download_requested = Signal(str)
+    soundcloud_import_requested = Signal(object)
     # Compatibility signals for integrations that still use the old API.
     search_requested = Signal(str)
     authenticate_requested = Signal(str)
@@ -158,10 +163,10 @@ class YouTubeSearchDialog(QDialog):
         self.load_button = self.source_button
 
         self.soundcloud_button = QPushButton(
-            "Try to download from SoundCloud"
+            "Search SoundCloud"
         )
         self.soundcloud_button.setToolTip(
-            "Search SoundCloud or download a SoundCloud link. "
+            "Search SoundCloud or load a track/set URL. "
             "Use only tracks you are authorized to download."
         )
         self.soundcloud_button.clicked.connect(
@@ -235,7 +240,7 @@ class YouTubeSearchDialog(QDialog):
         if not source:
             QMessageBox.warning(
                 self,
-                "SoundCloud download failed",
+                "SoundCloud search failed",
                 "Enter a SoundCloud search query or URL.",
             )
             return
@@ -279,7 +284,10 @@ class YouTubeSearchDialog(QDialog):
         if self._playlist_mode:
             self.playlist_import_requested.emit(candidates)
         else:
-            self.import_requested.emit(candidates[0])
+            if isinstance(candidates[0], SoundCloudCandidate):
+                self.soundcloud_import_requested.emit(candidates[0])
+            else:
+                self.import_requested.emit(candidates[0])
 
     def _request_url_load(self) -> None:
         """Legacy URL-load signal entry point."""
@@ -312,7 +320,7 @@ class YouTubeSearchDialog(QDialog):
 
     def selected_candidate(
         self,
-    ) -> YouTubeCandidate | None:
+    ) -> SearchCandidate | None:
         item = self.results_list.currentItem()
 
         if item is None:
@@ -320,12 +328,12 @@ class YouTubeSearchDialog(QDialog):
 
         candidate = item.data(Qt.ItemDataRole.UserRole)
 
-        if isinstance(candidate, YouTubeCandidate):
+        if isinstance(candidate, (YouTubeCandidate, SoundCloudCandidate)):
             return candidate
 
         return None
 
-    def selected_candidates(self) -> list[YouTubeCandidate]:
+    def selected_candidates(self) -> list[SearchCandidate]:
         if self._playlist_mode:
             candidates = []
 
@@ -337,7 +345,10 @@ class YouTubeSearchDialog(QDialog):
 
                 candidate = item.data(Qt.ItemDataRole.UserRole)
 
-                if isinstance(candidate, YouTubeCandidate):
+                if isinstance(
+                    candidate,
+                    (YouTubeCandidate, SoundCloudCandidate),
+                ):
                     candidates.append(candidate)
 
             return candidates
@@ -347,12 +358,13 @@ class YouTubeSearchDialog(QDialog):
 
     def set_candidates(
         self,
-        candidates: list[YouTubeCandidate],
+        candidates: list[SearchCandidate],
         *,
         playlist: bool = False,
         playlist_name: str | None = None,
         playlist_cover_url: str | None = None,
         unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
+        source_label: str = "videos",
     ) -> None:
         self._playlist_mode = playlist
         self._playlist_name = playlist_name if playlist else None
@@ -399,7 +411,7 @@ class YouTubeSearchDialog(QDialog):
                 )
         else:
             message = (
-                f"Found {len(candidates)} videos. "
+                f"Found {len(candidates)} {source_label}. "
                 "Select one to download."
             )
 
@@ -482,8 +494,21 @@ class YouTubeSearchDialog(QDialog):
     @staticmethod
     def _format_candidate(
         index: int,
-        candidate: YouTubeCandidate,
+        candidate: SearchCandidate,
     ) -> str:
+        if isinstance(candidate, SoundCloudCandidate):
+            duration = YouTubeSearchDialog._format_duration(
+                candidate.duration_ms
+            )
+            plays = YouTubeSearchDialog._format_views(
+                candidate.playback_count,
+                noun="plays",
+            )
+            return (
+                f"{index}. {candidate.artist} — {candidate.title}\n"
+                f"SoundCloud · {duration} · {plays}"
+            )
+
         duration = YouTubeSearchDialog._format_duration(
             candidate.duration_ms
         )
@@ -522,11 +547,13 @@ class YouTubeSearchDialog(QDialog):
     @staticmethod
     def _format_views(
         view_count: int | None,
+        *,
+        noun: str = "views",
     ) -> str:
         if view_count is None:
-            return "Unknown views"
+            return f"Unknown {noun}"
 
-        return f"{view_count:,} views"
+        return f"{view_count:,} {noun}"
 
 
 class PlaylistImportResultDialog(QDialog):
@@ -535,7 +562,10 @@ class PlaylistImportResultDialog(QDialog):
     def __init__(
         self,
         imported_count: int,
-        failed: tuple[tuple[YouTubeCandidate, str], ...],
+        failed: tuple[
+            tuple[YouTubeCandidate | SoundCloudCandidate, str],
+            ...,
+        ],
         parent: QWidget | None = None,
         *,
         unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),

@@ -21,8 +21,8 @@ rules when importing content.
 - Search YouTube, import a direct YouTube link, or load a YouTube playlist.
 - Import a Spotify track, album or playlist: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
-- Search SoundCloud or load a SoundCloud track URL through the
-  [`scdl`](https://github.com/scdl-org/scdl) downloader.
+- Search SoundCloud, load a direct track URL, or load a SoundCloud set and
+  choose which tracks to import through `yt-dlp`.
 - Use Firefox YouTube cookies automatically when a browser session is required.
 - Analyse new tracks in the background with CUDA when it is available.
 - Store genre hierarchy, mood profile and one reusable MAEST embedding per
@@ -321,15 +321,21 @@ Dashboard. Never commit `.env` or `data/spotify_token.json`.
 
 ### SoundCloud search and downloads
 
-In the import dialog, enter an artist/title query or paste a SoundCloud track
-URL, then click **Try to download from SoundCloud**. Queries use the first
-SoundCloud result returned by `scdl`; URLs are downloaded directly. The app
-imports the resulting audio into the local library and never stores the
-temporary download directory.
+In the import dialog, enter an artist/title query and click **Search SoundCloud**.
+The app shows the first five matching tracks; select one and click **Download
+selected**. A pasted SoundCloud track URL is downloaded directly. A pasted
+`/sets/…` URL is resolved into its tracks, which can be selected individually
+before downloading. The app imports each resulting audio file into the local
+library and never stores the temporary download directory.
 
 Use this only for tracks you own or have explicit permission to download. Some
-tracks do not expose a downloadable file, so SoundCloud or `scdl` can still
-reject the request. The integration intentionally skips playlists.
+tracks do not expose a downloadable file, so SoundCloud or `yt-dlp` can still
+reject the request. Musefy first requests SoundCloud's original uploaded file,
+then falls back to a full-length audio stream; it refuses preview-only streams
+instead of importing a 30-second clip. For a private or account-restricted
+track, set `SOUNDCLOUD_OAUTH_TOKEN` or `SOUNDCLOUD_COOKIES_FILE` in `.env` using
+credentials for an account authorized to access that track. The integration
+intentionally skips playlists.
 
 ### VK Music, Spotify and Yandex Music browser exporter
 

@@ -162,10 +162,15 @@ class TrackManagementService:
                 f"{normalized_track_id}"
             )
 
-        file_path = self._get_managed_file_path(
-            current_track,
-            require_exists=False,
-        )
+        try:
+            file_path = self._get_managed_file_path(
+                current_track,
+                require_exists=False,
+            )
+        except (OSError, ValueError):
+            # A stale or moved file must not leave an orphaned database row.
+            # We only remove files that are still inside the managed library.
+            file_path = None
         cover_path = self._get_managed_cover_path(current_track)
 
         self.store.delete_track(normalized_track_id)
