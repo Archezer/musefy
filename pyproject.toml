@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "ruff>=0.16.4",
     "scikit-learn>=1.9.0",
+    "scdl>=3.0.8",
     "sqlalchemy>=2.0.52",
     "telethon>=1.44.0",
     "torch>=2.13.0",

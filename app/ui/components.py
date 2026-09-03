@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     Property,
     QPropertyAnimation,
     QRect,
+    QRectF,
     QSize,
     Qt,
     QTimer,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QScrollBar,
     QSlider,
     QStyle,
     QStyleOptionSlider,
@@ -430,6 +432,135 @@ class HoverTableWidget(QTableWidget):
         self.viewport().update()
 
 
+class RoundedScrollBar(QScrollBar):
+    """A compact scrollbar with a hand-painted pill-shaped handle."""
+
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(orientation, parent)
+        self._hovered = False
+        self._pressed = False
+        self.setMouseTracking(True)
+        if orientation == Qt.Orientation.Vertical:
+            self.setFixedWidth(14)
+        else:
+            self.setFixedHeight(14)
+
+    def enterEvent(self, event: object) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: object) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: object) -> None:
+        self._pressed = True
+        self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        super().mouseReleaseEvent(event)
+        self._pressed = False
+        self.update()
+
+    def mouseMoveEvent(self, event: object) -> None:
+        super().mouseMoveEvent(event)
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        margin = 1.0
+        if self.orientation() == Qt.Orientation.Vertical:
+            track_length = max(1.0, self.height() - margin * 2)
+            handle_length = self._handle_length(track_length)
+            travel = max(0.0, track_length - handle_length)
+            offset = self._handle_offset(travel)
+            handle_rect = QRectF(
+                margin,
+                margin + offset,
+                max(1.0, self.width() - margin * 2),
+                handle_length,
+            )
+            gradient = QLinearGradient(
+                handle_rect.left(),
+                handle_rect.top(),
+                handle_rect.right(),
+                handle_rect.top(),
+            )
+        else:
+            track_length = max(1.0, self.width() - margin * 2)
+            handle_length = self._handle_length(track_length)
+            travel = max(0.0, track_length - handle_length)
+            offset = self._handle_offset(travel)
+            handle_rect = QRectF(
+                margin + offset,
+                margin,
+                handle_length,
+                max(1.0, self.height() - margin * 2),
+            )
+            gradient = QLinearGradient(
+                handle_rect.left(),
+                handle_rect.top(),
+                handle_rect.left(),
+                handle_rect.bottom(),
+            )
+
+        if self._pressed:
+            colors = (
+                QColor("#82D1B5"),
+                QColor("#5DB292"),
+                QColor("#36776B"),
+            )
+        elif self._hovered:
+            colors = (
+                QColor("#6ABAA0"),
+                QColor("#4E9A83"),
+                QColor("#2E655B"),
+            )
+        else:
+            colors = (
+                QColor("#4D8F7D"),
+                QColor("#347262"),
+                QColor("#214B46"),
+            )
+
+        gradient.setColorAt(0.0, colors[0])
+        gradient.setColorAt(0.5, colors[1])
+        gradient.setColorAt(1.0, colors[2])
+        painter.setBrush(gradient)
+        radius = min(handle_rect.width(), handle_rect.height()) / 2
+        painter.drawRoundedRect(handle_rect, radius, radius)
+        painter.end()
+
+    def _handle_length(self, track_length: float) -> float:
+        scroll_range = self.maximum() - self.minimum()
+        page_step = max(1, self.pageStep())
+        if scroll_range <= 0:
+            return track_length
+
+        proportional_length = track_length * page_step / (
+            scroll_range + page_step
+        )
+        minimum_length = 34.0
+        return min(track_length, max(minimum_length, proportional_length))
+
+    def _handle_offset(self, travel: float) -> float:
+        if travel <= 0 or self.maximum() <= self.minimum():
+            return 0.0
+
+        position = self.value() - self.minimum()
+        return travel * position / (self.maximum() - self.minimum())
+
+
 class FadingVolumeSlider(QSlider):
     """Gradient volume control whose knob rests out of the way when idle."""
 
@@ -653,6 +784,16 @@ IMPORT_ICON = """
  <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 16v3h14v-3" stroke="url(#accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
+PLAYLIST_SCROLL_LEFT_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M15.25 5.75 9 12l6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+PLAYLIST_SCROLL_RIGHT_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="m8.75 5.75 6.25 6.25-6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
 LIBRARY_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
@@ -684,6 +825,12 @@ YOUTUBE_ICON = """
 SPOTIFY_ICON = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
  <circle cx="12" cy="12" r="9" fill="#698D73"/><path d="M7.5 10.2c3.55-.92 6.6-.55 8.8.63M7.8 13c2.87-.64 5.4-.3 7.3.58m-6.9 2.37c2.2-.4 4.08-.1 5.55.5" stroke="#F4F4F5" stroke-width="1.25" stroke-linecap="round"/>
+</svg>
+"""
+SOUNDCLOUD_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+ <path d="M5 17.4h13.2a3.8 3.8 0 0 0 .45-7.57A6.35 6.35 0 0 0 6.56 8.4 4.5 4.5 0 0 0 5 17.4Z" fill="#D27A54"/>
+ <path d="M7 11.1v4.6m2-5.8v5.8m2-6.8v6.8m2-6.5v6.5" stroke="#F8E8DF" stroke-width="1.1" stroke-linecap="round"/>
 </svg>
 """
 JSON_ICON = """
@@ -827,7 +974,13 @@ class PlaylistGradientSurface(QFrame):
         painter.setBrush(QColor(255, 255, 255, base_alpha))
         painter.drawRoundedRect(rect, radius, radius)
 
-        if self._hover_opacity <= 0.0:
+        # Keep the selected playlist visibly "lit" after the pointer leaves
+        # it; hovering raises the same gradient to full intensity.
+        gradient_opacity = max(
+            self._hover_opacity,
+            0.68 if self._selected else 0.0,
+        )
+        if gradient_opacity <= 0.0:
             painter.end()
             return
 
@@ -835,15 +988,15 @@ class PlaylistGradientSurface(QFrame):
         gradient = QLinearGradient(0, 0, self.width(), self.height())
         gradient.setColorAt(
             0.0,
-            self._tinted(primary.lighter(125), 126 * self._hover_opacity),
+            self._tinted(primary.lighter(132), 168 * gradient_opacity),
         )
         gradient.setColorAt(
             0.46,
-            self._tinted(secondary.darker(112), 112 * self._hover_opacity),
+            self._tinted(secondary.lighter(105), 150 * gradient_opacity),
         )
         gradient.setColorAt(
             1.0,
-            self._tinted(accent.darker(130), 120 * self._hover_opacity),
+            self._tinted(accent.lighter(108), 160 * gradient_opacity),
         )
         painter.setBrush(gradient)
         painter.drawRoundedRect(rect, radius, radius)
@@ -853,7 +1006,7 @@ class PlaylistGradientSurface(QFrame):
         sheen = QLinearGradient(0, 0, 0, self.height())
         sheen.setColorAt(
             0.0,
-            self._tinted(QColor(255, 255, 255), 18 * self._hover_opacity),
+            self._tinted(QColor(255, 255, 255), 24 * gradient_opacity),
         )
         sheen.setColorAt(
             0.42,
@@ -902,6 +1055,7 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
     """A horizontally-scrollable playlist tile with a stored or generated cover."""
 
     activated = Signal(str)
+    context_requested = Signal(str, object)
 
     def __init__(
         self,
@@ -962,8 +1116,16 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         self._card_surface.set_selected(selected)
 
     def mouseReleaseEvent(self, event: object) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            self.context_requested.emit(
+                self.playlist_id,
+                self.mapToGlobal(event.position().toPoint()),
+            )
+            return
+
         super().mouseReleaseEvent(event)
-        self.activated.emit(self.playlist_id)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit(self.playlist_id)
 
     def _cover_pixmap(
         self,
@@ -973,10 +1135,15 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         if cover_path:
             pixmap = QPixmap(str(Path(cover_path)))
             if not pixmap.isNull():
-                return pixmap.scaled(
+                scaled = pixmap.scaled(
                     self.cover_label.size(),
                     Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                     Qt.TransformationMode.SmoothTransformation,
+                )
+                return _rounded_pixmap(
+                    scaled,
+                    radius=12,
+                    size=self.cover_label.size(),
                 )
 
         pixmap = QPixmap(self.cover_label.size())
@@ -1075,6 +1242,192 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
             initials,
         )
         return pixmap
+
+
+MAIN_LIBRARY_SVG = """
+<svg viewBox="0 0 160 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mainLibraryBackground" x1="18" y1="10" x2="142" y2="94" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#214A43"/>
+      <stop offset=".55" stop-color="#102A2A"/>
+      <stop offset="1" stop-color="#071316"/>
+    </linearGradient>
+    <linearGradient id="mainLibraryAccent" x1="45" y1="29" x2="116" y2="82" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B5FBE0"/>
+      <stop offset=".52" stop-color="#5DD8B7"/>
+      <stop offset="1" stop-color="#32877C"/>
+    </linearGradient>
+    <radialGradient id="mainLibraryGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(78 46) rotate(90) scale(54 76)">
+      <stop stop-color="#5DD8B7" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#5DD8B7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="100" rx="17" fill="url(#mainLibraryBackground)"/>
+  <ellipse cx="78" cy="46" rx="76" ry="54" fill="url(#mainLibraryGlow)"/>
+  <path d="m56 52 24-20 24 20v24H56V52Z" fill="#0A181A" fill-opacity=".62" stroke="url(#mainLibraryAccent)" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M73 76V59h14v17" stroke="url(#mainLibraryAccent)" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="m52 54 28-24 28 24" stroke="url(#mainLibraryAccent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+
+CREATE_PLAYLIST_SVG = """
+<svg viewBox="0 0 160 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="createPlaylistBackground" x1="14" y1="8" x2="146" y2="94" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3A4E63"/>
+      <stop offset=".52" stop-color="#202C3D"/>
+      <stop offset="1" stop-color="#171C2B"/>
+    </linearGradient>
+    <linearGradient id="createPlaylistAccent" x1="55" y1="25" x2="115" y2="80" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D8F7EB"/>
+      <stop offset=".5" stop-color="#78DABD"/>
+      <stop offset="1" stop-color="#8797E8"/>
+    </linearGradient>
+    <radialGradient id="createPlaylistGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(82 48) rotate(90) scale(54 74)">
+      <stop stop-color="#78DABD" stop-opacity=".25"/>
+      <stop offset="1" stop-color="#8797E8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="100" rx="17" fill="url(#createPlaylistBackground)"/>
+  <ellipse cx="82" cy="48" rx="74" ry="52" fill="url(#createPlaylistGlow)"/>
+  <path d="M80 25v50M55 50h50" stroke="url(#createPlaylistAccent)" stroke-width="5" stroke-linecap="round"/>
+</svg>
+"""
+
+
+def _svg_cover_pixmap(svg: str, size: QSize) -> QPixmap:
+    pixmap = QPixmap(size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(
+        painter,
+        pixmap.rect(),
+    )
+    painter.end()
+    return pixmap
+
+
+def _rounded_pixmap(
+    pixmap: QPixmap,
+    *,
+    radius: int,
+    size: QSize | None = None,
+) -> QPixmap:
+    """Clip artwork to the same rounded shape as the playlist cover frame."""
+
+    if pixmap.isNull():
+        return pixmap
+
+    if size is not None and pixmap.size() != size:
+        crop_x = max(0, (pixmap.width() - size.width()) // 2)
+        crop_y = max(0, (pixmap.height() - size.height()) // 2)
+        pixmap = pixmap.copy(
+            crop_x,
+            crop_y,
+            min(size.width(), pixmap.width() - crop_x),
+            min(size.height(), pixmap.height() - crop_y),
+        )
+
+    rounded = QPixmap(pixmap.size())
+    rounded.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    clip_path = QPainterPath()
+    clip_path.addRoundedRect(
+        pixmap.rect().adjusted(0, 0, -1, -1),
+        radius,
+        radius,
+    )
+    painter.setClipPath(clip_path)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return rounded
+
+
+class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
+    """A playlist-sized navigation or creation tile for the carousel."""
+
+    activated = Signal()
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        cover_svg: str,
+        parent: QFrame | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._full_name = title
+        self.setObjectName("playlistCardWrapper")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(126, 104)
+
+        self._card_surface = PlaylistGradientSurface(self)
+        self._card_surface.setObjectName("playlistCard")
+        self._card_surface.setGeometry(11, 11, 104, 82)
+        self._card_surface.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+        layout = QVBoxLayout(self._card_surface)
+        layout.setContentsMargins(6, 5, 6, 4)
+        layout.setSpacing(3)
+
+        cover = QLabel()
+        cover.setFixedSize(92, 50)
+        cover_pixmap = _svg_cover_pixmap(cover_svg, cover.size())
+        cover.setPixmap(cover_pixmap)
+        self._setup_playlist_hover(cover_pixmap)
+        self._card_surface.set_colors(self._cover_colors)
+        layout.addWidget(cover)
+
+        name_label = QLabel(title)
+        name_label.setObjectName("playlistCardName")
+        name_label.setWordWrap(False)
+        name_label.setFixedHeight(16)
+        name_label.setToolTip(title)
+        name_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.NoTextInteraction
+        )
+        self.name_label = name_label
+        layout.addWidget(name_label)
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self.name_label.setText(
+            QFontMetrics(self.name_label.font()).elidedText(
+                self._full_name,
+                Qt.TextElideMode.ElideRight,
+                max(8, self.name_label.width()),
+            )
+        )
+
+    def set_selected(self, selected: bool) -> None:
+        self._card_surface.set_selected(selected)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.activated.emit()
+
+
+class MainLibraryCard(UtilityPlaylistCard):
+    def __init__(self, parent: QFrame | None = None) -> None:
+        super().__init__(
+            title="Main library",
+            cover_svg=MAIN_LIBRARY_SVG,
+            parent=parent,
+        )
+
+
+class CreatePlaylistCard(UtilityPlaylistCard):
+    def __init__(self, parent: QFrame | None = None) -> None:
+        super().__init__(
+            title="Create playlist",
+            cover_svg=CREATE_PLAYLIST_SVG,
+            parent=parent,
+        )
 
 
 CALM_MOOD_SVG = """

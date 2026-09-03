@@ -298,7 +298,7 @@ class SQLAlchemyMusicStore:
 
     def list_playlists(self) -> list[Playlist]:
         statement = select(PlaylistRecord).order_by(
-            PlaylistRecord.created_at.desc()
+            PlaylistRecord.created_at.asc()
         )
 
         with self.session_factory() as session:

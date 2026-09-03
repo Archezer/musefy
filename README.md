@@ -1,7 +1,7 @@
 # Local Music Recommendation System
 
 A Windows desktop application for a **local music library**. It imports audio
-from files, YouTube and Spotify links, analyses each track locally, and builds
+from files, YouTube, Spotify and SoundCloud links, analyses each track locally, and builds
 recommendations without uploading the library or listening history to a cloud
 service.
 
@@ -12,7 +12,7 @@ The app is designed around three complementary signals:
 - **Music2Emo** estimates valence, arousal and mood-oriented tags;
 - local playback events and playlist context personalise ranking over time.
 
-The project is a personal-library tool. Respect YouTube, Spotify and copyright
+The project is a personal-library tool. Respect YouTube, Spotify, SoundCloud and copyright
 rules when importing content.
 
 ## Features
@@ -21,6 +21,8 @@ rules when importing content.
 - Search YouTube, import a direct YouTube link, or load a YouTube playlist.
 - Import a Spotify track, album or playlist: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
+- Search SoundCloud or load a SoundCloud track URL through the
+  [`scdl`](https://github.com/scdl-org/scdl) downloader.
 - Use Firefox YouTube cookies automatically when a browser session is required.
 - Analyse new tracks in the background with CUDA when it is available.
 - Store genre hierarchy, mood profile and one reusable MAEST embedding per
@@ -263,6 +265,18 @@ or collaborative playlists that your account can access.
 No Spotify client secret is required. If the Spotify application is still in
 Development Mode, add the Spotify account as a test user in the Developer
 Dashboard. Never commit `.env` or `data/spotify_token.json`.
+
+### SoundCloud search and downloads
+
+In the import dialog, enter an artist/title query or paste a SoundCloud track
+URL, then click **Try to download from SoundCloud**. Queries use the first
+SoundCloud result returned by `scdl`; URLs are downloaded directly. The app
+imports the resulting audio into the local library and never stores the
+temporary download directory.
+
+Use this only for tracks you own or have explicit permission to download. Some
+tracks do not expose a downloadable file, so SoundCloud or `scdl` can still
+reject the request. The integration intentionally skips playlists.
 
 ### VK Music, Spotify and Yandex Music browser exporter
 

@@ -105,6 +105,7 @@ class TrackMetadataDialog(QDialog):
 
 class YouTubeSearchDialog(QDialog):
     source_requested = Signal(str)
+    soundcloud_download_requested = Signal(str)
     # Compatibility signals for integrations that still use the old API.
     search_requested = Signal(str)
     authenticate_requested = Signal(str)
@@ -125,7 +126,7 @@ class YouTubeSearchDialog(QDialog):
         self._local_playlist_id: str | None = None
         self._imported_playlist_tracks: dict[int, str] = {}
 
-        self.setWindowTitle("Add from YouTube or Spotify")
+        self.setWindowTitle("Add from YouTube, Spotify or SoundCloud")
         self.resize(760, 520)
 
         layout = QVBoxLayout(self)
@@ -134,7 +135,7 @@ class YouTubeSearchDialog(QDialog):
 
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText(
-            "Artist and track title, or paste a YouTube/Spotify URL"
+            "Artist and track title, or paste a YouTube/Spotify/SoundCloud URL"
         )
         form_layout.addRow("Search or URL:", self.source_edit)
 
@@ -147,7 +148,7 @@ class YouTubeSearchDialog(QDialog):
         search_layout = QHBoxLayout()
         self.source_button = QPushButton("Search / Load")
         self.source_button.setToolTip(
-            "Search YouTube or load a YouTube/Spotify link automatically."
+            "Search YouTube, or load a YouTube/Spotify/SoundCloud link."
         )
         self.source_button.clicked.connect(self._request_source)
         search_layout.addWidget(self.source_button)
@@ -155,6 +156,18 @@ class YouTubeSearchDialog(QDialog):
         # Compatibility aliases; only one visible action is shown.
         self.search_button = self.source_button
         self.load_button = self.source_button
+
+        self.soundcloud_button = QPushButton(
+            "Try to download from SoundCloud"
+        )
+        self.soundcloud_button.setToolTip(
+            "Search SoundCloud or download a SoundCloud link. "
+            "Use only tracks you are authorized to download."
+        )
+        self.soundcloud_button.clicked.connect(
+            self._request_soundcloud_download
+        )
+        search_layout.addWidget(self.soundcloud_button)
 
         self.authenticate_button = QPushButton("Authenticate Spotify")
         self.authenticate_button.setToolTip(
@@ -179,7 +192,7 @@ class YouTubeSearchDialog(QDialog):
         layout.addWidget(self.results_list)
 
         self.status_label = QLabel(
-            "Search for a track or paste a YouTube/Spotify URL."
+            "Search YouTube or paste a YouTube, Spotify or SoundCloud URL."
         )
         layout.addWidget(self.status_label)
 
@@ -215,6 +228,19 @@ class YouTubeSearchDialog(QDialog):
             return
 
         self.source_requested.emit(source)
+
+    def _request_soundcloud_download(self) -> None:
+        source = self.source_edit.text().strip()
+
+        if not source:
+            QMessageBox.warning(
+                self,
+                "SoundCloud download failed",
+                "Enter a SoundCloud search query or URL.",
+            )
+            return
+
+        self.soundcloud_download_requested.emit(source)
 
     def _request_search(self) -> None:
         """Legacy search signal entry point."""
@@ -426,6 +452,7 @@ class YouTubeSearchDialog(QDialog):
     ) -> None:
         self._busy = busy
         self.source_button.setEnabled(not busy)
+        self.soundcloud_button.setEnabled(not busy)
         self.authenticate_button.setEnabled(not busy)
         self.source_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
@@ -448,7 +475,7 @@ class YouTubeSearchDialog(QDialog):
         self.set_busy(False, "Operation failed.")
         QMessageBox.warning(
             self,
-            "YouTube operation failed",
+            "Import operation failed",
             message,
         )
 

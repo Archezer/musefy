@@ -120,7 +120,9 @@ QPushButton:pressed {
 QToolButton#railButton, QToolButton#mapCycleButton {
     background: transparent;
     border: none;
-    padding: 0;
+    /* QToolButton aligns the large glyph by its font line box; a little
+       bottom padding lifts the visible arrow to the optical center. */
+    padding: 0 0 5px 0;
 }
 QToolButton#plainActionButton {
     background: transparent;
@@ -138,6 +140,23 @@ QToolButton#plainActionButton:pressed {
     background: rgba(112, 224, 190, 42);
     border: none;
     border-radius: 22px;
+}
+QToolButton#playlistScrollButton {
+    background: rgba(36, 53, 55, 205);
+    border: 1px solid rgba(181, 251, 224, 72);
+    border-radius: 13px;
+    color: #B5FBE0;
+    font-size: 30px;
+    font-weight: 600;
+    padding: 0;
+}
+QToolButton#playlistScrollButton:hover {
+    background: rgba(82, 150, 132, 218);
+    border-color: rgba(181, 251, 224, 128);
+    color: #F1FFF8;
+}
+QToolButton#playlistScrollButton:pressed {
+    background: rgba(112, 197, 171, 230);
 }
 QToolButton::menu-indicator {
     image: none;
@@ -217,7 +236,7 @@ QHeaderView::section {
     padding: 7px;
 }
 QHeaderView::section:first {
-    padding-left: 13px;
+    padding: 7px 5px 7px 9px;
 }
 QSplitter::handle:horizontal {
     width: 1px;
@@ -279,13 +298,13 @@ QScrollArea > QWidget, QScrollArea > QWidget > QWidget {
 QScrollBar:vertical {
     background: transparent;
     border: none;
-    width: 10px;
+    width: 12px;
     margin: 5px 2px;
 }
 QScrollBar:horizontal {
     background: transparent;
     border: none;
-    height: 10px;
+    height: 12px;
     margin: 2px 5px;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
@@ -296,9 +315,9 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
         stop: 1 rgba(92, 133, 126, 180)
     );
     border: none;
-    border-radius: 5px;
-    min-height: 38px;
-    min-width: 38px;
+    border-radius: 6px;
+    min-height: 44px;
+    min-width: 44px;
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
     background: qlineargradient(
@@ -319,8 +338,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 }
 QTableWidget#libraryTable QScrollBar:vertical {
     background: transparent;
-    width: 9px;
-    margin: 8px 2px 8px 0;
+    width: 14px;
+    margin: 8px 1px 8px 0;
 }
 QTableWidget#libraryTable QScrollBar::handle:vertical {
     background: qlineargradient(
@@ -330,8 +349,8 @@ QTableWidget#libraryTable QScrollBar::handle:vertical {
         stop: 1 rgba(69, 119, 110, 160)
     );
     border: none;
-    min-height: 38px;
-    border-radius: 4px;
+    min-height: 44px;
+    border-radius: 7px;
 }
 QTableWidget#libraryTable QScrollBar::handle:vertical:hover {
     background: qlineargradient(
