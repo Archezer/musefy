@@ -104,6 +104,8 @@ class TrackMetadataDialog(QDialog):
 
 
 class YouTubeSearchDialog(QDialog):
+    source_requested = Signal(str)
+    # Compatibility signals for integrations that still use the old API.
     search_requested = Signal(str)
     authenticate_requested = Signal(str)
     url_load_requested = Signal(str)
@@ -130,29 +132,31 @@ class YouTubeSearchDialog(QDialog):
 
         form_layout = QFormLayout()
 
-        self.query_edit = QLineEdit()
-        self.query_edit.setPlaceholderText(
-            "Artist and track title"
+        self.source_edit = QLineEdit()
+        self.source_edit.setPlaceholderText(
+            "Artist and track title, or paste a YouTube/Spotify URL"
         )
-        form_layout.addRow("Search:", self.query_edit)
+        form_layout.addRow("Search or URL:", self.source_edit)
 
-        self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText(
-            "YouTube or Spotify track, playlist, or album URL"
-        )
-        form_layout.addRow("URL:", self.url_edit)
+        # Keep the old attribute names as aliases for host integrations.
+        self.query_edit = self.source_edit
+        self.url_edit = self.source_edit
 
         layout.addLayout(form_layout)
 
-        self.search_button = QPushButton("Search")
-        self.search_button.clicked.connect(
-            self._request_search
-        )
-
         search_layout = QHBoxLayout()
-        search_layout.addWidget(self.search_button)
+        self.source_button = QPushButton("Search / Load")
+        self.source_button.setToolTip(
+            "Search YouTube or load a YouTube/Spotify link automatically."
+        )
+        self.source_button.clicked.connect(self._request_source)
+        search_layout.addWidget(self.source_button)
 
-        self.authenticate_button = QPushButton("Authenticate")
+        # Compatibility aliases; only one visible action is shown.
+        self.search_button = self.source_button
+        self.load_button = self.source_button
+
+        self.authenticate_button = QPushButton("Authenticate Spotify")
         self.authenticate_button.setToolTip(
             "Authorize Spotify for private or collaborative playlists."
         )
@@ -161,12 +165,6 @@ class YouTubeSearchDialog(QDialog):
         )
         search_layout.addWidget(self.authenticate_button)
 
-        self.load_button = QPushButton("Load")
-        self.load_button.setToolTip(
-            "Automatically detect YouTube or Spotify resource type."
-        )
-        self.load_button.clicked.connect(self._request_url_load)
-        search_layout.addWidget(self.load_button)
         search_layout.addStretch()
         layout.addLayout(search_layout)
 
@@ -205,8 +203,23 @@ class YouTubeSearchDialog(QDialog):
 
         self._cancel_button = cancel_button
 
+    def _request_source(self) -> None:
+        source = self.source_edit.text().strip()
+
+        if not source:
+            QMessageBox.warning(
+                self,
+                "Search or load failed",
+                "Enter a search query or paste a supported URL.",
+            )
+            return
+
+        self.source_requested.emit(source)
+
     def _request_search(self) -> None:
-        query = self.query_edit.text().strip()
+        """Legacy search signal entry point."""
+
+        query = self.source_edit.text().strip()
 
         if not query:
             QMessageBox.warning(
@@ -219,7 +232,7 @@ class YouTubeSearchDialog(QDialog):
         self.search_requested.emit(query)
 
     def _request_authenticate(self) -> None:
-        url = self.url_edit.text().strip()
+        url = self.source_edit.text().strip()
 
         if not url:
             QMessageBox.warning(
@@ -243,7 +256,9 @@ class YouTubeSearchDialog(QDialog):
             self.import_requested.emit(candidates[0])
 
     def _request_url_load(self) -> None:
-        url = self.url_edit.text().strip()
+        """Legacy URL-load signal entry point."""
+
+        url = self.source_edit.text().strip()
 
         if not url:
             QMessageBox.warning(
@@ -402,7 +417,7 @@ class YouTubeSearchDialog(QDialog):
         )
 
     def set_search_query(self, query: str) -> None:
-        self.query_edit.setText(query)
+        self.source_edit.setText(query)
 
     def set_busy(
         self,
@@ -410,11 +425,9 @@ class YouTubeSearchDialog(QDialog):
         message: str,
     ) -> None:
         self._busy = busy
-        self.search_button.setEnabled(not busy)
+        self.source_button.setEnabled(not busy)
         self.authenticate_button.setEnabled(not busy)
-        self.load_button.setEnabled(not busy)
-        self.query_edit.setEnabled(not busy)
-        self.url_edit.setEnabled(not busy)
+        self.source_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
         self._handle_selection_changed()

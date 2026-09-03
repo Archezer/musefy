@@ -50,6 +50,7 @@ class MusicMapWidget(QWidget):
         self._nodes: tuple[_MapNode, ...] = ()
         self._edges: tuple[_MapEdge, ...] = ()
         self._points = np.empty((0, 2), dtype=np.float32)
+        self._track_signature: tuple[tuple[str, tuple[float, ...] | None], ...] = ()
         self._mode = "focus"
         self._zoom = 1.0
         self._pan = QPointF()
@@ -70,6 +71,13 @@ class MusicMapWidget(QWidget):
             for track in tracks
             if track.track_embedding is not None
         ][-220:]
+        signature = tuple(
+            (track.id, track.track_embedding)
+            for track in embedded_tracks
+        )
+        if signature == self._track_signature:
+            return
+        self._track_signature = signature
 
         if len(embedded_tracks) < 2:
             self._nodes = ()

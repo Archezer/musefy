@@ -55,11 +55,16 @@ from app.domain.models import (
     InteractionType,
     Playlist,
     QueueMode,
+    Recommendation,
+    RepeatMode,
     Track,
 )
 from app.domain.mood import MOOD_PRESETS
 from app.domain.recommendations import RecommendationContext
-from app.ingestion.audio import AudioIngestionService
+from app.ingestion.audio import (
+    SUPPORTED_AUDIO_EXTENSIONS,
+    AudioIngestionService,
+)
 from app.ingestion.metadata import read_audio_metadata
 from app.ml.genre_analysis import (
     GenreAnalysisService,
@@ -101,6 +106,12 @@ from app.ui.components import (
     PAUSE_ICON,
     PLAY_ICON,
     PREVIOUS_ICON,
+    REPEAT_OFF_ICON,
+    REPEAT_QUEUE_ICON,
+    REPEAT_TRACK_ICON,
+    SEQUENTIAL_ICON,
+    SHUFFLE_ICON,
+    SMART_SHUFFLE_ICON,
     SPOTIFY_ICON,
     VOLUME_ICON,
     YOUTUBE_ICON,
@@ -123,6 +134,19 @@ from app.ui.theme import DARK_THEME
 
 MAX_AUDIO_GAIN = 0.22
 DEFAULT_VOLUME_PERCENT = 50
+RECOMMENDATION_QUEUE_SIZE = 30
+RECOMMENDATION_REFILL_THRESHOLD = 10
+PREVIOUS_RESTART_THRESHOLD_MS = 5_000
+REPEAT_MODES = (
+    RepeatMode.OFF,
+    RepeatMode.QUEUE,
+    RepeatMode.TRACK,
+)
+LIBRARY_PLAYBACK_MODES = (
+    QueueMode.NORMAL,
+    QueueMode.SHUFFLE,
+    QueueMode.SMART_SHUFFLE,
+)
 MAP_MODES = ("background", "focus", "hidden")
 
 
@@ -234,6 +258,9 @@ class MainWindow(QMainWindow):
         self._playlist_import_active = False
         self._music_map_mode = "background"
         self._liquid_glass_enabled = True
+        self._playback_mode = QueueMode.NORMAL
+        self._track_radio_enabled = False
+        self._repeat_mode = RepeatMode.OFF
         self._player_duration_ms = 0
         self._genre_analysis_service = (
             GenreAnalysisService(
@@ -288,8 +315,15 @@ class MainWindow(QMainWindow):
         self._space_shortcut.setAutoRepeat(False)
         self._space_shortcut.activated.connect(self._toggle_playback)
         self._load_playlists()
-        self._load_library()
+        self._load_library(refresh_map=False)
         self._load_recommendations()
+        # Let Qt paint the main window before doing the expensive similarity
+        # map layout.  The map still appears immediately after first paint,
+        # but it no longer delays the window itself from opening.
+        QTimer.singleShot(0, self._finish_initial_load)
+
+    def _finish_initial_load(self) -> None:
+        self._refresh_music_map(self._library_tracks)
 
     def _build_interface(self) -> None:
         app_root = QWidget()
@@ -356,8 +390,18 @@ class MainWindow(QMainWindow):
         import_button.setObjectName("railButton")
         import_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         import_menu = QMenu(import_button)
-        local_action = import_menu.addAction("Local audio file", self._import_track)
-        local_action.setIcon(svg_icon(LOCAL_FILE_ICON))
+        local_menu = import_menu.addMenu("Local audio")
+        local_menu.setIcon(svg_icon(LOCAL_FILE_ICON))
+        local_file_action = local_menu.addAction(
+            "File",
+            self._import_track,
+        )
+        local_file_action.setIcon(svg_icon(LOCAL_FILE_ICON))
+        local_folder_action = local_menu.addAction(
+            "Folder",
+            self._import_folder,
+        )
+        local_folder_action.setIcon(svg_icon(LOCAL_FILE_ICON))
         youtube_action = import_menu.addAction("YouTube", self._import_from_youtube)
         youtube_action.setIcon(svg_icon(YOUTUBE_ICON))
         spotify_action = import_menu.addAction("Spotify", self._import_from_youtube)
@@ -609,6 +653,22 @@ class MainWindow(QMainWindow):
         control_layout.setSpacing(4)
         control_layout.addStretch()
 
+        self.playback_mode_button = SvgIconButton(
+            SEQUENTIAL_ICON,
+            tooltip="Playback order: sequential",
+            diameter=30,
+            flat=True,
+            parent=player_bar,
+        )
+        self.playback_mode_button.clicked.connect(
+            self._cycle_playback_mode
+        )
+        control_layout.addWidget(
+            self.playback_mode_button,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
+
         previous_button = SvgIconButton(
             PREVIOUS_ICON,
             tooltip="Previous track",
@@ -649,6 +709,22 @@ class MainWindow(QMainWindow):
         next_button.clicked.connect(self._go_next)
         control_layout.addWidget(
             next_button,
+            0,
+            Qt.AlignmentFlag.AlignBottom,
+        )
+
+        self.repeat_button = SvgIconButton(
+            REPEAT_OFF_ICON,
+            tooltip="Repeat: off",
+            diameter=32,
+            flat=True,
+            parent=player_bar,
+        )
+        self.repeat_button.clicked.connect(
+            self._cycle_repeat_mode
+        )
+        control_layout.addWidget(
+            self.repeat_button,
             0,
             Qt.AlignmentFlag.AlignBottom,
         )
@@ -705,6 +781,14 @@ class MainWindow(QMainWindow):
             "Skip and tune recommendations",
             self._skip_current_track,
         )
+        self.track_radio_action = player_menu.addAction(
+            "Track radio",
+        )
+        self.track_radio_action.setCheckable(True)
+        self.track_radio_action.setChecked(self._track_radio_enabled)
+        self.track_radio_action.toggled.connect(
+            self._set_track_radio_enabled
+        )
         player_menu.addAction("Stop playback", self._stop_playback)
         player_menu.addAction("Save current track", self._save_current_track)
         player_menu_button.setMenu(player_menu)
@@ -728,6 +812,7 @@ class MainWindow(QMainWindow):
         self.volume_slider.valueChanged.connect(self._handle_volume_changed)
         layout.addWidget(self.volume_slider)
 
+        self._update_playback_mode_controls()
         self._update_like_button()
         player_bar.setFixedHeight(62)
         return player_bar
@@ -854,8 +939,13 @@ class MainWindow(QMainWindow):
             next_mode
         )
 
-    def _refresh_music_map(self) -> None:
-        self.music_map.set_tracks(list(self.store.list_tracks()))
+    def _refresh_music_map(
+        self,
+        tracks: list[Track] | None = None,
+    ) -> None:
+        if tracks is None:
+            tracks = list(self.store.list_tracks())
+        self.music_map.set_tracks(tracks)
 
     def _select_track_from_map(self, track_id: str) -> None:
         for row_index in range(self.track_table.rowCount()):
@@ -1105,9 +1195,9 @@ class MainWindow(QMainWindow):
             panel.style().polish(panel)
             panel.update()
 
-    def _load_library(self) -> None:
+    def _load_library(self, *, refresh_map: bool = True) -> None:
         tracks = list(self.store.list_tracks())
-        self.recommendation_service.refresh()
+        self._library_tracks = tracks
 
         self.track_table.setRowCount(0)
         self._hovered_track_row = -1
@@ -1120,7 +1210,8 @@ class MainWindow(QMainWindow):
 
         self._load_queue()
         self._load_history()
-        self._refresh_music_map()
+        if refresh_map:
+            self._refresh_music_map(tracks)
         self.library_count_label.setText(
             f"{len(tracks)} track{'s' if len(tracks) != 1 else ''}"
         )
@@ -1408,6 +1499,373 @@ class MainWindow(QMainWindow):
         self.selected_mood_name = mood_name
         self._start_mood_session()
 
+    def _cycle_playback_mode(self) -> None:
+        """Cycle sequential, shuffle and smart-shuffle library playback."""
+
+        try:
+            current_index = LIBRARY_PLAYBACK_MODES.index(
+                self._playback_mode
+            )
+        except ValueError:
+            current_index = 0
+
+        self._playback_mode = LIBRARY_PLAYBACK_MODES[
+            (current_index + 1) % len(LIBRARY_PLAYBACK_MODES)
+        ]
+        self._track_radio_enabled = False
+        self._update_playback_mode_controls()
+
+        if self.current_track_id is not None:
+            self._start_library_queue(
+                self.current_track_id,
+                restart=False,
+            )
+
+        self.statusBar().showMessage(
+            f"Playback mode: {self._playback_mode_label()}"
+        )
+
+    def _toggle_track_radio(self) -> None:
+        """Toggle a replenishable radio stream seeded by the current track."""
+
+        self._set_track_radio_enabled(not self._track_radio_enabled)
+
+    def _set_track_radio_enabled(self, enabled: bool) -> None:
+        if self._track_radio_enabled == enabled:
+            self._update_playback_mode_controls()
+            return
+
+        self._track_radio_enabled = enabled
+        self._update_playback_mode_controls()
+
+        if self.current_track_id is not None:
+            self._start_library_queue(
+                self.current_track_id,
+                restart=False,
+            )
+
+        state = "on" if self._track_radio_enabled else "off"
+        self.statusBar().showMessage(f"Track radio: {state}")
+
+    def _cycle_repeat_mode(self) -> None:
+        try:
+            current_index = REPEAT_MODES.index(self._repeat_mode)
+        except ValueError:
+            current_index = 0
+
+        self._repeat_mode = REPEAT_MODES[
+            (current_index + 1) % len(REPEAT_MODES)
+        ]
+        self.playback_queue_service.set_repeat_mode(self._repeat_mode)
+        self._update_playback_mode_controls()
+        self.statusBar().showMessage(
+            f"Repeat: {self._repeat_mode_label()}"
+        )
+
+    def _playback_mode_label(self) -> str:
+        return {
+            QueueMode.NORMAL: "sequential",
+            QueueMode.SHUFFLE: "shuffle",
+            QueueMode.SMART_SHUFFLE: "smart shuffle",
+        }.get(self._playback_mode, "sequential")
+
+    def _repeat_mode_label(self) -> str:
+        return {
+            RepeatMode.OFF: "off",
+            RepeatMode.QUEUE: "playlist",
+            RepeatMode.TRACK: "track",
+        }[self._repeat_mode]
+
+    def _update_playback_mode_controls(self) -> None:
+        if not hasattr(self, "playback_mode_button"):
+            return
+
+        mode_icons = {
+            QueueMode.NORMAL: SEQUENTIAL_ICON,
+            QueueMode.SHUFFLE: SHUFFLE_ICON,
+            QueueMode.SMART_SHUFFLE: SMART_SHUFFLE_ICON,
+        }
+        mode_icon = mode_icons.get(
+            self._playback_mode,
+            SEQUENTIAL_ICON,
+        )
+        self.playback_mode_button.set_svg(
+            mode_icon
+            if self._playback_mode == QueueMode.NORMAL
+            else mode_icon.replace("#D8D8D8", "#5DD8B7")
+        )
+        self.playback_mode_button.setToolTip(
+            "Playback order: "
+            f"{self._playback_mode_label()} (click to change)"
+        )
+
+        repeat_icons = {
+            RepeatMode.OFF: REPEAT_OFF_ICON,
+            RepeatMode.QUEUE: REPEAT_QUEUE_ICON,
+            RepeatMode.TRACK: REPEAT_TRACK_ICON,
+        }
+        self.repeat_button.set_svg(repeat_icons[self._repeat_mode])
+        self.repeat_button.setToolTip(
+            "Repeat: "
+            f"{self._repeat_mode_label()} (click to change)"
+        )
+
+        if hasattr(self, "track_radio_action"):
+            self.track_radio_action.setChecked(
+                self._track_radio_enabled
+            )
+
+    def _start_library_queue(
+        self,
+        track_id: str,
+        *,
+        restart: bool = True,
+    ) -> None:
+        """Build a new library queue for the selected playback mode."""
+
+        track = self.store.get_track(track_id)
+        if track is None:
+            return
+
+        manual_track_ids = self._manual_queue_snapshot()
+        if self._track_radio_enabled:
+            self._start_recommendation_queue(
+                track.id,
+                restart=restart,
+                manual_track_ids=manual_track_ids,
+            )
+            return
+
+        manual_id_set = set(manual_track_ids)
+        library_tracks = list(self.store.list_tracks())
+        library_track_ids = [item.id for item in library_tracks]
+
+        try:
+            selected_index = library_track_ids.index(track.id)
+        except ValueError:
+            library_track_ids.insert(0, track.id)
+            selected_index = 0
+
+        if self._playback_mode == QueueMode.NORMAL:
+            # Starting a track from the library follows the visible library
+            # order from that track onward; it must not jump back to row one.
+            candidate_ids = library_track_ids[selected_index + 1 :]
+        else:
+            candidate_ids = [
+                item_id
+                for item_id in library_track_ids
+                if item_id != track.id
+            ]
+
+        remaining_track_ids = [
+            item_id
+            for item_id in candidate_ids
+            if item_id not in manual_id_set
+        ]
+        if self._playback_mode == QueueMode.SHUFFLE:
+            random.shuffle(remaining_track_ids)
+        elif self._playback_mode == QueueMode.SMART_SHUFFLE:
+            remaining_track_ids = self._build_smart_library_sequence(
+                track.id,
+                library_tracks,
+                remaining_track_ids,
+            )
+
+        self.session_mood_name = None
+        self.playback_queue_service.start(
+            (track.id, *remaining_track_ids),
+            mode=self._playback_mode,
+        )
+        self._restore_manual_queue(manual_track_ids)
+        self._load_queue()
+        if restart:
+            self._play_current_queue_track()
+
+    def _manual_queue_snapshot(self) -> tuple[str, ...]:
+        queue = self.playback_queue_service.queue
+        if queue is None:
+            return ()
+        return queue.queued_track_ids
+
+    def _restore_manual_queue(
+        self,
+        track_ids: tuple[str, ...],
+    ) -> None:
+        for track_id in track_ids:
+            self.playback_queue_service.enqueue(track_id)
+
+    def _build_smart_library_sequence(
+        self,
+        seed_track_id: str,
+        library_tracks: list[Track],
+        remaining_track_ids: list[str],
+    ) -> list[str]:
+        """Mix random library order with tracks similar to the seed."""
+
+        available_ids = set(remaining_track_ids)
+        similar_ids: list[str] = []
+        for recommendation in self._get_track_radio_recommendations(
+            seed_track_id,
+            limit=min(30, len(remaining_track_ids)),
+        ):
+            recommendation_id = recommendation.track.id
+            if recommendation_id in available_ids and (
+                recommendation_id not in similar_ids
+            ):
+                similar_ids.append(recommendation_id)
+
+        random.shuffle(similar_ids)
+        similar_id_set = set(similar_ids)
+        random_ids = [
+            track.id
+            for track in library_tracks
+            if track.id in available_ids
+            and track.id not in similar_id_set
+        ]
+        random.shuffle(random_ids)
+
+        mixed_ids: list[str] = []
+        while similar_ids or random_ids:
+            use_similar = bool(similar_ids) and (
+                not random_ids or random.random() < 0.65
+            )
+            if use_similar:
+                mixed_ids.append(similar_ids.pop())
+            elif random_ids:
+                mixed_ids.append(random_ids.pop())
+
+        return mixed_ids
+
+    def _start_recommendation_queue(
+        self,
+        track_id: str,
+        *,
+        restart: bool = True,
+        manual_track_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        """Start a library track with a replenishable radio queue."""
+
+        track = self.store.get_track(track_id)
+        if track is None:
+            return
+
+        if manual_track_ids is None:
+            manual_track_ids = self._manual_queue_snapshot()
+
+        self.session_mood_name = None
+        self._track_radio_enabled = True
+        self._update_playback_mode_controls()
+        self.playback_queue_service.start(
+            (track.id,),
+            mode=QueueMode.RECOMMENDATIONS,
+        )
+        self._restore_manual_queue(manual_track_ids)
+        self._replenish_recommendation_queue(force=True)
+        self._load_queue()
+        if restart:
+            self._play_current_queue_track()
+
+    def _replenish_recommendation_queue(self, *, force: bool = False) -> None:
+        """Keep roughly thirty automatic tracks behind the current one."""
+
+        queue = self.playback_queue_service.queue
+        if queue is None or queue.mode != QueueMode.RECOMMENDATIONS:
+            return
+
+        remaining_count = len(queue.remaining_track_ids)
+        if not force and remaining_count >= RECOMMENDATION_REFILL_THRESHOLD:
+            return
+
+        tracks_needed = RECOMMENDATION_QUEUE_SIZE - remaining_count
+        if tracks_needed <= 0 or queue.current_track_id is None:
+            return
+
+        occupied_ids = {
+            queue.current_track_id,
+            *queue.remaining_track_ids,
+            *queue.queued_track_ids,
+        }
+        recommendations = self._get_radio_recommendations(
+            queue.current_track_id,
+            limit=max(RECOMMENDATION_QUEUE_SIZE, tracks_needed),
+        )
+        additions: list[str] = []
+        for recommendation in recommendations:
+            track = recommendation.track
+            if track.id in occupied_ids:
+                continue
+            if not track.local_path or not Path(track.local_path).exists():
+                continue
+
+            additions.append(track.id)
+            occupied_ids.add(track.id)
+            if len(additions) == tracks_needed:
+                break
+
+        if additions:
+            self.playback_queue_service.append_remaining(additions)
+
+    def _get_radio_recommendations(
+        self,
+        seed_track_id: str,
+        *,
+        limit: int,
+    ) -> list[Recommendation]:
+        """Combine similar-track radio with popularity fallback."""
+
+        recommendations = self._get_track_radio_recommendations(
+            seed_track_id,
+            limit=limit,
+        )
+
+        if len(recommendations) >= limit:
+            return recommendations
+
+        try:
+            fallback = self.recommendation_service.get_recommendations(
+                user_id=self.user_id,
+                limit=limit,
+                context=RecommendationContext(),
+            )
+        except (RuntimeError, ValueError):
+            fallback = []
+
+        seen_ids = {
+            recommendation.track.id
+            for recommendation in recommendations
+        }
+        for recommendation in fallback:
+            if recommendation.track.id in seen_ids:
+                continue
+            seen_ids.add(recommendation.track.id)
+            recommendations.append(recommendation)
+            if len(recommendations) == limit:
+                break
+
+        # Keep the stream close to the seed track without making every
+        # transition deterministic or too narrowly matched.
+        random.shuffle(recommendations)
+        return recommendations
+
+    def _get_track_radio_recommendations(
+        self,
+        seed_track_id: str,
+        *,
+        limit: int,
+    ) -> list[Recommendation]:
+        try:
+            return list(
+                self.recommendation_service.get_recommendations(
+                    user_id=self.user_id,
+                    limit=limit,
+                    context=RecommendationContext.track_radio(
+                        seed_track_id
+                    ),
+                )
+            )
+        except (RuntimeError, ValueError):
+            return []
+
     def _replenish_mood_session(self) -> None:
         if self.session_mood_name is None:
             return
@@ -1554,6 +2012,15 @@ class MainWindow(QMainWindow):
         queue_action.triggered.connect(
             lambda checked=False, value=track_id: self._enqueue_track(value)
         )
+        radio_action = menu.addAction("Track radio")
+        radio_action.setToolTip(
+            "Play this track and build a stream of similar tracks"
+        )
+        radio_action.triggered.connect(
+            lambda checked=False, value=track_id: (
+                self._start_track_radio_from_context(value)
+            )
+        )
         playlists_menu = menu.addMenu("Add to playlist")
 
         for playlist in self.playlist_management_service.list_playlists():
@@ -1603,8 +2070,15 @@ class MainWindow(QMainWindow):
         if self.store.get_track(track_id) is None:
             return
 
-        self.playback_queue_service.start((track_id,))
-        self._play_current_queue_track()
+        self._start_library_queue(track_id)
+
+    def _start_track_radio_from_context(self, track_id: str) -> None:
+        """Start track radio directly from a library row's context menu."""
+
+        if self.store.get_track(track_id) is None:
+            return
+
+        self._start_recommendation_queue(track_id)
 
     def _enqueue_selected_track(self) -> None:
         if self.selected_track_id is None:
@@ -1932,6 +2406,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        manual_track_ids = self._manual_queue_snapshot()
         track_ids = [track.id for track in tracks]
 
         if smart:
@@ -1948,6 +2423,26 @@ class MainWindow(QMainWindow):
         elif shuffle:
             random.shuffle(track_ids)
 
+        manual_id_set = set(manual_track_ids)
+        if track_ids:
+            track_ids = [
+                track_ids[0],
+                *(
+                    track_id
+                    for track_id in track_ids[1:]
+                    if track_id not in manual_id_set
+                ),
+            ]
+
+        self._playback_mode = (
+            QueueMode.SMART_SHUFFLE
+            if smart
+            else QueueMode.SHUFFLE
+            if shuffle
+            else QueueMode.NORMAL
+        )
+        self._track_radio_enabled = False
+        self._update_playback_mode_controls()
         self.playback_queue_service.start(
             track_ids,
             mode=(
@@ -1961,6 +2456,8 @@ class MainWindow(QMainWindow):
             ),
             source_playlist_id=playlist.id,
         )
+        self._restore_manual_queue(manual_track_ids)
+        self._load_queue()
         self._play_current_queue_track()
 
     def _get_selected_playlist(self) -> Playlist | None:
@@ -2145,22 +2642,76 @@ class MainWindow(QMainWindow):
             ),
         )
 
+    def _import_folder(self) -> None:
+        """Import supported audio files from a local folder recursively."""
+
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select local audio folder",
+        )
+        if not folder_path:
+            return
+
+        folder = Path(folder_path)
+        audio_files = sorted(
+            (
+                path
+                for path in folder.rglob("*")
+                if path.is_file()
+                and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+            ),
+            key=lambda path: str(path).casefold(),
+        )
+        if not audio_files:
+            QMessageBox.information(
+                self,
+                "Folder is empty",
+                "No supported audio files were found in this folder.",
+            )
+            return
+
+        imported_count = 0
+        skipped_count = 0
+        for source_path in audio_files:
+            try:
+                track = self.ingestion_service.ingest(
+                    source_path,
+                    fallback_title=source_path.stem,
+                    source="windows_folder_import",
+                )
+            except (
+                FileNotFoundError,
+                OSError,
+                ValueError,
+            ):
+                skipped_count += 1
+                continue
+
+            imported_count += 1
+            self._append_library_track(track)
+            self._enqueue_genre_analysis(track)
+
+        self.library_count_label.setText(
+            f"{self.track_table.rowCount()} tracks"
+        )
+        self._load_queue()
+        self._maybe_refresh_recommendations()
+
+        message = f"Imported {imported_count} track(s) from the folder."
+        if skipped_count:
+            message += f"\nSkipped {skipped_count} file(s)."
+        QMessageBox.information(self, "Folder import completed", message)
+
     def _import_from_youtube(self) -> None:
         dialog = YouTubeSearchDialog(self)
-        dialog.search_requested.connect(
-            lambda query: self._start_youtube_search(
+        dialog.source_requested.connect(
+            lambda source: self._start_youtube_or_spotify_source(
                 dialog,
-                query,
+                source,
             )
         )
         dialog.authenticate_requested.connect(
             lambda url: self._start_url_authentication(
-                dialog,
-                url,
-            )
-        )
-        dialog.url_load_requested.connect(
-            lambda url: self._start_url_load(
                 dialog,
                 url,
             )
@@ -2181,6 +2732,19 @@ class MainWindow(QMainWindow):
         )
 
         dialog.exec()
+
+    def _start_youtube_or_spotify_source(
+        self,
+        dialog: YouTubeSearchDialog,
+        source: str,
+    ) -> None:
+        """Route one input field to search or URL loading automatically."""
+
+        if self.youtube_import_service.is_supported_url(source):
+            self._start_url_load(dialog, source)
+            return
+
+        self._start_youtube_search(dialog, source)
 
     def _import_exported_playlist(self) -> None:
         export_path, _ = QFileDialog.getOpenFileName(
@@ -2273,7 +2837,7 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Authenticating URL source...")
+        dialog.set_busy(True, "Authenticating Spotify...")
 
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.authenticate_url(url),
@@ -3160,13 +3724,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.playback_queue_service.start(
-            (self.selected_track_id,)
-        )
-        self._play_current_queue_track()
+        self._start_library_queue(self.selected_track_id)
 
     def _go_previous(self) -> None:
-        if self.media_player.position() > 0:
+        if self.media_player.position() >= PREVIOUS_RESTART_THRESHOLD_MS:
             self.media_player.setPosition(0)
             self.statusBar().showMessage("Track restarted")
             return
@@ -3221,6 +3782,9 @@ class MainWindow(QMainWindow):
                 self._load_queue()
                 self.statusBar().showMessage("Queue finished")
                 return
+
+            if queue.mode == QueueMode.RECOMMENDATIONS:
+                self._replenish_recommendation_queue()
 
             if (
                 queue.current_track_id is not None
@@ -3374,6 +3938,22 @@ class MainWindow(QMainWindow):
         status: QMediaPlayer.MediaStatus,
     ) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self._repeat_mode == RepeatMode.TRACK:
+                self.media_player.setPosition(0)
+                self.media_player.play()
+                return
+
+            if self._repeat_mode == RepeatMode.QUEUE:
+                queue = self.playback_queue_service.restart_cycle()
+                if queue is not None:
+                    if queue.mode == QueueMode.RECOMMENDATIONS:
+                        self._replenish_recommendation_queue(
+                            force=True
+                        )
+                    self._load_queue()
+                    self._play_current_queue_track()
+                    return
+
             self._replenish_mood_session()
             self._play_next_from_queue()
 
@@ -3461,6 +4041,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _refresh_content(self) -> None:
+        self.recommendation_service.refresh()
         self._load_library()
         self._load_recommendations()
 

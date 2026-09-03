@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.models import QueueMode
+from app.domain.models import QueueMode, RepeatMode
 from app.services.playback_queue import PlaybackQueueService
 
 
@@ -24,6 +24,48 @@ def test_manual_queue_has_priority_over_playlist() -> None:
     assert service.advance().current_track_id == "queued-1"
     assert service.advance().current_track_id == "queued-2"
     assert service.advance().current_track_id == "playlist-2"
+
+
+def test_appended_recommendations_stay_behind_manual_queue() -> None:
+    service = PlaybackQueueService()
+    service.start(
+        ("current", "recommendation-1"),
+        mode=QueueMode.RECOMMENDATIONS,
+    )
+    service.enqueue("manual-1")
+
+    service.append_remaining(
+        ("recommendation-2", "current", "recommendation-2")
+    )
+
+    assert service.upcoming_track_ids() == (
+        "manual-1",
+        "recommendation-1",
+        "recommendation-2",
+    )
+    assert service.advance().current_track_id == "manual-1"
+    assert service.advance().current_track_id == "recommendation-1"
+    assert service.advance().current_track_id == "recommendation-2"
+
+
+def test_repeat_cycle_restores_the_started_sequence() -> None:
+    service = PlaybackQueueService()
+    service.start(
+        ("track-1", "track-2", "track-3"),
+        mode=QueueMode.SHUFFLE,
+        source_playlist_id="playlist-id",
+    )
+    service.set_repeat_mode(RepeatMode.QUEUE)
+    service.advance()
+    service.advance()
+
+    queue = service.restart_cycle()
+
+    assert queue is not None
+    assert queue.current_track_id == "track-1"
+    assert queue.remaining_track_ids == ("track-2", "track-3")
+    assert queue.mode == QueueMode.SHUFFLE
+    assert queue.source_playlist_id == "playlist-id"
 
 
 def test_enqueue_without_active_playback_waits_for_next() -> None:
@@ -82,21 +124,32 @@ def test_start_rejects_an_empty_queue() -> None:
         PlaybackQueueService().start(())
 
 
-def test_previous_keeps_the_five_most_recent_tracks() -> None:
+def test_previous_keeps_the_ten_most_recent_tracks() -> None:
     service = PlaybackQueueService()
-    service.start(tuple(f"track-{index}" for index in range(1, 8)))
+    service.start(tuple(f"track-{index}" for index in range(1, 14)))
 
-    for _ in range(6):
+    for _ in range(12):
         assert service.advance() is not None
 
     previous_ids = []
-    for _ in range(5):
+    for _ in range(10):
         queue = service.previous()
         assert queue is not None
         assert queue.current_track_id is not None
         previous_ids.append(queue.current_track_id)
 
-    assert previous_ids == ["track-6", "track-5", "track-4", "track-3", "track-2"]
+    assert previous_ids == [
+        "track-12",
+        "track-11",
+        "track-10",
+        "track-9",
+        "track-8",
+        "track-7",
+        "track-6",
+        "track-5",
+        "track-4",
+        "track-3",
+    ]
     assert service.previous() is None
 
 

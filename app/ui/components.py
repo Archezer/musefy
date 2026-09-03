@@ -655,8 +655,11 @@ IMPORT_ICON = """
 """
 LIBRARY_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
- <defs><linearGradient id="accent" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#A2F6D9"/><stop offset=".52" stop-color="#55CDB0"/><stop offset="1" stop-color="#327E76"/></linearGradient></defs>
- <rect x="4" y="5" width="4" height="15" rx="1" stroke="url(#accent)" stroke-width="1.4"/><rect x="9.5" y="3.5" width="5" height="16.5" rx="1" stroke="url(#accent)" stroke-width="1.4"/><path d="m14.8 4.4 2.9-.8 3.6 13.1-2.9.8-3.6-13.1Z" stroke="url(#accent)" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 8h2m4.5-1h3m2.1 2.1 2.2-.6" stroke="url(#accent)" stroke-width="1.1" stroke-linecap="round"/>
+ <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
+ <rect x="4.5" y="4.5" width="15" height="15" rx="2.5" stroke="url(#accent)" stroke-width="1.35"/>
+ <path d="M7.5 8.5h6.2M7.5 11.7h4.6M7.5 14.9h3.2" stroke="url(#accent)" stroke-width="1.25" stroke-linecap="round"/>
+ <circle cx="16.5" cy="14.7" r="2.25" stroke="url(#accent)" stroke-width="1.2"/>
+ <circle cx="16.5" cy="14.7" r=".7" fill="url(#accent)"/>
 </svg>
 """
 MAP_ICON = """
@@ -744,22 +747,23 @@ def _cover_palette(pixmap: QPixmap) -> tuple[QColor, QColor, QColor]:
             for current in selected
         ):
             continue
-        hue, saturation, value, _ = color.getHsv()
-        color.setHsv(
-            0 if hue < 0 else hue,
-            max(115, saturation),
-            max(95, value),
-        )
         selected.append(color)
         if len(selected) == 3:
             break
 
-    fallback = (
-        QColor("#4EA98C"),
-        QColor("#477CB2"),
-        QColor("#8C5AAB"),
-    )
-    return tuple(selected + list(fallback))[:3]  # type: ignore[return-value]
+    if not selected:
+        # This is only used for a missing/transparent cover.  Real covers
+        # keep their own sampled hues rather than receiving unrelated accent
+        # colors from the application theme.
+        selected.append(QColor("#4EA98C"))
+
+    while len(selected) < 3:
+        source = selected[-1]
+        selected.append(
+            source.darker(118 if len(selected) == 1 else 132)
+        )
+
+    return tuple(selected[:3])  # type: ignore[return-value]
 
 
 class PlaylistGradientSurface(QFrame):
@@ -1423,6 +1427,64 @@ HEART_LIKED_ICON = """
 QUEUE_ICON = """
 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
   <path fill="#D8D8D8" d="M4 6h11v2H4V6Zm0 5h11v2H4v-2Zm0 5h8v2H4v-2Zm13-5 4 3-4 3v-2h-3v-2h3v-2Z"/>
+</svg>
+"""
+
+SEQUENTIAL_ICON = """
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <path fill="#D8D8D8" d="M5 6h10.2l-2.1-2.1L14.5 2.5 19 7l-4.5 4.5-1.4-1.4L15.2 8H5V6Zm0 10h10.2l-2.1-2.1 1.4-1.4L19 17l-4.5 4.5-1.4-1.4 2.1-2.1H5v-2Z"/>
+</svg>
+"""
+
+SHUFFLE_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M4 7h1.8c1.6 0 2.6.7 3.6 2l5.2 6c1 1.3 2 2 3.6 2H20" stroke="#D8D8D8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M4 17h1.8c1.6 0 2.6-.7 3.6-2l5.2-6c1-1.3 2-2 3.6-2H20" stroke="#D8D8D8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m17.1 4.2 3.1 2.8-3.1 2.8ZM17.1 14.2l3.1 2.8-3.1 2.8Z" fill="#D8D8D8"/>
+</svg>
+"""
+
+SMART_SHUFFLE_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M4 7h1.8c1.6 0 2.6.7 3.6 2l5.2 6c1 1.3 2 2 3.6 2H20" stroke="#D8D8D8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M4 17h1.8c1.6 0 2.6-.7 3.6-2l5.2-6c1-1.3 2-2 3.6-2H20" stroke="#D8D8D8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m17.1 4.2 3.1 2.8-3.1 2.8ZM17.1 14.2l3.1 2.8-3.1 2.8Z" fill="#D8D8D8"/>
+  <path fill="#5DD8B7" d="M6.5 8.2 7.2 10.3 9.3 11l-2.1.7-.7 2.1-.7-2.1-2.1-.7 2.1-.7.7-2.1Z"/>
+</svg>
+"""
+
+RADIO_ICON = """
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <path fill="#D8D8D8" d="M12 13.2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Zm0-3.5a4.7 4.7 0 0 0-3.4 1.5l1.4 1.4a2.8 2.8 0 0 1 4 0l1.4-1.4A4.7 4.7 0 0 0 12 9.7Zm0-4.1a8.8 8.8 0 0 0-6.3 2.6l1.4 1.4a6.8 6.8 0 0 1 9.8 0l1.4-1.4A8.8 8.8 0 0 0 12 5.6Z"/>
+</svg>
+"""
+
+RADIO_ACTIVE_ICON = """
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="accent" x1="5" y1="4" x2="19" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".5" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
+  <path fill="url(#accent)" d="M12 13.2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Zm0-3.5a4.7 4.7 0 0 0-3.4 1.5l1.4 1.4a2.8 2.8 0 0 1 4 0l1.4-1.4A4.7 4.7 0 0 0 12 9.7Zm0-4.1a8.8 8.8 0 0 0-6.3 2.6l1.4 1.4a6.8 6.8 0 0 1 9.8 0l1.4-1.4A8.8 8.8 0 0 0 12 5.6Z"/>
+</svg>
+"""
+
+REPEAT_OFF_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M6.4 10.2A5.8 5.8 0 0 1 17.1 7.3L19 9.2m0-3.2v3.2h-3.2M17.6 13.8A5.8 5.8 0 0 1 6.9 16.7L5 14.8m0 3.2v-3.2h3.2" stroke="#D8D8D8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+
+REPEAT_QUEUE_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="repeatAccent" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".5" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
+  <path d="M6.4 10.2A5.8 5.8 0 0 1 17.1 7.3L19 9.2m0-3.2v3.2h-3.2M17.6 13.8A5.8 5.8 0 0 1 6.9 16.7L5 14.8m0 3.2v-3.2h3.2" stroke="url(#repeatAccent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+
+REPEAT_TRACK_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="repeatAccent" x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".5" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
+  <path d="M6.4 10.2A5.8 5.8 0 0 1 17.1 7.3L19 9.2m0-3.2v3.2h-3.2M17.6 13.8A5.8 5.8 0 0 1 6.9 16.7L5 14.8m0 3.2v-3.2h3.2" stroke="url(#repeatAccent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12" cy="12" r="2.15" fill="#081113"/>
+  <path d="M12 10.9v2.2m-1.1-1.1h2.2" stroke="url(#repeatAccent)" stroke-width=".9" stroke-linecap="round"/>
 </svg>
 """
 

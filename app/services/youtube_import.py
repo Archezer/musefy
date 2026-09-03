@@ -120,6 +120,15 @@ class YouTubeImportService:
             ),
         )
 
+    def is_supported_url(self, value: str) -> bool:
+        """Return whether an input should be treated as a source URL."""
+
+        try:
+            self._get_url_source(value.strip())
+        except ValueError:
+            return False
+        return True
+
     def authenticate_url(self, url: str) -> str:
         source = self._get_url_source(url.strip())
 

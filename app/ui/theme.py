@@ -277,34 +277,40 @@ QScrollArea > QWidget, QScrollArea > QWidget > QWidget {
     background: transparent;
 }
 QScrollBar:vertical {
-    background: #0B0E10;
+    background: transparent;
     border: none;
-    width: 12px;
-    margin: 4px 2px;
-    border-radius: 6px;
+    width: 10px;
+    margin: 5px 2px;
 }
 QScrollBar:horizontal {
-    background: #0B0E10;
+    background: transparent;
     border: none;
-    height: 12px;
-    margin: 2px 4px;
-    border-radius: 6px;
+    height: 10px;
+    margin: 2px 5px;
 }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #3B4847;
-    border: 1px solid #566764;
-    border-radius: 6px;
-    min-height: 34px;
-    min-width: 34px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(116, 148, 143, 180),
+        stop: .5 rgba(151, 205, 188, 220),
+        stop: 1 rgba(92, 133, 126, 180)
+    );
+    border: none;
+    border-radius: 5px;
+    min-height: 38px;
+    min-width: 38px;
 }
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-    background: #526563;
-    border-color: #6D8981;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(140, 190, 177, 210),
+        stop: .5 rgba(188, 240, 220, 235),
+        stop: 1 rgba(111, 165, 153, 210)
+    );
 }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-    background: #111719;
-    border-radius: 6px;
+    background: transparent;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
@@ -313,19 +319,27 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 }
 QTableWidget#libraryTable QScrollBar:vertical {
     background: transparent;
-    width: 10px;
-    margin: 7px 2px 7px 0;
-    border-radius: 5px;
+    width: 9px;
+    margin: 8px 2px 8px 0;
 }
 QTableWidget#libraryTable QScrollBar::handle:vertical {
-    background: rgba(139, 235, 203, 112);
-    border: 1px solid rgba(208, 255, 237, 145);
-    min-height: 34px;
-    border-radius: 5px;
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(93, 151, 137, 160),
+        stop: .5 rgba(139, 235, 203, 205),
+        stop: 1 rgba(69, 119, 110, 160)
+    );
+    border: none;
+    min-height: 38px;
+    border-radius: 4px;
 }
 QTableWidget#libraryTable QScrollBar::handle:vertical:hover {
-    background: rgba(139, 235, 203, 178);
-    border-color: rgba(226, 255, 243, 210);
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba(115, 188, 169, 190),
+        stop: .5 rgba(176, 247, 220, 225),
+        stop: 1 rgba(84, 150, 135, 190)
+    );
 }
 QTableWidget#libraryTable QScrollBar::add-page:vertical,
 QTableWidget#libraryTable QScrollBar::sub-page:vertical {

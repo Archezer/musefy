@@ -41,7 +41,13 @@ def main() -> None:
 
     recommender = MostPopularRecommender(store)
     mood_recommender = MoodRecommender(store)
-    track_radio = TrackSimilarityService(store)
+    # Keep a broad neighborhood available for track-radio streams; the UI
+    # samples it in a lightly randomized order instead of returning only the
+    # closest few matches.
+    track_radio = TrackSimilarityService(
+        store,
+        neighbors_per_track=50,
+    )
     recommendation_service = RecommendationService(
         recommender,
         mood_recommender=mood_recommender,

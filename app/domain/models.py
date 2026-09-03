@@ -114,6 +114,13 @@ class QueueMode(str, Enum):
     SHUFFLE = "shuffle"
     SMART_SHUFFLE = "smart_shuffle"
     SESSION = "session"
+    RECOMMENDATIONS = "recommendations"
+
+
+class RepeatMode(str, Enum):
+    OFF = "off"
+    QUEUE = "queue"
+    TRACK = "track"
 
 
 @dataclass(frozen=True)
