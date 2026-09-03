@@ -108,6 +108,9 @@ class SoundCloudImportService:
         options = {
             "quiet": True,
             "no_warnings": True,
+            # A search result may point to a DRM-protected track.  Keep the
+            # other results instead of failing the whole search.
+            "ignoreerrors": True,
             "skip_download": True,
             # Resolve each result so the dialog receives the track's full
             # metadata instead of the short preview metadata.
@@ -141,6 +144,9 @@ class SoundCloudImportService:
         options = {
             "quiet": True,
             "no_warnings": True,
+            # A set can contain a mix of downloadable and DRM-protected
+            # tracks.  Resolve the available entries and skip only failures.
+            "ignoreerrors": True,
             "skip_download": True,
             "extract_flat": False,
             "noplaylist": False,

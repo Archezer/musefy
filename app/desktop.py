@@ -11,6 +11,7 @@ from app.ingestion.audio import AudioIngestionService
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
+from app.services.mp3party_import import Mp3PartyImportService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlist_bridge import PlaylistBridgeServer
 from app.services.playlists import PlaylistManagementService
@@ -46,6 +47,9 @@ def main() -> None:
         ingestion_service
     )
     soundcloud_import_service = SoundCloudImportService(
+        ingestion_service
+    )
+    mp3party_import_service = Mp3PartyImportService(
         ingestion_service
     )
 
@@ -90,6 +94,7 @@ def main() -> None:
         track_management_service=track_management_service,
         youtube_import_service=youtube_import_service,
         soundcloud_import_service=soundcloud_import_service,
+        mp3party_import_service=mp3party_import_service,
         playback_queue_service=playback_queue_service,
         playlist_management_service=playlist_management_service,
         user_id=CURRENT_USER_ID,

@@ -78,6 +78,10 @@ from app.ml.maest import (
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
 from app.services.interactions import InteractionService
+from app.services.mp3party_import import (
+    Mp3PartyCandidate,
+    Mp3PartyImportService,
+)
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
 from app.services.recommendations import RecommendationService
@@ -293,6 +297,7 @@ class MainWindow(QMainWindow):
         track_management_service: TrackManagementService,
         youtube_import_service: YouTubeImportService,
         soundcloud_import_service: SoundCloudImportService,
+        mp3party_import_service: Mp3PartyImportService,
         playback_queue_service: PlaybackQueueService,
         playlist_management_service: PlaylistManagementService,
         user_id: str,
@@ -308,6 +313,7 @@ class MainWindow(QMainWindow):
         )
         self.youtube_import_service = youtube_import_service
         self.soundcloud_import_service = soundcloud_import_service
+        self.mp3party_import_service = mp3party_import_service
         self.playback_queue_service = playback_queue_service
         self.playlist_management_service = (
             playlist_management_service
@@ -3478,6 +3484,18 @@ class MainWindow(QMainWindow):
                 candidate,
             )
         )
+        dialog.mp3party_download_requested.connect(
+            lambda source: self._start_mp3party_search(
+                dialog,
+                source,
+            )
+        )
+        dialog.mp3party_import_requested.connect(
+            lambda candidate: self._start_mp3party_download(
+                dialog,
+                candidate,
+            )
+        )
         dialog.authenticate_requested.connect(
             lambda url: self._start_url_authentication(
                 dialog,
@@ -3596,6 +3614,69 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_mp3party_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        source: str,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        if self.mp3party_import_service.is_supported_url(source):
+            self._start_mp3party_download(dialog, source)
+            return
+
+        dialog.set_busy(True, "Searching MP3Party...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.mp3party_import_service.search(
+                source,
+                max_results=Mp3PartyImportService.DEFAULT_SEARCH_RESULTS,
+            ),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_mp3party_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _start_mp3party_download(
+        self,
+        dialog: YouTubeSearchDialog,
+        source: str | Mp3PartyCandidate,
+    ) -> None:
+        if self._youtube_thread is not None:
+            return
+
+        dialog.set_busy(True, "Downloading from MP3Party...")
+
+        thread = YouTubeTaskThread(
+            lambda: self.mp3party_import_service.download(source),
+            self,
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _start_youtube_or_spotify_source(
         self,
         dialog: YouTubeSearchDialog,
@@ -3605,6 +3686,10 @@ class MainWindow(QMainWindow):
 
         if self.soundcloud_import_service.is_supported_url(source):
             self._start_soundcloud_search(dialog, source)
+            return
+
+        if self.mp3party_import_service.is_supported_url(source):
+            self._start_mp3party_search(dialog, source)
             return
 
         if self.youtube_import_service.is_supported_url(source):
@@ -4035,6 +4120,28 @@ class MainWindow(QMainWindow):
         dialog.set_candidates(
             candidates,
             source_label="SoundCloud tracks",
+        )
+
+    def _handle_mp3party_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, list):
+            self._handle_youtube_error(
+                dialog,
+                "MP3Party search returned an invalid result.",
+            )
+            return
+
+        candidates = [
+            candidate
+            for candidate in result
+            if isinstance(candidate, Mp3PartyCandidate)
+        ]
+        dialog.set_candidates(
+            candidates,
+            source_label="MP3Party tracks",
         )
 
     def _handle_spotify_search_result(

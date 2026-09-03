@@ -108,6 +108,7 @@ def test_search_returns_soundcloud_candidates(monkeypatch) -> None:
     class FakeYoutubeDL:
         def __init__(self, options):
             self.options = options
+            assert options["ignoreerrors"] is True
 
         def __enter__(self):
             return self
@@ -160,6 +161,7 @@ def test_playlist_resolves_set_tracks_in_order(monkeypatch) -> None:
     class FakeYoutubeDL:
         def __init__(self, options):
             self.options = options
+            assert options["ignoreerrors"] is True
 
         def __enter__(self):
             return self

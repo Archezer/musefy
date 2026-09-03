@@ -23,6 +23,7 @@ rules when importing content.
   the app searches YouTube for matching audio candidates.
 - Search SoundCloud, load a direct track URL, or load a SoundCloud set and
   choose which tracks to import through `yt-dlp`.
+- Search MP3Party, choose a result, or load a direct MP3Party track URL.
 - Use Firefox YouTube cookies automatically when a browser session is required.
 - Analyse new tracks in the background with CUDA when it is available.
 - Store genre hierarchy, mood profile and one reusable MAEST embedding per
@@ -334,8 +335,16 @@ reject the request. Musefy first requests SoundCloud's original uploaded file,
 then falls back to a full-length audio stream; it refuses preview-only streams
 instead of importing a 30-second clip. For a private or account-restricted
 track, set `SOUNDCLOUD_OAUTH_TOKEN` or `SOUNDCLOUD_COOKIES_FILE` in `.env` using
-credentials for an account authorized to access that track. The integration
-intentionally skips playlists.
+credentials for an account authorized to access that track. SoundCloud sets are
+resolved into individual tracks, so each one can be selected before importing.
+
+### MP3Party search and downloads
+
+Click **Find with MP3Party**, enter an artist/title query, and select a result.
+A direct URL such as `https://mp3party.net/music/11377383` is also accepted.
+The importer uses the MP3 URL exposed by the selected track page and stores
+only the resulting audio file in the local library. Use it only for tracks you
+own or have explicit permission to download.
 
 ### VK Music, Spotify and Yandex Music browser exporter
 

@@ -18,11 +18,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.ingestion.metadata import AudioMetadata
+from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
 
-SearchCandidate = YouTubeCandidate | SoundCloudCandidate
+SearchCandidate = (
+    YouTubeCandidate
+    | SoundCloudCandidate
+    | Mp3PartyCandidate
+)
 
 
 class TrackMetadataDialog(QDialog):
@@ -111,6 +116,8 @@ class YouTubeSearchDialog(QDialog):
     # Kept under the old name for compatibility with existing integrations.
     soundcloud_download_requested = Signal(str)
     soundcloud_import_requested = Signal(object)
+    mp3party_download_requested = Signal(str)
+    mp3party_import_requested = Signal(object)
     # Compatibility signals for integrations that still use the old API.
     search_requested = Signal(str)
     authenticate_requested = Signal(str)
@@ -131,7 +138,9 @@ class YouTubeSearchDialog(QDialog):
         self._local_playlist_id: str | None = None
         self._imported_playlist_tracks: dict[int, str] = {}
 
-        self.setWindowTitle("Add from YouTube, Spotify or SoundCloud")
+        self.setWindowTitle(
+            "Add from YouTube, Spotify, SoundCloud or MP3Party"
+        )
         self.resize(760, 520)
 
         layout = QVBoxLayout(self)
@@ -140,7 +149,7 @@ class YouTubeSearchDialog(QDialog):
 
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText(
-            "Artist and track title, or paste a YouTube/Spotify/SoundCloud URL"
+            "Artist/title or a YouTube, Spotify, SoundCloud or MP3Party URL"
         )
         form_layout.addRow("Search or URL:", self.source_edit)
 
@@ -153,7 +162,7 @@ class YouTubeSearchDialog(QDialog):
         search_layout = QHBoxLayout()
         self.source_button = QPushButton("Search / Load")
         self.source_button.setToolTip(
-            "Search YouTube, or load a YouTube/Spotify/SoundCloud link."
+            "Search YouTube, or load a YouTube/Spotify/SoundCloud/MP3Party link."
         )
         self.source_button.clicked.connect(self._request_source)
         search_layout.addWidget(self.source_button)
@@ -173,6 +182,16 @@ class YouTubeSearchDialog(QDialog):
             self._request_soundcloud_download
         )
         search_layout.addWidget(self.soundcloud_button)
+
+        self.mp3party_button = QPushButton("Find with MP3Party")
+        self.mp3party_button.setToolTip(
+            "Search MP3Party or load a direct track URL. "
+            "Use only tracks you are authorized to download."
+        )
+        self.mp3party_button.clicked.connect(
+            self._request_mp3party_download
+        )
+        search_layout.addWidget(self.mp3party_button)
 
         self.authenticate_button = QPushButton("Authenticate Spotify")
         self.authenticate_button.setToolTip(
@@ -197,7 +216,7 @@ class YouTubeSearchDialog(QDialog):
         layout.addWidget(self.results_list)
 
         self.status_label = QLabel(
-            "Search YouTube or paste a YouTube, Spotify or SoundCloud URL."
+            "Search YouTube or paste a YouTube, Spotify, SoundCloud or MP3Party URL."
         )
         layout.addWidget(self.status_label)
 
@@ -247,6 +266,19 @@ class YouTubeSearchDialog(QDialog):
 
         self.soundcloud_download_requested.emit(source)
 
+    def _request_mp3party_download(self) -> None:
+        source = self.source_edit.text().strip()
+
+        if not source:
+            QMessageBox.warning(
+                self,
+                "MP3Party search failed",
+                "Enter a track search query or MP3Party URL.",
+            )
+            return
+
+        self.mp3party_download_requested.emit(source)
+
     def _request_search(self) -> None:
         """Legacy search signal entry point."""
 
@@ -286,6 +318,8 @@ class YouTubeSearchDialog(QDialog):
         else:
             if isinstance(candidates[0], SoundCloudCandidate):
                 self.soundcloud_import_requested.emit(candidates[0])
+            elif isinstance(candidates[0], Mp3PartyCandidate):
+                self.mp3party_import_requested.emit(candidates[0])
             else:
                 self.import_requested.emit(candidates[0])
 
@@ -328,7 +362,10 @@ class YouTubeSearchDialog(QDialog):
 
         candidate = item.data(Qt.ItemDataRole.UserRole)
 
-        if isinstance(candidate, (YouTubeCandidate, SoundCloudCandidate)):
+        if isinstance(
+            candidate,
+            (YouTubeCandidate, SoundCloudCandidate, Mp3PartyCandidate),
+        ):
             return candidate
 
         return None
@@ -347,7 +384,11 @@ class YouTubeSearchDialog(QDialog):
 
                 if isinstance(
                     candidate,
-                    (YouTubeCandidate, SoundCloudCandidate),
+                    (
+                        YouTubeCandidate,
+                        SoundCloudCandidate,
+                        Mp3PartyCandidate,
+                    ),
                 ):
                     candidates.append(candidate)
 
@@ -465,6 +506,7 @@ class YouTubeSearchDialog(QDialog):
         self._busy = busy
         self.source_button.setEnabled(not busy)
         self.soundcloud_button.setEnabled(not busy)
+        self.mp3party_button.setEnabled(not busy)
         self.authenticate_button.setEnabled(not busy)
         self.source_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
@@ -507,6 +549,15 @@ class YouTubeSearchDialog(QDialog):
             return (
                 f"{index}. {candidate.artist} — {candidate.title}\n"
                 f"SoundCloud · {duration} · {plays}"
+            )
+
+        if isinstance(candidate, Mp3PartyCandidate):
+            duration = YouTubeSearchDialog._format_duration(
+                candidate.duration_ms
+            )
+            return (
+                f"{index}. {candidate.artist} — {candidate.title}\n"
+                f"MP3Party · {duration} · MP3"
             )
 
         duration = YouTubeSearchDialog._format_duration(
