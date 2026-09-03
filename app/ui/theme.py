@@ -236,7 +236,7 @@ QHeaderView::section {
     padding: 7px;
 }
 QHeaderView::section:first {
-    padding: 7px 5px 7px 9px;
+    padding: 7px 5px 7px 5px;
 }
 QSplitter::handle:horizontal {
     width: 1px;
