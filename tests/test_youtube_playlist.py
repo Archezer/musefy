@@ -449,6 +449,59 @@ def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
     ]
 
 
+def test_retry_playlist_search_preserves_original_positions() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+    )
+
+    result = service.search_playlist_tracks(
+        [
+            (7, SpotifyTrack("Late track", "Artist")),
+            (2, SpotifyTrack("Early track", "Artist")),
+        ],
+        playlist_name="Retried playlist",
+    )
+
+    assert [candidate.playlist_position for candidate in result.candidates] == [
+        7,
+        2,
+    ]
+    assert [candidate.requested_title for candidate in result.candidates] == [
+        "Late track",
+        "Early track",
+    ]
+
+
+def test_spotify_playlist_search_reports_failed_positions() -> None:
+    class PartiallyFailingProvider(FakeSpotifyYoutubeProvider):
+        def search(
+            self,
+            query: str,
+            *,
+            max_results: int,
+        ) -> list[YouTubeCandidate]:
+            if query.startswith("Artist - Missing"):
+                return []
+            return super().search(query, max_results=max_results)
+
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        PartiallyFailingProvider(),
+    )
+
+    result = service.search_playlist_tracks(
+        [
+            (4, SpotifyTrack("Found", "Artist")),
+            (11, SpotifyTrack("Missing", "Artist")),
+        ],
+        playlist_name="Playlist",
+    )
+
+    assert result.failed_positions == (11,)
+    assert result.failed[0][0] == SpotifyTrack("Missing", "Artist")
+
+
 def test_load_url_auto_detects_spotify_playlist() -> None:
     service = YouTubeImportService(
         FakeIngestionService(),

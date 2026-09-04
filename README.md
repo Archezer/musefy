@@ -249,8 +249,10 @@ in the library is recognised by source ID, so it is not duplicated. If the
 database record exists but the local audio file was removed, importing it again
 restores that record's file.
 
-Playlist import shows successful and failed items and offers a retry for failed
-ones. Some videos may still be unavailable because they are private,
+Playlist import shows successful and failed items. For every failed item you can
+search YouTube again for a fresh candidate (or retry the existing download),
+including tracks that were not found during the initial playlist search. Some
+videos may still be unavailable because they are private,
 region-restricted, age-restricted, removed, or require a browser session.
 
 #### Firefox cookies for YouTube

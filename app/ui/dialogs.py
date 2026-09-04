@@ -135,6 +135,7 @@ class YouTubeSearchDialog(QDialog):
         self._unmatched_playlist_tracks: tuple[
             tuple[SpotifyTrack, str], ...
         ] = ()
+        self._unmatched_playlist_positions: tuple[int, ...] = ()
         self._local_playlist_id: str | None = None
         self._imported_playlist_tracks: dict[int, str] = {}
 
@@ -405,6 +406,7 @@ class YouTubeSearchDialog(QDialog):
         playlist_name: str | None = None,
         playlist_cover_url: str | None = None,
         unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
+        unmatched_positions: tuple[int, ...] = (),
         source_label: str = "videos",
     ) -> None:
         self._playlist_mode = playlist
@@ -414,6 +416,9 @@ class YouTubeSearchDialog(QDialog):
         )
         self._unmatched_playlist_tracks = (
             unmatched if playlist else ()
+        )
+        self._unmatched_playlist_positions = (
+            unmatched_positions if playlist else ()
         )
         self.results_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
@@ -472,6 +477,10 @@ class YouTubeSearchDialog(QDialog):
         self,
     ) -> tuple[tuple[SpotifyTrack, str], ...]:
         return self._unmatched_playlist_tracks
+
+    @property
+    def unmatched_playlist_positions(self) -> tuple[int, ...]:
+        return self._unmatched_playlist_positions
 
     @property
     def local_playlist_id(self) -> str | None:
@@ -609,6 +618,7 @@ class YouTubeSearchDialog(QDialog):
 
 class PlaylistImportResultDialog(QDialog):
     retry_requested = Signal(object)
+    search_requested = Signal()
 
     def __init__(
         self,
@@ -620,10 +630,14 @@ class PlaylistImportResultDialog(QDialog):
         parent: QWidget | None = None,
         *,
         unmatched: tuple[tuple[SpotifyTrack, str], ...] = (),
+        unmatched_positions: tuple[int, ...] = (),
+        allow_search: bool = True,
     ) -> None:
         super().__init__(parent)
 
         self.failed = failed
+        self.unmatched = unmatched
+        self.unmatched_positions = unmatched_positions
         self.setWindowTitle("Playlist import completed")
         self.resize(640, 440)
 
@@ -652,6 +666,16 @@ class PlaylistImportResultDialog(QDialog):
         layout.addWidget(failed_tracks)
 
         buttons_layout = QHBoxLayout()
+
+        failed_count = len(failed) + len(unmatched)
+        if allow_search:
+            search_button = QPushButton(
+                f"Search failed tracks again ({failed_count})"
+            )
+            search_button.setEnabled(bool(failed_count))
+            search_button.clicked.connect(self._request_search)
+            buttons_layout.addWidget(search_button)
+
         retry_button = QPushButton(
             f"Try failed downloads again ({len(failed)})"
         )
@@ -669,4 +693,8 @@ class PlaylistImportResultDialog(QDialog):
         self.retry_requested.emit(
             [candidate for candidate, _ in self.failed]
         )
+        self.accept()
+
+    def _request_search(self) -> None:
+        self.search_requested.emit()
         self.accept()

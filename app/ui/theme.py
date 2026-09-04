@@ -63,6 +63,38 @@ QFrame#playerBar {
     background-color: #0D1012;
     border-color: rgba(255, 255, 255, 18);
 }
+QFrame#librarySearch {
+    background-color: rgba(31, 34, 37, 242);
+    border: 1px solid rgba(255, 255, 255, 34);
+    border-radius: 19px;
+}
+QFrame#librarySearch:hover {
+    border-color: rgba(181, 251, 224, 92);
+}
+QLineEdit#librarySearchInput {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: #F2F4F3;
+    selection-background-color: #4D9F8A;
+    selection-color: #07100F;
+    font-size: 13px;
+}
+QLineEdit#librarySearchInput:focus {
+    border: none;
+}
+QLineEdit#librarySearchInput::placeholder {
+    color: #94979B;
+}
+QToolButton#librarySearchClear {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    border-radius: 13px;
+}
+QToolButton#librarySearchClear:hover {
+    background-color: rgba(255, 255, 255, 22);
+}
 QLabel#appTitle {
     font-size: 18px;
     font-weight: 650;

@@ -32,18 +32,19 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsBlurEffect,
     QGraphicsOpacityEffect,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSlider,
     QScrollArea,
+    QSlider,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -98,15 +99,12 @@ from app.services.youtube_import import (
     YouTubeImportService,
     YouTubePlaylistImportResult,
 )
+from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
 from app.storage.paths import PLAYLIST_EXPORTS_DIR
 from app.storage.protocols import MusicStore
-from app.ui.dialogs import (
-    PlaylistImportResultDialog,
-    TrackMetadataDialog,
-    YouTubeSearchDialog,
-)
 from app.ui.components import (
+    CLEAR_ICON,
     HEART_ICON,
     HEART_LIKED_ICON,
     IMPORT_ICON,
@@ -117,35 +115,41 @@ from app.ui.components import (
     NEXT_ICON,
     PAUSE_ICON,
     PLAY_ICON,
+    PLAYLIST_SCROLL_LEFT_ICON,
+    PLAYLIST_SCROLL_RIGHT_ICON,
     PREVIOUS_ICON,
     REPEAT_OFF_ICON,
     REPEAT_QUEUE_ICON,
     REPEAT_TRACK_ICON,
+    SEARCH_ICON,
     SEQUENTIAL_ICON,
     SHUFFLE_ICON,
     SMART_SHUFFLE_ICON,
-    PLAYLIST_SCROLL_LEFT_ICON,
-    PLAYLIST_SCROLL_RIGHT_ICON,
     SOUNDCLOUD_ICON,
     SPOTIFY_ICON,
     VOLUME_ICON,
     YOUTUBE_ICON,
-    MoodPlaylistCard,
-    MainLibraryCard,
-    PlaylistCard,
     CreatePlaylistCard,
-    QueueDialog,
-    RoundedScrollBar,
-    MarqueeLabel,
     FadingVolumeSlider,
     HoverTableWidget,
-    RailIconButton,
-    SvgIconButton,
-    TrackNumberPlayWidget,
-    TrackIdentityWidget,
     LiquidGlassPanel,
-    track_cover_pixmap,
+    MainLibraryCard,
+    MarqueeLabel,
+    MoodPlaylistCard,
+    PlaylistCard,
+    QueueDialog,
+    RailIconButton,
+    RoundedScrollBar,
+    SvgIconButton,
+    TrackIdentityWidget,
+    TrackNumberPlayWidget,
     svg_icon,
+    track_cover_pixmap,
+)
+from app.ui.dialogs import (
+    PlaylistImportResultDialog,
+    TrackMetadataDialog,
+    YouTubeSearchDialog,
 )
 from app.ui.music_map import MusicMapWidget
 from app.ui.theme import DARK_THEME
@@ -325,7 +329,9 @@ class MainWindow(QMainWindow):
         self.session_mood_name: str | None = None
         self.current_track_id: str | None = None
         self._library_tracks: list[Track] = []
+        self._track_scope_tracks: list[Track] = []
         self._visible_tracks: list[Track] = []
+        self._library_search_query = ""
         self._track_table_generation = 0
         self._track_batch_task: TrackBatchTask | None = None
         self._library_sort_column: int | None = None
@@ -395,6 +401,17 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_THEME)
 
         self._build_interface()
+        self._find_shortcut = QShortcut(
+            QKeySequence("Ctrl+F"),
+            self,
+        )
+        self._find_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self._find_shortcut.setAutoRepeat(False)
+        self._find_shortcut.activated.connect(
+            self._focus_library_search
+        )
         self._space_shortcut = QShortcut(
             QKeySequence(Qt.Key.Key_Space),
             self,
@@ -559,6 +576,64 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(main_column)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(8)
+
+        search_row = QWidget()
+        search_row_layout = QHBoxLayout(search_row)
+        search_row_layout.setContentsMargins(0, 0, 0, 0)
+        search_row_layout.addStretch(1)
+
+        search_frame = QFrame()
+        search_frame.setObjectName("librarySearch")
+        search_frame.setFixedHeight(38)
+        search_frame.setMinimumWidth(280)
+        search_frame.setMaximumWidth(430)
+        search_frame_layout = QHBoxLayout(search_frame)
+        search_frame_layout.setContentsMargins(11, 0, 8, 0)
+        search_frame_layout.setSpacing(7)
+
+        search_icon = QLabel()
+        search_icon.setPixmap(svg_icon(SEARCH_ICON, size=18).pixmap(18, 18))
+        search_icon.setFixedSize(18, 18)
+        search_icon.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        search_frame_layout.addWidget(search_icon)
+
+        self.library_search_input = QLineEdit()
+        self.library_search_input.setObjectName("librarySearchInput")
+        self.library_search_input.setPlaceholderText(
+            "Search title or artist"
+        )
+        self.library_search_input.setClearButtonEnabled(False)
+        self.library_search_input.setToolTip(
+            "Search title or artist (Ctrl+F)"
+        )
+        self.library_search_input.textChanged.connect(
+            self._handle_library_search_changed
+        )
+        search_frame_layout.addWidget(self.library_search_input, 1)
+
+        self.library_search_clear = QToolButton()
+        self.library_search_clear.setObjectName("librarySearchClear")
+        self.library_search_clear.setIcon(
+            svg_icon(CLEAR_ICON, size=18)
+        )
+        self.library_search_clear.setIconSize(QSize(18, 18))
+        self.library_search_clear.setToolTip("Clear search")
+        self.library_search_clear.setAutoRaise(True)
+        self.library_search_clear.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self.library_search_clear.setFixedSize(26, 26)
+        self.library_search_clear.clicked.connect(
+            self.library_search_input.clear
+        )
+        self.library_search_clear.hide()
+        search_frame_layout.addWidget(self.library_search_clear)
+
+        search_row_layout.addWidget(search_frame)
+        search_row_layout.addStretch(1)
+        main_layout.addWidget(search_row, 0)
 
         playlist_strip = QFrame()
         playlist_strip.setObjectName("playlistStrip")
@@ -1412,10 +1487,19 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Render either the main library or a playlist in the shared table."""
 
+        self._track_scope_tracks = list(tracks)
+        self._render_visible_tracks(title)
+
+    def _render_visible_tracks(self, title: str) -> None:
+        """Render the current library/playlist scope with active search."""
+
         self._cancel_track_batch_loading()
         self._track_table_generation += 1
         generation = self._track_table_generation
-        self._visible_tracks = self._sort_tracks(tracks)
+        filtered_tracks = self._filter_library_tracks(
+            self._track_scope_tracks
+        )
+        self._visible_tracks = self._sort_tracks(filtered_tracks)
         self.track_table.clearSelection()
         self.selected_track_id = None
         self._hovered_track_row = -1
@@ -1435,6 +1519,34 @@ class MainWindow(QMainWindow):
         self._start_track_batch_loading(generation, len(initial_tracks))
         # Defer recommendation work until after the first batch is painted.
         QTimer.singleShot(0, self._load_recommendations)
+
+    def _handle_library_search_changed(self, text: str) -> None:
+        self._library_search_query = text.strip()
+        self.library_search_clear.setVisible(
+            bool(self._library_search_query)
+        )
+        self._render_visible_tracks(self.library_title_label.text())
+
+    def _focus_library_search(self) -> None:
+        self.library_search_input.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.library_search_input.selectAll()
+
+    def _filter_library_tracks(
+        self,
+        tracks: list[Track],
+    ) -> list[Track]:
+        query = self._library_search_query.casefold()
+        if not query:
+            return list(tracks)
+
+        return [
+            track
+            for track in tracks
+            if (
+                query in track.title.casefold()
+                or query in track.artist.casefold()
+            )
+        ]
 
     def _handle_library_sort(self, column: int) -> None:
         if column not in {1, 2, 3, 4}:
@@ -1469,10 +1581,7 @@ class MainWindow(QMainWindow):
             column,
             indicator_order,
         )
-        self._set_visible_tracks(
-            self._visible_tracks,
-            title=self.library_title_label.text(),
-        )
+        self._render_visible_tracks(self.library_title_label.text())
 
     def _sort_tracks(self, tracks: list[Track]) -> list[Track]:
         if self._library_sort_column is None:
@@ -1678,6 +1787,7 @@ class MainWindow(QMainWindow):
         track_identity.play_requested.connect(
             lambda track_id=track.id: self._play_track_now(track_id)
         )
+        track_identity.set_search_query(self._library_search_query)
         self.track_table.setItem(row_index, 1, QTableWidgetItem())
         self.track_table.setCellWidget(row_index, 1, track_identity)
         self.track_table.register_row_widget(track_identity, row_index)
@@ -1725,35 +1835,35 @@ class MainWindow(QMainWindow):
         if self.selected_playlist_id is not None:
             self._load_selected_playlist_tracks()
             return
-
-        self._cancel_track_batch_loading()
-        self._track_table_generation += 1
-        for index, item in enumerate(self._visible_tracks):
-            if item.id == track.id:
-                self._visible_tracks[index] = track
-                break
-        else:
-            self._visible_tracks.append(track)
-
-        for row_index in range(self.track_table.rowCount()):
-            title_item = self.track_table.item(row_index, 0)
-            if title_item is None:
-                continue
-            if title_item.data(Qt.ItemDataRole.UserRole) != track.id:
-                continue
-
-            self._populate_track_row(row_index, track)
-            return
-
-        row_index = self.track_table.rowCount()
-        self.track_table.insertRow(row_index)
-        self._populate_track_row(row_index, track)
+        self._set_visible_tracks(
+            self._library_tracks,
+            title=self.library_title_label.text(),
+        )
 
     def _update_library_track_row(self, track: Track) -> None:
         self._library_tracks = [
             track if item.id == track.id else item
             for item in self._library_tracks
         ]
+        self._track_scope_tracks = [
+            track if item.id == track.id else item
+            for item in self._track_scope_tracks
+        ]
+
+        in_scope = any(
+            item.id == track.id
+            for item in self._track_scope_tracks
+        )
+        is_visible = any(item.id == track.id for item in self._visible_tracks)
+        matches_search = self._track_matches_search(track)
+        if (
+            self._library_search_query
+            and in_scope
+            and is_visible != matches_search
+        ):
+            self._render_visible_tracks(self.library_title_label.text())
+            return
+
         for row_index in range(self.track_table.rowCount()):
             title_item = self.track_table.item(row_index, 0)
             if title_item is None:
@@ -1767,6 +1877,11 @@ class MainWindow(QMainWindow):
     def _remove_library_track_row(self, track_id: str) -> None:
         self._cancel_track_batch_loading()
         self._track_table_generation += 1
+        self._track_scope_tracks = [
+            track
+            for track in self._track_scope_tracks
+            if track.id != track_id
+        ]
         self._visible_tracks = [
             track
             for track in self._visible_tracks
@@ -1780,7 +1895,19 @@ class MainWindow(QMainWindow):
                 continue
 
             self.track_table.removeRow(row_index)
+            self.library_count_label.setText(
+                f"{len(self._visible_tracks)} track"
+                f"{'s' if len(self._visible_tracks) != 1 else ''}"
+            )
             return
+
+    def _track_matches_search(self, track: Track) -> bool:
+        query = self._library_search_query.casefold()
+        return (
+            not query
+            or query in track.title.casefold()
+            or query in track.artist.casefold()
+        )
 
     @staticmethod
     def _format_display_genres(
@@ -4015,6 +4142,86 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_youtube_playlist_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        failed: tuple[tuple[YouTubeCandidate, str], ...],
+        unmatched: tuple[tuple[SpotifyTrack, str], ...],
+        unmatched_positions: tuple[int, ...],
+    ) -> None:
+        """Search fresh YouTube candidates for every failed playlist item."""
+
+        retry_tracks: list[tuple[int, SpotifyTrack]] = []
+        used_positions: set[int] = set()
+        next_position = 0
+
+        def allocate_position(position: int | None) -> int:
+            nonlocal next_position
+            if position is not None and position not in used_positions:
+                used_positions.add(position)
+                next_position = max(next_position, position + 1)
+                return position
+
+            while next_position in used_positions:
+                next_position += 1
+            allocated = next_position
+            used_positions.add(allocated)
+            next_position += 1
+            return allocated
+
+        for candidate, _ in failed:
+            title = candidate.requested_title or candidate.title
+            artist = candidate.requested_artist or candidate.channel_title
+            retry_tracks.append(
+                (
+                    allocate_position(candidate.playlist_position),
+                    SpotifyTrack(title=title, artist=artist),
+                )
+            )
+
+        for index, (track, _) in enumerate(unmatched):
+            position = (
+                unmatched_positions[index]
+                if index < len(unmatched_positions)
+                else None
+            )
+            retry_tracks.append(
+                (allocate_position(position), track)
+            )
+
+        if not retry_tracks:
+            return
+
+        retry_tracks.sort(key=lambda item: item[0])
+        dialog.set_busy(
+            True,
+            f"Searching YouTube again: 0/{len(retry_tracks)}...",
+        )
+
+        def search_playlist() -> SpotifyPlaylistSearchResult:
+            return self.youtube_import_service.search_playlist_tracks(
+                retry_tracks,
+                playlist_name=(
+                    dialog.playlist_name or "YouTube playlist"
+                ),
+                cover_url=dialog.playlist_cover_url,
+            )
+
+        thread = YouTubeTaskThread(search_playlist, self)
+        thread.result_ready.connect(
+            lambda result: self._handle_youtube_playlist_search_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _start_youtube_thread(
         self,
         thread: YouTubeTaskThread,
@@ -4100,6 +4307,29 @@ class MainWindow(QMainWindow):
         ]
         dialog.set_candidates(candidates)
 
+    def _handle_youtube_playlist_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SpotifyPlaylistSearchResult):
+            self._handle_youtube_error(
+                dialog,
+                "Retry search returned an invalid result.",
+            )
+            return
+
+        dialog.set_search_query(result.playlist_name)
+        playlist_name = dialog.playlist_name or None
+        dialog.set_candidates(
+            list(result.candidates),
+            playlist=True,
+            playlist_name=playlist_name,
+            playlist_cover_url=result.cover_url,
+            unmatched=result.failed,
+            unmatched_positions=result.failed_positions,
+        )
+
     def _handle_soundcloud_search_result(
         self,
         dialog: YouTubeSearchDialog,
@@ -4162,6 +4392,7 @@ class MainWindow(QMainWindow):
                 playlist_name=result.playlist_name,
                 playlist_cover_url=result.cover_url,
                 unmatched=result.failed,
+                unmatched_positions=result.failed_positions,
             )
             return
 
@@ -4255,6 +4486,7 @@ class MainWindow(QMainWindow):
                 playlist_name=dialog.playlist_name,
                 playlist_cover_url=dialog.playlist_cover_url,
                 unmatched=unmatched,
+                unmatched_positions=dialog.unmatched_playlist_positions,
             )
             dialog.set_busy(
                 False,
@@ -4269,6 +4501,18 @@ class MainWindow(QMainWindow):
                 result.failed,
                 dialog,
                 unmatched=unmatched,
+                unmatched_positions=dialog.unmatched_playlist_positions,
+            )
+            result_dialog.search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_youtube_playlist_search(
+                        dialog,
+                        result.failed,
+                        unmatched,
+                        dialog.unmatched_playlist_positions,
+                    ),
+                )
             )
             result_dialog.retry_requested.connect(
                 lambda candidates: QTimer.singleShot(
@@ -4280,7 +4524,7 @@ class MainWindow(QMainWindow):
                 )
             )
             result_dialog.exec()
-            if not result.failed:
+            if not result.failed and not unmatched:
                 dialog.accept()
             return
 
@@ -4360,6 +4604,7 @@ class MainWindow(QMainWindow):
                 len(result.imported),
                 result.failed,
                 dialog,
+                allow_search=False,
             )
             result_dialog.retry_requested.connect(
                 lambda retry_candidates: QTimer.singleShot(

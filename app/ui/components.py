@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 import time
 from pathlib import Path
 
@@ -782,6 +784,17 @@ IMPORT_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#A2F6D9"/><stop offset=".52" stop-color="#55CDB0"/><stop offset="1" stop-color="#327E76"/></linearGradient></defs>
  <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 16v3h14v-3" stroke="url(#accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+"""
+SEARCH_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="10.8" cy="10.8" r="6.4" stroke="#B7B8BE" stroke-width="1.8"/>
+  <path d="m16 16 4.2 4.2" stroke="#B7B8BE" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
+"""
+CLEAR_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="m6.5 6.5 11 11m0-11-11 11" stroke="#B7B8BE" stroke-width="1.8" stroke-linecap="round"/>
 </svg>
 """
 _MUSEFY_MARK_PATH = (
@@ -1604,6 +1617,7 @@ class TrackIdentityWidget(QWidget):
         super().__init__(parent)
         self._title = title
         self._artist = artist
+        self._search_query = ""
         self._include_play_button = include_play_button
         self.setObjectName("trackRowCell")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1632,11 +1646,12 @@ class TrackIdentityWidget(QWidget):
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(0)
-        self._title_label = QLabel(title)
+        self._title_label = QLabel(html.escape(title))
         self._title_label.setObjectName("trackCellTitle")
-        self._artist_label = QLabel(artist)
+        self._artist_label = QLabel(html.escape(artist))
         self._artist_label.setObjectName("trackCellArtist")
         for label in (self._title_label, self._artist_label):
+            label.setTextFormat(Qt.TextFormat.RichText)
             label.setWordWrap(False)
             label.setMinimumWidth(0)
             label.setSizePolicy(
@@ -1657,20 +1672,83 @@ class TrackIdentityWidget(QWidget):
             8,
             self.width() - (44 if self._include_play_button else 4),
         )
-        self._title_label.setText(
-            QFontMetrics(self._title_label.font()).elidedText(
-                self._title,
-                Qt.TextElideMode.ElideRight,
-                available_width,
+        self._set_display_text(
+            self._title_label,
+            self._title,
+            available_width,
+        )
+        self._set_display_text(
+            self._artist_label,
+            self._artist,
+            available_width,
+        )
+
+    def set_search_query(self, query: str) -> None:
+        """Highlight the current library search in title and artist text."""
+
+        self._search_query = query.strip()
+        self._refresh_display_text()
+
+    def _refresh_display_text(self) -> None:
+        available_width = max(
+            8,
+            self.width() - (44 if self._include_play_button else 4),
+        )
+        self._set_display_text(
+            self._title_label,
+            self._title,
+            available_width,
+        )
+        self._set_display_text(
+            self._artist_label,
+            self._artist,
+            available_width,
+        )
+
+    def _set_display_text(
+        self,
+        label: QLabel,
+        text: str,
+        available_width: int,
+    ) -> None:
+        elided_text = QFontMetrics(label.font()).elidedText(
+            text,
+            Qt.TextElideMode.ElideRight,
+            available_width,
+        )
+        label.setText(
+            _highlight_search_text(
+                elided_text,
+                self._search_query,
             )
         )
-        self._artist_label.setText(
-            QFontMetrics(self._artist_label.font()).elidedText(
-                self._artist,
-                Qt.TextElideMode.ElideRight,
-                available_width,
-            )
+
+
+def _highlight_search_text(text: str, query: str) -> str:
+    """Escape row text and highlight case-insensitive query matches."""
+
+    escaped_text = html.escape(text)
+    normalized_query = query.strip()
+    if not normalized_query:
+        return escaped_text
+
+    pattern = re.compile(re.escape(normalized_query), re.IGNORECASE)
+    parts: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        parts.append(html.escape(text[cursor : match.start()]))
+        parts.append(
+            '<span style="background-color:#5DD8B7; '
+            'color:#07100F; border-radius:3px; padding:0 2px;">'
+            f"{html.escape(match.group(0))}</span>"
         )
+        cursor = match.end()
+
+    if not parts:
+        return escaped_text
+
+    parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
 
 
 def track_cover_pixmap(

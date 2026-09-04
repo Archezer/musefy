@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from app.domain.models import Track
 from app.ingestion.audio import AudioIngestionService
+from app.services.playlist_exports import read_playlist_export
 from app.sources.spotify import (
     SUPPORTED_SPOTIFY_HOSTS,
     SpotifyMetadataProvider,
@@ -17,7 +18,6 @@ from app.sources.youtube import (
     YouTubeSearchProvider,
     extract_youtube_video_id,
 )
-from app.services.playlist_exports import read_playlist_export
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,9 @@ class SpotifyPlaylistSearchResult:
     candidates: tuple[YouTubeCandidate, ...]
     failed: tuple[tuple[SpotifyTrack, str], ...]
     cover_url: str | None = None
+    # Positions line up with ``failed`` and let the UI put a retried match
+    # back into the original playlist order.
+    failed_positions: tuple[int, ...] = ()
 
 
 class YouTubeImportService:
@@ -198,11 +201,20 @@ class YouTubeImportService:
         tracks: tuple[SpotifyTrack, ...],
         *,
         cover_url: str | None = None,
+        positions: tuple[int, ...] | None = None,
     ) -> SpotifyPlaylistSearchResult:
+        if positions is None:
+            positions = tuple(range(len(tracks)))
+        elif len(positions) != len(tracks):
+            raise ValueError(
+                "Playlist track positions must match the track count."
+            )
+
         candidates = []
         failed = []
+        failed_positions = []
 
-        for position, spotify_track in enumerate(tracks):
+        for position, spotify_track in zip(positions, tracks):
             try:
                 matches = self.provider.search(
                     spotify_track.search_query,
@@ -210,12 +222,14 @@ class YouTubeImportService:
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 failed.append((spotify_track, str(error)))
+                failed_positions.append(position)
                 continue
 
             if not matches:
                 failed.append(
                     (spotify_track, "No YouTube match found.")
                 )
+                failed_positions.append(position)
                 continue
 
             candidates.append(
@@ -237,6 +251,28 @@ class YouTubeImportService:
             candidates=tuple(candidates),
             failed=tuple(failed),
             cover_url=cover_url,
+            failed_positions=tuple(failed_positions),
+        )
+
+    def search_playlist_tracks(
+        self,
+        tracks: list[tuple[int, SpotifyTrack]],
+        *,
+        playlist_name: str,
+        cover_url: str | None = None,
+    ) -> SpotifyPlaylistSearchResult:
+        """Search a selected set of playlist tracks again.
+
+        ``position`` is supplied by the caller because retry searches only
+        contain the tracks that failed previously.  Keeping it here prevents
+        those tracks from being appended in a new, compact order.
+        """
+
+        return self._search_playlist_tracks(
+            playlist_name,
+            tuple(track for _, track in tracks),
+            cover_url=cover_url,
+            positions=tuple(position for position, _ in tracks),
         )
 
     def search_album_from_spotify(
@@ -258,6 +294,7 @@ class YouTubeImportService:
     ) -> SpotifyPlaylistSearchResult:
         candidates = []
         failed = []
+        failed_positions = []
 
         for position, spotify_track in enumerate(collection.tracks):
             try:
@@ -267,12 +304,14 @@ class YouTubeImportService:
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 failed.append((spotify_track, str(error)))
+                failed_positions.append(position)
                 continue
 
             if not matches:
                 failed.append(
                     (spotify_track, "No YouTube match found.")
                 )
+                failed_positions.append(position)
                 continue
 
             candidates.append(
@@ -293,6 +332,7 @@ class YouTubeImportService:
             playlist_name=collection.name,
             candidates=tuple(candidates),
             failed=tuple(failed),
+            failed_positions=tuple(failed_positions),
         )
 
     def download_and_import(
