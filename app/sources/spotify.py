@@ -6,6 +6,7 @@ import secrets
 import time
 import webbrowser
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -49,6 +50,21 @@ SPOTIFY_PARTNER_ALBUM_QUERY_HASH = (
     "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10"
 )
 SPOTIFY_PARTNER_PAGE_SIZE = 100
+
+
+class SpotifyRateLimitError(RuntimeError):
+    """A Spotify API quota or rolling-window limit was reached."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: int | None = None,
+        reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -175,6 +191,37 @@ class SpotifyOAuthClient:
                 payload = json.load(response)
         except HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
+            if error.code == 429:
+                reason = None
+                try:
+                    error_payload = json.loads(details)
+                except json.JSONDecodeError:
+                    error_payload = None
+                if isinstance(error_payload, dict):
+                    error_details = error_payload.get("error")
+                    if isinstance(error_details, dict):
+                        reason_value = error_details.get("reason")
+                        reason = (
+                            str(reason_value).strip()
+                            if reason_value
+                            else None
+                        )
+
+                retry_after = _parse_retry_after(
+                    error.headers.get("Retry-After")
+                )
+                message = (
+                    "Spotify API quota exceeded."
+                    if reason == "QUOTA_EXCEEDED"
+                    else "Spotify API rate limit reached."
+                )
+                if retry_after is not None:
+                    message += f" Retry after {_format_retry_after(retry_after)}."
+                raise SpotifyRateLimitError(
+                    message,
+                    retry_after=retry_after,
+                    reason=reason,
+                ) from error
             raise RuntimeError(
                 f"Spotify API request failed: "
                 f"{details or error.reason}"
@@ -397,6 +444,24 @@ def _first_query_value(
     return values[0] if values else None
 
 
+def _parse_retry_after(value: object) -> int | None:
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _format_retry_after(seconds: int) -> str:
+    hours, remainder = divmod(seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {remaining_seconds}s"
+    return f"{remaining_seconds}s"
+
+
 class SpotifyMetadataProvider:
     def __init__(
         self,
@@ -422,7 +487,20 @@ class SpotifyMetadataProvider:
         return self.oauth_client.has_saved_credentials()
 
     def get_saved_tracks(self) -> tuple[SpotifyTrack, ...]:
-        """Return the current user's saved tracks through the Web API."""
+        """Return the current user's complete saved-track library."""
+
+        return self.get_saved_tracks_since(None)
+
+    def get_saved_tracks_since(
+        self,
+        cursor: datetime | None,
+    ) -> tuple[SpotifyTrack, ...]:
+        """Read saved tracks and stop paging once ``cursor`` is reached.
+
+        Spotify returns saved tracks newest first.  For an incremental sync we
+        therefore need only the newest pages instead of downloading the whole
+        library every time.
+        """
 
         tracks: list[SpotifyTrack] = []
         offset = 0
@@ -436,12 +514,21 @@ class SpotifyMetadataProvider:
                 },
             )
             items = payload.get("items") or []
+            reached_cursor = False
             for item in items:
                 track = _parse_saved_track(item)
                 if track is not None:
+                    added_at = _parse_spotify_timestamp(track.added_at)
+                    if (
+                        cursor is not None
+                        and added_at is not None
+                        and added_at <= cursor
+                    ):
+                        reached_cursor = True
+                        continue
                     tracks.append(track)
 
-            if not items or not payload.get("next"):
+            if not items or reached_cursor or not payload.get("next"):
                 break
             offset += len(items)
 
@@ -1119,6 +1206,20 @@ def _parse_saved_track(payload: object) -> SpotifyTrack | None:
         added_at=str(payload.get("added_at") or "").strip() or None,
         isrc=isrc or None,
     )
+
+
+def _parse_spotify_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        timestamp = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
 
 
 def _parse_next_data(html: str) -> dict:

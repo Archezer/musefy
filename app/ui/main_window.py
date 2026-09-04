@@ -307,12 +307,6 @@ class MainWindow(QMainWindow):
         self._auxiliary_dialogs: AuxiliaryDialogManager | None = None
         self._search_row: QWidget | None = None
         self._search_actions_container: QWidget | None = None
-        self._spotify_sync_timer = QTimer(self)
-        self._spotify_sync_timer.setInterval(5 * 60 * 1000)
-        self._spotify_sync_timer.timeout.connect(
-            self._start_background_spotify_sync
-        )
-        self._spotify_sync_timer.start()
         self._genre_statuses: dict[str, str] = {}
         self._genre_predictions: dict[str, object] = {}
         self._genre_batch_track_ids: set[str] = set()
@@ -447,7 +441,6 @@ class MainWindow(QMainWindow):
 
     def _finish_initial_load(self) -> None:
         self._refresh_music_map(self._library_tracks)
-        self._start_background_spotify_sync()
 
     def _build_interface(self) -> None:
         app_root = QWidget()
@@ -4864,7 +4857,6 @@ class MainWindow(QMainWindow):
         dialog = YouTubeSearchDialog(
             self,
             spotify_authenticated=spotify_provider.has_saved_credentials(),
-            spotify_sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
         dialog.source_requested.connect(
             lambda source: self._start_youtube_or_spotify_source(
@@ -4905,11 +4897,8 @@ class MainWindow(QMainWindow):
         dialog.spotify_settings_requested.connect(
             lambda: self._open_spotify_settings(dialog)
         )
-        dialog.spotify_sync_toggled.connect(
-            lambda enabled: self._handle_spotify_sync_toggled(
-                enabled,
-                dialog,
-            )
+        dialog.spotify_sync_requested.connect(
+            lambda: self._start_spotify_sync_last(dialog)
         )
         dialog.import_requested.connect(
             lambda candidate: (
@@ -5127,7 +5116,6 @@ class MainWindow(QMainWindow):
         dialog = YouTubeSearchDialog(
             self,
             spotify_authenticated=spotify_provider.has_saved_credentials(),
-            spotify_sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
         dialog.set_busy(True, "Reading exported playlist...")
         dialog.start_progress("Reading exported playlist...")
@@ -5140,11 +5128,8 @@ class MainWindow(QMainWindow):
         dialog.spotify_settings_requested.connect(
             lambda: self._open_spotify_settings(dialog)
         )
-        dialog.spotify_sync_toggled.connect(
-            lambda enabled: self._handle_spotify_sync_toggled(
-                enabled,
-                dialog,
-            )
+        dialog.spotify_sync_requested.connect(
+            lambda: self._start_spotify_sync_last(dialog)
         )
 
         thread = YouTubeTaskThread(
@@ -5555,16 +5540,12 @@ class MainWindow(QMainWindow):
         settings_dialog = SpotifySettingsDialog(
             parent=self,
             authenticated=provider.has_saved_credentials(),
-            sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
         settings_dialog.authenticate_requested.connect(
             lambda: self._start_spotify_settings_auth(settings_dialog)
         )
-        settings_dialog.sync_toggled.connect(
-            self._handle_spotify_sync_toggled
-        )
         settings_dialog.sync_requested.connect(
-            lambda: self._start_spotify_sync_all(settings_dialog)
+            lambda: self._start_spotify_sync_last(settings_dialog)
         )
         settings_dialog.finished.connect(
             lambda _result: self._handle_spotify_settings_closed(source_dialog)
@@ -5580,9 +5561,6 @@ class MainWindow(QMainWindow):
             provider = self.youtube_import_service.spotify_provider
             source_dialog.set_spotify_authenticated(
                 provider.has_saved_credentials()
-            )
-            source_dialog.set_spotify_sync_enabled(
-                self.spotify_fav_sync_service.is_enabled()
             )
 
     def _show_auxiliary_dialog(self, dialog: QDialog) -> None:
@@ -5617,7 +5595,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: object) -> None:
         """Stop loader work before the main process is allowed to exit."""
 
-        self._spotify_sync_timer.stop()
         self._watch_folder_timer.stop()
         if self._auxiliary_dialogs is not None:
             self._auxiliary_dialogs.close_all()
@@ -5670,45 +5647,27 @@ class MainWindow(QMainWindow):
         self.media_player.stop()
         super().closeEvent(event)
 
-    def _handle_spotify_sync_toggled(
+    def _start_spotify_sync_last(
         self,
-        enabled: bool,
-        source_dialog: YouTubeSearchDialog | None = None,
+        dialog: YouTubeSearchDialog | SpotifySettingsDialog | None = None,
     ) -> None:
+        """Run one explicit incremental Spotify sync from the UI."""
+
+        if self._youtube_thread is not None:
+            return
+
         provider = self.youtube_import_service.spotify_provider
-        if enabled and not provider.has_saved_credentials():
-            if source_dialog is not None:
-                source_dialog.set_spotify_sync_enabled(False)
-
-            answer = QMessageBox.question(
-                source_dialog or self,
-                "Spotify OAuth required",
-                "Spotify fav sync needs Spotify OAuth. Open Spotify settings?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self._open_spotify_settings(source_dialog)
+        if not provider.has_saved_credentials():
+            if isinstance(dialog, YouTubeSearchDialog):
+                dialog.set_spotify_authenticated(False)
+            if dialog is not None:
+                dialog.set_busy(False, "Connect Spotify with OAuth first.")
             self.statusBar().showMessage(
-                "Connect Spotify with OAuth before enabling fav sync."
+                "Connect Spotify with OAuth before using Sync Last."
             )
             return
 
-        try:
-            self.spotify_fav_sync_service.set_enabled(enabled)
-        except OSError as error:
-            self.statusBar().showMessage(
-                f"Could not save Spotify fav sync setting: {error}"
-            )
-            return
-
-        if enabled:
-            self.statusBar().showMessage(
-                "Spotify fav sync enabled. New saved tracks will be checked "
-                "every 5 minutes."
-            )
-        else:
-            self.statusBar().showMessage("Spotify fav sync disabled.")
+        self._start_spotify_sync(dialog)
 
     def _start_spotify_settings_auth(
         self,
@@ -5757,70 +5716,23 @@ class MainWindow(QMainWindow):
         dialog.finish_progress(result)
         self.statusBar().showMessage(result)
 
-    def _start_background_spotify_sync(self) -> None:
-        if self._youtube_thread is not None:
-            return
-        if not self.spotify_fav_sync_service.is_enabled():
-            return
-        if not self.youtube_import_service.spotify_provider.has_saved_credentials():
-            return
-
-        self._start_spotify_sync(None, sync_all=False)
-
-    def _start_spotify_sync_all(
-        self,
-        dialog: SpotifySettingsDialog,
-    ) -> None:
-        if self._youtube_thread is not None:
-            return
-        if not self.youtube_import_service.spotify_provider.has_saved_credentials():
-            dialog.set_authenticated(False)
-            dialog.set_busy(False, "Connect Spotify with OAuth first.")
-            return
-
-        self._start_spotify_sync(dialog, sync_all=True)
-
     def _start_spotify_sync(
         self,
-        dialog: SpotifySettingsDialog | None,
-        *,
-        sync_all: bool,
+        dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
     ) -> None:
         if dialog is not None:
-            message = (
-                "Reading saved Spotify tracks..."
-                if sync_all
-                else "Checking Spotify for new saved tracks..."
-            )
-            dialog.set_busy(
-                True,
-                message,
-            )
+            message = "Reading tracks added since the previous Sync Last..."
+            dialog.set_busy(True, message)
             dialog.start_progress(message)
 
         def sync() -> object:
-            if not sync_all:
-                sync_result = (
-                    self.spotify_fav_sync_service.sync_new_saved_tracks()
-                )
-                if not sync_result.new_tracks:
-                    return sync_result
-
-                search_result = self.youtube_import_service.search_playlist_tracks(
-                    list(enumerate(sync_result.new_tracks)),
-                    playlist_name="Spotify favorites",
-                    on_progress=thread.search_progress_updated.emit,
-                    should_cancel=thread.is_cancelled,
-                )
-                return sync_result, search_result
-
-            sync_result = self.spotify_fav_sync_service.sync_all_saved_tracks()
+            sync_result = self.spotify_fav_sync_service.sync_last_saved_tracks()
             if not sync_result.new_tracks:
-                return sync_result, None
+                return sync_result
 
             search_result = self.youtube_import_service.search_playlist_tracks(
                 list(enumerate(sync_result.new_tracks)),
-                playlist_name="Spotify favorites",
+                playlist_name="Spotify favorites · Sync Last",
                 on_progress=thread.search_progress_updated.emit,
                 should_cancel=thread.is_cancelled,
             )
@@ -5836,17 +5748,10 @@ class MainWindow(QMainWindow):
                 self._handle_spotify_sync_progress
             )
         thread.result_ready.connect(
-            lambda result: self._handle_spotify_sync_result(
-                dialog,
-                result,
-                sync_all=sync_all,
-            )
+            lambda result: self._handle_spotify_sync_result(dialog, result)
         )
         thread.error_occurred.connect(
-            lambda message: self._handle_spotify_sync_error(
-                dialog,
-                message,
-            )
+            lambda message: self._handle_spotify_sync_error(dialog, message)
         )
         self._start_youtube_thread(thread, dialog)
 
@@ -5858,9 +5763,9 @@ class MainWindow(QMainWindow):
         failed: int,
         current: str,
     ) -> None:
-        """Keep background fav sync observable without opening a dialog."""
+        """Keep an explicit sync observable without opening a dialog."""
 
-        message = f"Spotify fav sync: Searching {completed}/{total} · found {found}"
+        message = f"Sync Last: Searching {completed}/{total} · found {found}"
         if failed:
             message += f" · failed {failed}"
         if current:
@@ -5872,25 +5777,22 @@ class MainWindow(QMainWindow):
 
     def _handle_spotify_sync_result(
         self,
-        dialog: SpotifySettingsDialog | None,
+        dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
         result: object,
-        *,
-        sync_all: bool,
     ) -> None:
-        if not sync_all and isinstance(result, SpotifyFavSyncResult):
-            new_tracks = result.new_tracks
-            if new_tracks:
+        if isinstance(result, SpotifyFavSyncResult):
+            if result.new_tracks:
                 names = ", ".join(
                     track.title
-                    for track in new_tracks[:3]
+                    for track in result.new_tracks[:3]
                 )
-                suffix = "" if len(new_tracks) <= 3 else "…"
+                suffix = "" if len(result.new_tracks) <= 3 else "…"
                 message = (
-                    f"Spotify fav sync found {len(new_tracks)} new track(s): "
+                    f"Sync Last found {len(result.new_tracks)} new track(s): "
                     f"{names}{suffix}"
                 )
             else:
-                message = "Spotify fav sync: no new saved tracks."
+                message = "Sync Last: no new saved tracks."
             self.statusBar().showMessage(message)
             if dialog is not None:
                 dialog.set_busy(False, message)
@@ -5904,30 +5806,22 @@ class MainWindow(QMainWindow):
         ):
             self._handle_spotify_sync_error(
                 dialog,
-                "Spotify Sync All returned an invalid result.",
+                "Sync Last returned an invalid result.",
             )
             return
 
         sync_result, search_result = result
-        sync_label = "Sync All" if sync_all else "Spotify fav sync"
         message = (
-            f"{sync_label} found {len(sync_result.new_tracks)} "
-            "saved track(s)."
+            f"Sync Last found {len(sync_result.new_tracks)} saved track(s)."
         )
         if dialog is not None:
             dialog.set_busy(False, message)
             dialog.finish_progress(message)
-            if sync_all:
-                dialog.accept()
         else:
             self.statusBar().showMessage(message)
 
         if search_result is None:
-            self.statusBar().showMessage(
-                "Spotify Sync All: no saved tracks found."
-                if sync_all
-                else "Spotify fav sync: no new saved tracks."
-            )
+            self.statusBar().showMessage("Sync Last: no new saved tracks.")
             return
 
         QTimer.singleShot(
@@ -5946,7 +5840,7 @@ class MainWindow(QMainWindow):
 
     def _handle_spotify_sync_error(
         self,
-        dialog: SpotifySettingsDialog | None,
+        dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
         message: str,
     ) -> None:
         if dialog is not None:
@@ -5954,7 +5848,7 @@ class MainWindow(QMainWindow):
             dialog.finish_progress("Spotify sync failed.")
             QMessageBox.warning(dialog, "Spotify sync failed", message)
         else:
-            self.statusBar().showMessage(f"Spotify fav sync failed: {message}")
+            self.statusBar().showMessage(f"Sync Last failed: {message}")
 
     def _show_spotify_sync_results(
         self,
@@ -5963,7 +5857,6 @@ class MainWindow(QMainWindow):
         dialog = YouTubeSearchDialog(
             self,
             spotify_authenticated=True,
-            spotify_sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
         dialog.set_import_source("spotify_favorite")
         dialog.playlist_import_requested.connect(
@@ -5972,11 +5865,8 @@ class MainWindow(QMainWindow):
         dialog.spotify_settings_requested.connect(
             lambda: self._open_spotify_settings(dialog)
         )
-        dialog.spotify_sync_toggled.connect(
-            lambda enabled: self._handle_spotify_sync_toggled(
-                enabled,
-                dialog,
-            )
+        dialog.spotify_sync_requested.connect(
+            lambda: self._start_spotify_sync_last(dialog)
         )
         dialog.set_search_query(result.playlist_name)
         dialog.set_candidates(

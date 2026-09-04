@@ -1,5 +1,6 @@
 import io
 import json
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -310,3 +311,46 @@ def test_saved_spotify_tracks_keep_identity_and_added_at() -> None:
     assert tracks[0].isrc == "US-AAA-1"
     assert oauth_client.requests[0][0] == "/v1/me/tracks"
     assert oauth_client.requests[0][1]["limit"] == "50"
+
+
+def test_saved_spotify_tracks_stop_paging_at_incremental_cursor() -> None:
+    oauth_client = FakeSpotifyOAuthClient(
+        [
+            {
+                "items": [
+                    {
+                        "added_at": "2026-09-04T12:00:00Z",
+                        "track": {
+                            "id": "new-track",
+                            "type": "track",
+                            "name": "New track",
+                            "artists": [{"name": "Artist"}],
+                        },
+                    },
+                    {
+                        "added_at": "2026-09-04T10:00:00Z",
+                        "track": {
+                            "id": "old-track",
+                            "type": "track",
+                            "name": "Old track",
+                            "artists": [{"name": "Artist"}],
+                        },
+                    },
+                ],
+                "next": "https://api.spotify.com/next",
+            },
+            {
+                "items": [],
+                "next": None,
+            },
+        ]
+    )
+
+    tracks = SpotifyMetadataProvider(
+        oauth_client=oauth_client,
+    ).get_saved_tracks_since(
+        datetime(2026, 9, 4, 11, tzinfo=UTC),
+    )
+
+    assert [track.spotify_id for track in tracks] == ["new-track"]
+    assert len(oauth_client.requests) == 1

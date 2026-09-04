@@ -76,10 +76,10 @@ def _format_elapsed(milliseconds: int) -> str:
 
 
 class SpotifySyncRow(QFrame):
-    """A compact clickable row for the Spotify favorite-sync setting."""
+    """A compact manual action for the Spotify saved-track library."""
 
     settings_requested = Signal()
-    sync_toggled = Signal(bool)
+    sync_requested = Signal()
 
     def __init__(
         self,
@@ -97,27 +97,27 @@ class SpotifySyncRow(QFrame):
         layout.setContentsMargins(10, 8, 12, 8)
         layout.setSpacing(9)
 
-        self.sync_checkbox = QCheckBox()
-        self.sync_checkbox.setObjectName("spotifyFavSyncCheck")
-        self.sync_checkbox.setToolTip(
-            "Watch for newly saved Spotify tracks every five minutes."
-        )
-        self.sync_checkbox.toggled.connect(self.sync_toggled)
-        layout.addWidget(self.sync_checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
-
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(1)
 
-        self.title_label = QLabel("Spotify fav sync")
+        self.title_label = QLabel("Sync latest Spotify tracks")
         self.title_label.setObjectName("spotifySyncTitle")
         self.subtitle_label = QLabel(
-            "Watch new saved tracks every 5 minutes"
+            "Find tracks added since the previous Sync Last click"
         )
         self.subtitle_label.setObjectName("spotifySyncSubtitle")
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.subtitle_label)
         layout.addLayout(text_layout, 1)
+
+        self.sync_button = QPushButton("Sync Last")
+        self.sync_button.setObjectName("spotifySyncLastButton")
+        self.sync_button.setToolTip(
+            "Read Spotify tracks added since the previous manual sync."
+        )
+        self.sync_button.clicked.connect(self.sync_requested)
+        layout.addWidget(self.sync_button)
 
         self.auth_status_label = QLabel()
         self.auth_status_label.setObjectName("spotifyAuthStatus")
@@ -139,7 +139,9 @@ class SpotifySyncRow(QFrame):
         ):
             child.installEventFilter(self)
 
-        self.set_sync_enabled(sync_enabled)
+        # Keep the old parameter for integrations that still construct this
+        # row directly; synchronization is now always explicitly manual.
+        del sync_enabled
         self.set_authenticated(authenticated)
 
     def eventFilter(self, watched: object, event: object) -> bool:
@@ -169,14 +171,11 @@ class SpotifySyncRow(QFrame):
         super().mouseReleaseEvent(event)
 
     def set_authenticated(self, authenticated: bool) -> None:
-        # Keep the checkbox clickable even before OAuth.  The host window can
-        # then offer to open Spotify settings instead of silently ignoring the
-        # user's click.
-        self.sync_checkbox.setEnabled(True)
-        self.sync_checkbox.setToolTip(
-            "Watch new saved Spotify tracks every five minutes."
+        self.sync_button.setEnabled(authenticated)
+        self.sync_button.setToolTip(
+            "Read Spotify tracks added since the previous manual sync."
             if authenticated
-            else "Connect Spotify with OAuth to enable fav sync."
+            else "Connect Spotify with OAuth before using Sync Last."
         )
         self.auth_status_label.setProperty("connected", authenticated)
         self.auth_status_label.setText(
@@ -185,10 +184,16 @@ class SpotifySyncRow(QFrame):
         self.auth_status_label.style().unpolish(self.auth_status_label)
         self.auth_status_label.style().polish(self.auth_status_label)
 
+    def set_busy(self, busy: bool) -> None:
+        self.sync_button.setEnabled(not busy and self._is_authenticated())
+
+    def _is_authenticated(self) -> bool:
+        return bool(self.auth_status_label.property("connected"))
+
     def set_sync_enabled(self, enabled: bool) -> None:
-        signals_blocked = self.sync_checkbox.blockSignals(True)
-        self.sync_checkbox.setChecked(enabled)
-        self.sync_checkbox.blockSignals(signals_blocked)
+        """Compatibility no-op; sync is no longer a persistent toggle."""
+
+        del enabled
 
 
 class SpotifySettingsDialog(QDialog):
@@ -196,7 +201,6 @@ class SpotifySettingsDialog(QDialog):
 
     closed = Signal()
     authenticate_requested = Signal()
-    sync_toggled = Signal(bool)
     sync_requested = Signal()
 
     def __init__(
@@ -254,26 +258,18 @@ class SpotifySettingsDialog(QDialog):
         sync_layout.setContentsMargins(12, 10, 12, 10)
         sync_layout.setSpacing(5)
 
-        self.sync_checkbox = QCheckBox("Spotify fav sync")
-        self.sync_checkbox.setObjectName("spotifyFavSyncCheck")
-        self.sync_checkbox.setToolTip(
-            "Check Spotify for newly saved tracks every five minutes."
-        )
-        self.sync_checkbox.toggled.connect(self.sync_toggled)
-        sync_layout.addWidget(self.sync_checkbox)
-
         sync_description = QLabel(
-            "Only tracks saved after enabling this option are reported by "
-            "automatic sync."
+            "Sync Last checks Spotify once and offers tracks saved since the "
+            "previous manual sync."
         )
         sync_description.setObjectName("spotifySettingsDescription")
         sync_description.setWordWrap(True)
         sync_layout.addWidget(sync_description)
 
-        self.sync_now_button = QPushButton("Sync All")
-        self.sync_now_button.setObjectName("spotifySyncAllButton")
+        self.sync_now_button = QPushButton("Sync Last")
+        self.sync_now_button.setObjectName("spotifySyncLastButton")
         self.sync_now_button.setToolTip(
-            "Read all saved Spotify tracks now."
+            "Read tracks added since the previous manual sync."
         )
         self.sync_now_button.clicked.connect(self.sync_requested)
         sync_layout.addWidget(
@@ -321,7 +317,9 @@ class SpotifySettingsDialog(QDialog):
         layout.addLayout(buttons_layout)
 
         self.set_authenticated(authenticated)
-        self.set_sync_enabled(sync_enabled)
+        # Keep the old parameter for callers created before Sync Last became
+        # a manual action; there is no persistent checkbox anymore.
+        del sync_enabled
         self.set_busy(False, "")
 
     def set_authenticated(self, authenticated: bool) -> None:
@@ -336,21 +334,17 @@ class SpotifySettingsDialog(QDialog):
             if authenticated
             else "Connect Spotify (OAuth)"
         )
-        self.sync_checkbox.setEnabled(authenticated)
         self.sync_now_button.setEnabled(authenticated)
         self.auth_status_label.style().unpolish(self.auth_status_label)
         self.auth_status_label.style().polish(self.auth_status_label)
 
     def set_sync_enabled(self, enabled: bool) -> None:
-        signals_blocked = self.sync_checkbox.blockSignals(True)
-        self.sync_checkbox.setChecked(enabled)
-        self.sync_checkbox.blockSignals(signals_blocked)
+        """Compatibility no-op; synchronization is explicitly manual."""
+
+        del enabled
 
     def set_busy(self, busy: bool, message: str) -> None:
         self.authenticate_button.setEnabled(not busy)
-        self.sync_checkbox.setEnabled(
-            not busy and self._is_authenticated()
-        )
         self.sync_now_button.setEnabled(
             not busy and self._is_authenticated()
         )
@@ -544,6 +538,7 @@ class YouTubeSearchDialog(QDialog):
     url_load_requested = Signal(str)
     import_requested = Signal(object)
     playlist_import_requested = Signal(object)
+    spotify_sync_requested = Signal()
 
     def __init__(
         self,
@@ -648,8 +643,8 @@ class YouTubeSearchDialog(QDialog):
         self.spotify_sync_row.settings_requested.connect(
             self.spotify_settings_requested
         )
-        self.spotify_sync_row.sync_toggled.connect(
-            self.spotify_sync_toggled
+        self.spotify_sync_row.sync_requested.connect(
+            self.spotify_sync_requested
         )
         layout.addWidget(self.spotify_sync_row)
 
@@ -2875,7 +2870,7 @@ class ImportLogDialog(QDialog):
         "soundcloud_import": "SoundCloud",
         "mp3party": "MP3Party",
         "spotify": "Spotify",
-        "spotify_favorite": "Spotify favorite sync",
+        "spotify_favorite": "Spotify Sync Last",
         "watch_folder": "Watch folder",
     }
 

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from app.services.spotify_fav_sync import SpotifyFavSyncService
 from app.sources.spotify import SpotifyTrack
@@ -8,9 +9,18 @@ class FakeSpotifyProvider:
     def __init__(self, tracks: tuple[SpotifyTrack, ...]) -> None:
         self.tracks = tracks
         self.calls = 0
+        self.cursors: list[datetime | None] = []
 
     def get_saved_tracks(self) -> tuple[SpotifyTrack, ...]:
         self.calls += 1
+        return self.tracks
+
+    def get_saved_tracks_since(
+        self,
+        cursor: datetime | None,
+    ) -> tuple[SpotifyTrack, ...]:
+        self.calls += 1
+        self.cursors.append(cursor)
         return self.tracks
 
 
@@ -39,18 +49,27 @@ def test_favorite_sync_ignores_tracks_saved_before_enable(tmp_path) -> None:
 
 def test_favorite_sync_returns_each_new_track_once(tmp_path) -> None:
     provider = FakeSpotifyProvider(())
+    state_path = tmp_path / "spotify-sync.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "last_sync_at": "2026-09-01T00:00:00Z",
+                "seen_track_ids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     service = SpotifyFavSyncService(
         provider,
-        state_path=tmp_path / "spotify-sync.json",
+        state_path=state_path,
     )
-    service.set_enabled(True)
 
     provider.tracks = (
         SpotifyTrack(
             "New",
             "Artist",
             spotify_id="new",
-            added_at="2999-01-01T00:00:00Z",
+            added_at="2026-09-02T00:00:00Z",
         ),
     )
     first = service.sync_new_saved_tracks()
@@ -58,6 +77,8 @@ def test_favorite_sync_returns_each_new_track_once(tmp_path) -> None:
 
     assert [track.spotify_id for track in first.new_tracks] == ["new"]
     assert second.new_tracks == ()
+    assert len(provider.cursors) == 2
+    assert provider.cursors[0] is not None
 
 
 def test_favorite_sync_state_survives_service_restart(tmp_path) -> None:
@@ -65,7 +86,7 @@ def test_favorite_sync_state_survives_service_restart(tmp_path) -> None:
         "New",
         "Artist",
         spotify_id="new",
-        added_at="2999-01-01T00:00:00Z",
+        added_at="2026-09-02T00:00:00Z",
     )
     provider = FakeSpotifyProvider((track,))
     state_path = tmp_path / "spotify-sync.json"
@@ -74,14 +95,12 @@ def test_favorite_sync_state_survives_service_restart(tmp_path) -> None:
         provider,
         state_path=state_path,
     )
-    first_service.set_enabled(True)
     first = first_service.sync_new_saved_tracks()
 
     restarted_service = SpotifyFavSyncService(
         provider,
         state_path=state_path,
     )
-    assert restarted_service.is_enabled()
     assert restarted_service.sync_new_saved_tracks().new_tracks == ()
     assert first.new_tracks == (track,)
 
@@ -92,8 +111,8 @@ def test_favorite_sync_uses_last_sync_cursor_after_restart(tmp_path) -> None:
         json.dumps(
             {
                 "enabled": True,
-                "tracking_since": "2999-01-01T00:00:00Z",
-                "last_sync_at": "2999-01-02T00:00:00Z",
+                "tracking_since": "2026-09-01T00:00:00Z",
+                "last_sync_at": "2026-09-02T00:00:00Z",
                 "seen_track_ids": [],
             }
         ),
@@ -105,13 +124,13 @@ def test_favorite_sync_uses_last_sync_cursor_after_restart(tmp_path) -> None:
                 "Before cursor",
                 "Artist",
                 spotify_id="before",
-                added_at="2999-01-01T12:00:00Z",
+                added_at="2026-09-01T12:00:00Z",
             ),
             SpotifyTrack(
                 "After cursor",
                 "Artist",
                 spotify_id="after",
-                added_at="2999-01-02T12:00:00Z",
+                added_at="2026-09-03T12:00:00Z",
             ),
         )
     )

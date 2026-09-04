@@ -238,13 +238,13 @@ QCheckBox#spotifyFavSyncCheck::indicator:checked {
     border-color: #B5FBE0;
     background: #4D9F8A;
 }
-QPushButton#spotifyOAuthButton, QPushButton#spotifySyncAllButton {
+QPushButton#spotifyOAuthButton, QPushButton#spotifySyncLastButton {
     background-color: rgba(112, 224, 190, 18);
     border-color: rgba(181, 251, 224, 66);
     color: #C9FBE9;
     font-weight: 650;
 }
-QPushButton#spotifyOAuthButton:hover, QPushButton#spotifySyncAllButton:hover {
+QPushButton#spotifyOAuthButton:hover, QPushButton#spotifySyncLastButton:hover {
     background-color: rgba(112, 224, 190, 32);
     border-color: #B5FBE0;
 }

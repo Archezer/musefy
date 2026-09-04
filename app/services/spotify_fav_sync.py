@@ -21,12 +21,11 @@ class SpotifyFavSyncResult:
 
 
 class SpotifyFavSyncService:
-    """Persist and incrementally scan Spotify's saved-track library.
+    """Persist an incremental cursor for manual Spotify saved-track sync.
 
-    Enabling the feature creates a local high-water mark. Existing Spotify
-    favorites therefore stay untouched. After the first successful scan, the
-    persisted ``last_sync_at`` cursor is used so a restart can continue from
-    the last synchronization instead of replaying the whole saved library.
+    Older state files may still contain ``enabled`` and ``tracking_since`` from
+    the former background-sync implementation; both are accepted as a safe
+    migration baseline.
     """
 
     def __init__(
@@ -58,16 +57,24 @@ class SpotifyFavSyncService:
         self._save_state(state)
 
     def sync_new_saved_tracks(self) -> SpotifyFavSyncResult:
+        """Backward-compatible alias for the manual ``Sync Last`` action."""
+
+        return self.sync_last_saved_tracks()
+
+    def sync_last_saved_tracks(self) -> SpotifyFavSyncResult:
+        """Return tracks added since the previous manual synchronization.
+
+        The cursor is written only after Spotify successfully returns its
+        saved-track collection. A track added while this request is running
+        is left for the next click by using the request start time as an upper
+        bound.
+        """
+
         state = self._load_state()
-        synced_at = _now_iso()
-        if not state.get("enabled", False):
-            return SpotifyFavSyncResult((), synced_at)
+        sync_started_at = _now_iso()
+        sync_started = _parse_timestamp(sync_started_at)
 
         tracking_since = _parse_timestamp(state.get("tracking_since"))
-        # ``tracking_since`` is the initial baseline created when the feature
-        # is enabled.  Once a scan has completed, ``last_sync_at`` becomes the
-        # durable cursor used across app restarts.  Keep the fallback for
-        # state files written by older versions.
         last_sync_at = _parse_timestamp(state.get("last_sync_at"))
         sync_cursors = [
             timestamp
@@ -82,7 +89,7 @@ class SpotifyFavSyncService:
         }
         new_tracks: list[SpotifyTrack] = []
 
-        for track in self.provider.get_saved_tracks():
+        for track in self._get_saved_tracks_since(sync_cursor):
             if not track.spotify_id or not track.added_at:
                 continue
 
@@ -91,17 +98,35 @@ class SpotifyFavSyncService:
                 sync_cursor is not None and added_at <= sync_cursor
             ):
                 continue
+            if sync_started is not None and added_at > sync_started:
+                continue
             if track.spotify_id in seen_track_ids:
                 continue
 
             seen_track_ids.add(track.spotify_id)
             new_tracks.append(track)
 
-        state["last_sync_at"] = synced_at
+        state["last_sync_at"] = sync_started_at
         state["seen_track_ids"] = sorted(seen_track_ids)
         self._save_state(state)
 
-        return SpotifyFavSyncResult(tuple(new_tracks), synced_at)
+        return SpotifyFavSyncResult(tuple(new_tracks), sync_started_at)
+
+    def _get_saved_tracks_since(
+        self,
+        sync_cursor: datetime | None,
+    ) -> tuple[SpotifyTrack, ...]:
+        incremental_getter = getattr(
+            self.provider,
+            "get_saved_tracks_since",
+            None,
+        )
+        if callable(incremental_getter):
+            return tuple(incremental_getter(sync_cursor))
+
+        # Keep compatibility with lightweight providers used by integrations
+        # and tests that only implement the original method.
+        return tuple(self.provider.get_saved_tracks())
 
     def sync_all_saved_tracks(self) -> SpotifyFavSyncResult:
         """Read the complete saved-track library for an explicit sync-all."""
