@@ -1,7 +1,17 @@
+from collections import Counter
+from math import cos, pi, sin, sqrt
 from pathlib import Path
 from typing import ClassVar
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QElapsedTimer,
+    QEvent,
+    QPointF,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -13,6 +23,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QGridLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -1518,13 +1529,332 @@ class ListeningBarChart(QWidget):
         return month.strftime("%b") if month is not None else ""
 
 
+class ListeningGraph(QWidget):
+    """Perspective track network inspired by the main music map."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._tracks: tuple[
+            tuple[str, str, int, tuple[float, ...] | None],
+            ...,
+        ] = ()
+        self._sphere_points: tuple[tuple[float, float, float], ...] = ()
+        self._edge_pairs: tuple[tuple[int, int], ...] = ()
+        self._hovered_index = -1
+        self._rotation_x = -0.18
+        self._rotation_y = 0.32
+        self._zoom = 1.0
+        self._last_pointer_position: QPointF | None = None
+        self._is_rotating = False
+        self.setMinimumHeight(174)
+        self.setMouseTracking(True)
+
+    def set_tracks(
+        self,
+        tracks: tuple[tuple[str, str, int, tuple[float, ...] | None], ...]
+        | list[tuple[str, str, int, tuple[float, ...] | None]]
+        | tuple[tuple[str, str, int], ...]
+        | list[tuple[str, str, int]],
+    ) -> None:
+        normalized_tracks = []
+        for track in tracks[:8]:
+            title, artist, count = track[:3]
+            embedding = track[3] if len(track) > 3 else None
+            normalized_tracks.append((title, artist, count, embedding))
+        self._tracks = tuple(normalized_tracks)
+        self._hovered_index = -1
+        self._rotation_x = -0.18
+        self._rotation_y = 0.32
+        self._zoom = 1.0
+        self._sphere_points = self._build_sphere_points(len(self._tracks))
+        self._edge_pairs = self._build_edge_pairs(
+            self._sphere_points,
+            tuple(track[3] for track in self._tracks),
+        )
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self._tracks:
+            painter.setPen(QColor(163, 163, 170, 145))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No tracks in this period yet",
+            )
+            painter.end()
+            return
+
+        projected = self._projected_positions()
+        maximum = max(
+            (count for _title, _artist, count, _embedding in self._tracks),
+            default=1,
+        )
+        center = QPointF(self.width() / 2, self.height() / 2 - 2)
+        orbit_x = max(34.0, min(self.width() * 0.37, 155.0)) * self._zoom
+        orbit_y = max(30.0, min(self.height() * 0.31, 72.0)) * self._zoom
+        sphere_rect = QRectF(
+            center.x() - orbit_x,
+            center.y() - orbit_y,
+            orbit_x * 2,
+            orbit_y * 2,
+        )
+        painter.setPen(QPen(QColor(181, 251, 224, 18), 1))
+        painter.setBrush(QColor(20, 184, 147, 7))
+        painter.drawEllipse(sphere_rect)
+        # Back nodes are painted first, which makes the network feel spatial
+        # even though it stays lightweight and entirely native Qt.
+        for left_index, right_index in self._edge_pairs:
+            source = projected[left_index]
+            target = projected[right_index]
+            depth = (source[2] + target[2]) / 2
+            alpha = int(10 + 42 * ((depth + 1) / 2))
+            painter.setPen(QPen(QColor(181, 251, 224, alpha), 0.9))
+            painter.drawLine(source[0], target[0])
+
+        draw_order = sorted(
+            range(len(self._tracks)),
+            key=lambda index: projected[index][2],
+        )
+        for index in draw_order:
+            title, artist, count, _embedding = self._tracks[index]
+            position, depth, _scale = projected[index]
+            front = (depth + 1) / 2
+            strength = count / maximum if maximum else 0.0
+            node_radius = (7.0 + 8.0 * strength) * (0.72 + 0.42 * front)
+            if index == self._hovered_index:
+                node_radius += 2.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(20, 184, 147, int(14 + 34 * front)))
+            painter.drawEllipse(
+                position,
+                node_radius * 1.9,
+                node_radius * 1.9,
+            )
+            painter.setBrush(
+                QColor("#14B893")
+                if index == 0
+                else QColor(42, 117, 107, int(130 + 105 * front))
+            )
+            painter.drawEllipse(position, node_radius, node_radius)
+            painter.setPen(QColor("#07100F"))
+            painter.drawText(
+                QRectF(
+                    position.x() - node_radius,
+                    position.y() - 9,
+                    node_radius * 2,
+                    18,
+                ),
+                Qt.AlignmentFlag.AlignCenter,
+                str(count),
+            )
+            if index == self._hovered_index:
+                self._paint_hover_label(painter, position, title, artist)
+        painter.end()
+
+    def mousePressEvent(self, event: object) -> None:
+        position = getattr(event, "position", lambda: None)()
+        if position is None or event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._last_pointer_position = position
+        self._is_rotating = True
+        self._hovered_index = -1
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event: object) -> None:
+        position = getattr(event, "position", lambda: None)()
+        if position is None or not self._tracks:
+            return
+
+        if self._is_rotating and self._last_pointer_position is not None:
+            delta = position - self._last_pointer_position
+            self._rotation_y += float(delta.x()) * 0.012
+            self._rotation_x = max(
+                -1.25,
+                min(1.25, self._rotation_x + float(delta.y()) * 0.012),
+            )
+            self._last_pointer_position = position
+            self.update()
+            return
+
+        projected = self._projected_positions()
+        hovered = -1
+        nearest_distance = 20.0
+        for index, (node_position, _depth, _scale) in enumerate(projected):
+            distance = sqrt(
+                (position.x() - node_position.x()) ** 2
+                + (position.y() - node_position.y()) ** 2
+            )
+            if distance < nearest_distance:
+                hovered = index
+                nearest_distance = distance
+        if hovered != self._hovered_index:
+            self._hovered_index = hovered
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if hovered >= 0
+                else Qt.CursorShape.ArrowCursor
+            )
+            self.update()
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_rotating = False
+            self._last_pointer_position = None
+            self.unsetCursor()
+            self.update()
+
+    def wheelEvent(self, event: object) -> None:
+        if not self._tracks:
+            return
+        direction = 1.12 if event.angleDelta().y() > 0 else 0.89
+        self._zoom = max(0.72, min(1.55, self._zoom * direction))
+        self.update()
+
+    def leaveEvent(self, _event: object) -> None:
+        if self._hovered_index != -1:
+            self._hovered_index = -1
+            self.unsetCursor()
+            self.update()
+
+    def _projected_positions(
+        self,
+    ) -> list[tuple[QPointF, float, float]]:
+        center = QPointF(self.width() / 2, self.height() / 2 - 2)
+        positions: list[tuple[QPointF, float, float]] = []
+        orbit_x = max(34.0, min(self.width() * 0.37, 155.0)) * self._zoom
+        orbit_y = max(30.0, min(self.height() * 0.31, 72.0)) * self._zoom
+        cos_x = cos(self._rotation_x)
+        sin_x = sin(self._rotation_x)
+        cos_y = cos(self._rotation_y)
+        sin_y = sin(self._rotation_y)
+        for x3, y3, z3 in self._sphere_points:
+            rotated_x = cos_y * x3 + sin_y * z3
+            rotated_z = -sin_y * x3 + cos_y * z3
+            rotated_y = cos_x * y3 - sin_x * rotated_z
+            rotated_z = sin_x * y3 + cos_x * rotated_z
+            perspective = 1.0 / max(0.58, 1.0 - rotated_z * 0.24)
+            position = QPointF(
+                center.x() + rotated_x * orbit_x * perspective,
+                center.y() + rotated_y * orbit_y * perspective - rotated_z * 14.0,
+            )
+            positions.append((position, rotated_z, perspective))
+        return positions
+
+    @staticmethod
+    def _build_sphere_points(
+        count: int,
+    ) -> tuple[tuple[float, float, float], ...]:
+        if count <= 0:
+            return ()
+        if count == 1:
+            return ((0.0, 0.0, 1.0),)
+        points: list[tuple[float, float, float]] = []
+        for index in range(count):
+            y = 1.0 - (2.0 * index / (count - 1))
+            radius = sqrt(max(0.0, 1.0 - y * y))
+            angle = (pi * (3.0 - sqrt(5.0))) * index
+            points.append((cos(angle) * radius, y, sin(angle) * radius))
+        return tuple(points)
+
+    @staticmethod
+    def _build_edge_pairs(
+        points: tuple[tuple[float, float, float], ...],
+        embeddings: tuple[tuple[float, ...] | None, ...],
+    ) -> tuple[tuple[int, int], ...]:
+        pairs: set[tuple[int, int]] = set()
+        for left_index, source in enumerate(points):
+            neighbors = sorted(
+                (
+                    ListeningGraph._node_distance(
+                        source,
+                        points[right_index],
+                        embeddings[left_index],
+                        embeddings[right_index],
+                    ),
+                    right_index,
+                )
+                for right_index in range(len(points))
+                if right_index != left_index
+            )
+            for _distance, right_index in neighbors[:2]:
+                pairs.add(tuple(sorted((left_index, right_index))))
+        return tuple(sorted(pairs))
+
+    @staticmethod
+    def _node_distance(
+        left_point: tuple[float, float, float],
+        right_point: tuple[float, float, float],
+        left_embedding: tuple[float, ...] | None,
+        right_embedding: tuple[float, ...] | None,
+    ) -> float:
+        if left_embedding and right_embedding:
+            length = min(len(left_embedding), len(right_embedding))
+            if length:
+                dot = sum(
+                    left_embedding[index] * right_embedding[index]
+                    for index in range(length)
+                )
+                left_norm = sqrt(
+                    sum(value * value for value in left_embedding[:length])
+                )
+                right_norm = sqrt(
+                    sum(value * value for value in right_embedding[:length])
+                )
+                if left_norm > 0 and right_norm > 0:
+                    return 1.0 - dot / (left_norm * right_norm)
+        return sum(
+            (left_point[axis] - right_point[axis]) ** 2
+            for axis in range(3)
+        )
+
+    def _paint_hover_label(
+        self,
+        painter: QPainter,
+        position: QPointF,
+        title: str,
+        artist: str,
+    ) -> None:
+        title_text = title if len(title) <= 34 else f"{title[:33]}…"
+        artist_text = artist if len(artist) <= 28 else f"{artist[:27]}…"
+        bubble_width = min(250.0, max(150.0, len(title_text) * 6.8))
+        bubble_height = 42.0 if artist_text else 25.0
+        x = min(
+            max(6.0, position.x() - bubble_width / 2),
+            max(6.0, self.width() - bubble_width - 6.0),
+        )
+        y = position.y() - bubble_height - 18.0
+        if y < 6.0:
+            y = position.y() + 18.0
+        bubble = QRectF(x, y, bubble_width, bubble_height)
+        painter.setPen(QPen(QColor(181, 251, 224, 85), 1))
+        painter.setBrush(QColor(7, 10, 12, 235))
+        painter.drawRoundedRect(bubble, 7, 7)
+        painter.setPen(QColor("#F1F9F5"))
+        painter.drawText(
+            QRectF(bubble.left() + 9, bubble.top() + 4, bubble.width() - 18, 18),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title_text,
+        )
+        if artist_text:
+            painter.setPen(QColor("#91A49E"))
+            painter.drawText(
+                QRectF(bubble.left() + 9, bubble.top() + 22, bubble.width() - 18, 16),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                artist_text,
+            )
+
+
 class ListeningStatisticsDialog(QDialog):
-    """A compact 30-day listening dashboard with a clickable heatmap."""
+    """Four-panel listening dashboard with a diagram and track graph."""
 
     def __init__(
         self,
         statistics: ListeningStatistics,
         parent: QWidget | None = None,
+        *,
+        track_catalog: tuple[Track, ...] | list[Track] = (),
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
@@ -1532,7 +1862,14 @@ class ListeningStatisticsDialog(QDialog):
         self.setWindowTitle("Listening habits")
         self.resize(940, 700)
         self._statistics = statistics
+        self._track_catalog = {
+            (track.title.casefold(), track.artist.casefold()): track
+            for track in track_catalog
+        }
+        # The diagram starts in the 30-day view.  The graph below it follows
+        # whichever day or month is selected in that diagram.
         self._chart_mode = "day"
+        self._chart_items = tuple(statistics.daily)
         self._daily_by_day = {
             item.day: item for item in statistics.daily
         }
@@ -1584,34 +1921,56 @@ class ListeningStatisticsDialog(QDialog):
         period_label = QLabel(period_text)
         period_label.setObjectName("libraryMaintenanceDescription")
 
-        content_row = QHBoxLayout()
-        content_row.setSpacing(12)
-        chart_frame = QFrame()
-        chart_frame.setObjectName("libraryMaintenanceBackup")
-        chart_layout = QVBoxLayout(chart_frame)
-        chart_layout.setContentsMargins(12, 10, 12, 10)
-        chart_header = QHBoxLayout()
-        chart_header.addWidget(QLabel("Tracks listened"))
-        chart_header.addStretch()
+        content_grid = QGridLayout()
+        content_grid.setHorizontalSpacing(12)
+        content_grid.setVerticalSpacing(8)
+
+        diagram_frame = QFrame()
+        diagram_frame.setObjectName("listeningDiagramPanel")
+        diagram_layout = QVBoxLayout(diagram_frame)
+        diagram_layout.setContentsMargins(12, 10, 12, 10)
+        diagram_header = QHBoxLayout()
+        diagram_heading = QLabel("Diagram")
+        diagram_heading.setObjectName("listeningPanelHeading")
+        diagram_header.addWidget(diagram_heading)
+        diagram_header.addStretch()
         self.chart_mode_combo = QComboBox()
         self.chart_mode_combo.addItems(("Days", "Months"))
         self.chart_mode_combo.currentIndexChanged.connect(
             self._change_chart_mode
         )
-        chart_header.addWidget(self.chart_mode_combo)
-        chart_layout.addLayout(chart_header)
+        diagram_header.addWidget(self.chart_mode_combo)
+        diagram_layout.addLayout(diagram_header)
         self.bar_chart = ListeningBarChart()
         self.bar_chart.period_clicked.connect(self._show_chart_period)
-        self.bar_chart.set_items(statistics.daily)
-        chart_layout.addWidget(self.bar_chart, 1)
-        chart_layout.addWidget(period_label)
-        content_row.addWidget(chart_frame, 1)
+        self.bar_chart.set_items(self._chart_items)
+        diagram_layout.addWidget(self.bar_chart, 1)
+        self.period_label = period_label
+        diagram_layout.addWidget(period_label)
+        content_grid.addWidget(diagram_frame, 0, 0)
+
+        graph_frame = QFrame()
+        graph_frame.setObjectName("listeningGraphPanel")
+        graph_layout = QVBoxLayout(graph_frame)
+        graph_layout.setContentsMargins(12, 10, 12, 10)
+        graph_header = QHBoxLayout()
+        graph_heading = QLabel("Graph")
+        graph_heading.setObjectName("listeningPanelHeading")
+        graph_header.addWidget(graph_heading)
+        graph_header.addStretch()
+        self.graph_period_label = QLabel("Selected period")
+        self.graph_period_label.setObjectName("libraryMaintenanceDescription")
+        graph_header.addWidget(self.graph_period_label)
+        graph_layout.addLayout(graph_header)
+        self.listening_graph = ListeningGraph()
+        graph_layout.addWidget(self.listening_graph, 1)
+        content_grid.addWidget(graph_frame, 1, 0)
 
         detail_frame = QFrame()
-        detail_frame.setObjectName("libraryMaintenanceBackup")
+        detail_frame.setObjectName("listeningDetailPanel")
         detail_layout = QVBoxLayout(detail_frame)
         detail_layout.setContentsMargins(12, 10, 12, 10)
-        self.day_title = QLabel("Select a day")
+        self.day_title = QLabel("Select a period")
         self.day_title.setObjectName("libraryMaintenanceTitle")
         detail_layout.addWidget(self.day_title)
         self.day_summary = QLabel(
@@ -1645,14 +2004,15 @@ class ListeningStatisticsDialog(QDialog):
             3, QHeaderView.ResizeMode.ResizeToContents
         )
         detail_layout.addWidget(self.day_table, 1)
-        content_row.addWidget(detail_frame, 1)
-        layout.addLayout(content_row, 1)
+        content_grid.addWidget(detail_frame, 0, 1)
 
-        insights = QFrame()
+        # Highlights belongs to the detail column: it stays aligned with the
+        # selected-period table and no longer consumes a full-width row.
+        insights = QWidget()
         insights.setObjectName("listeningHighlights")
         insights_layout = QVBoxLayout(insights)
-        insights_layout.setContentsMargins(12, 10, 12, 10)
-        insights_layout.setSpacing(7)
+        insights_layout.setContentsMargins(0, 0, 0, 0)
+        insights_layout.setSpacing(4)
         highlights_heading = QLabel("Highlights")
         highlights_heading.setObjectName("listeningSectionHeading")
         insights_layout.addWidget(highlights_heading)
@@ -1689,7 +2049,12 @@ class ListeningStatisticsDialog(QDialog):
             2, QHeaderView.ResizeMode.ResizeToContents
         )
         insights_layout.addWidget(self.highlights_table)
-        layout.addWidget(insights)
+        content_grid.addWidget(insights, 1, 1)
+        content_grid.setColumnStretch(0, 3)
+        content_grid.setColumnStretch(1, 2)
+        content_grid.setRowStretch(0, 3)
+        content_grid.setRowStretch(1, 2)
+        layout.addLayout(content_grid, 1)
         self._populate_highlights()
 
         close_row = QHBoxLayout()
@@ -1699,8 +2064,9 @@ class ListeningStatisticsDialog(QDialog):
         close_row.addWidget(close_button)
         layout.addLayout(close_row)
 
-        if statistics.daily:
-            self._show_chart_period(len(statistics.daily) - 1)
+        self._update_chart_period_label()
+        if self._chart_items:
+            self._show_chart_period(len(self._chart_items) - 1)
 
     @staticmethod
     def _add_metric(layout: QHBoxLayout, value: str, label: str) -> None:
@@ -1727,21 +2093,21 @@ class ListeningStatisticsDialog(QDialog):
 
     def _change_chart_mode(self, index: int) -> None:
         self._chart_mode = "month" if index == 1 else "day"
-        items = (
+        self._chart_items = (
             self._monthly_items
             if self._chart_mode == "month"
             else tuple(self._statistics.daily)
         )
-        self.bar_chart.set_items(items)
-        if items:
-            self._show_chart_period(len(items) - 1)
+        self.bar_chart.set_items(self._chart_items)
+        self._update_chart_period_label()
+        if self._chart_items:
+            self._show_chart_period(len(self._chart_items) - 1)
+        else:
+            self.listening_graph.set_tracks(())
+            self.graph_period_label.setText("No selected period")
 
     def _show_chart_period(self, index: int) -> None:
-        items = (
-            self._monthly_items
-            if self._chart_mode == "month"
-            else tuple(self._statistics.daily)
-        )
+        items = self._chart_items
         if not (0 <= index < len(items)):
             return
         item = items[index]
@@ -1773,6 +2139,55 @@ class ListeningStatisticsDialog(QDialog):
             self.day_table.setItem(row, 1, QTableWidgetItem(stat.label))
             self.day_table.setItem(row, 2, QTableWidgetItem(stat.subtitle))
             self.day_table.setItem(row, 3, QTableWidgetItem(str(stat.count)))
+        self.listening_graph.set_tracks(self._build_graph_tracks((item,)))
+        self.graph_period_label.setText(
+            f"Selected {period_date.strftime('%b %Y' if is_month else '%d %b')}"
+        )
+
+    def _update_chart_period_label(self) -> None:
+        if not self._chart_items:
+            self.period_label.setText("No listening data yet")
+            return
+
+        is_month = self._chart_mode == "month"
+        period_name = "Last 12 months" if is_month else "Last 30 days"
+        start = self._chart_items[0].month if is_month else self._chart_items[0].day
+        end = self._chart_items[-1].month if is_month else self._chart_items[-1].day
+        date_format = "%b %Y" if is_month else "%d %b"
+        self.period_label.setText(
+            f"{period_name} · "
+            f"{start.strftime(date_format)} — "
+            f"{end.strftime('%b %Y' if is_month else '%d %b %Y')}"
+        )
+
+    def _build_graph_tracks(
+        self,
+        items: tuple[object, ...] | list[object],
+    ) -> tuple[tuple[str, str, int, tuple[float, ...] | None], ...]:
+        counts: Counter[tuple[str, str]] = Counter()
+        for item in items:
+            for stat in getattr(item, "top_tracks", ()):
+                title = str(getattr(stat, "label", "")).strip()
+                artist = str(getattr(stat, "subtitle", "")).strip()
+                if title:
+                    counts[(title, artist)] += max(
+                        0,
+                        int(getattr(stat, "count", 0)),
+                    )
+        rows = []
+        for (title, artist), count in counts.most_common(8):
+            if count <= 0:
+                continue
+            track = self._track_catalog.get(
+                (title.casefold(), artist.casefold())
+            )
+            embedding = (
+                tuple(float(value) for value in track.track_embedding)
+                if track is not None and track.track_embedding
+                else None
+            )
+            rows.append((title, artist, count, embedding))
+        return tuple(rows)
 
     def _populate_highlights(self) -> None:
         groups = (

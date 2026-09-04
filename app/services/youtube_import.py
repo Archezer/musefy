@@ -7,6 +7,10 @@ from urllib.parse import urlparse
 
 from app.domain.models import Track
 from app.ingestion.audio import AudioIngestionService
+from app.services.parallel_playlist import (
+    DEFAULT_PLAYLIST_IMPORT_WORKERS,
+    parallel_playlist_import,
+)
 from app.services.playlist_exports import read_playlist_export
 from app.sources.spotify import (
     SUPPORTED_SPOTIFY_HOSTS,
@@ -585,28 +589,22 @@ class YouTubeImportService:
         on_track_imported: Callable[[YouTubeCandidate, Track], None]
         | None = None,
     ) -> YouTubePlaylistImportResult:
-        imported = []
-        failed = []
-        imported_candidates = []
-        total = len(candidates)
-
-        for completed, candidate in enumerate(candidates, start=1):
-            try:
-                track = self.download_and_import(candidate, source=source)
-                imported.append(track)
-                imported_candidates.append((candidate, track))
-                if on_track_imported is not None:
-                    on_track_imported(candidate, track)
-            except (OSError, RuntimeError, ValueError) as error:
-                failed.append(
-                    (candidate, str(error))
-                )
-            finally:
-                if on_progress is not None:
-                    on_progress(completed, total)
+        imported, failed, imported_candidates = parallel_playlist_import(
+            candidates,
+            lambda candidate: self.download_and_import(
+                candidate,
+                source=source,
+            ),
+            max_workers=min(
+                self.search_workers,
+                DEFAULT_PLAYLIST_IMPORT_WORKERS,
+            ),
+            on_progress=on_progress,
+            on_track_imported=on_track_imported,
+        )
 
         return YouTubePlaylistImportResult(
-            imported=tuple(imported),
-            failed=tuple(failed),
-            imported_candidates=tuple(imported_candidates),
+            imported=imported,
+            failed=failed,
+            imported_candidates=imported_candidates,
         )

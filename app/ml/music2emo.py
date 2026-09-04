@@ -5,6 +5,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 import librosa
 import numpy as np
@@ -131,6 +132,7 @@ class Music2EmoMoodAnalyzer:
         self._chord_std: float | None = None
         self._tags: np.ndarray | None = None
         self._last_used_at: float | None = None
+        self._model_lock = RLock()
 
     @property
     def is_loaded(self) -> bool:
@@ -197,16 +199,17 @@ class Music2EmoMoodAnalyzer:
         )
 
     def unload(self) -> None:
-        self._processor = None
-        self._mert = None
-        self._mood_head = None
-        self._chord_model = None
-        self._chord_mean = None
-        self._chord_std = None
-        self._tags = None
-        self._last_used_at = None
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
+        with self._model_lock:
+            self._processor = None
+            self._mert = None
+            self._mood_head = None
+            self._chord_model = None
+            self._chord_mean = None
+            self._chord_std = None
+            self._tags = None
+            self._last_used_at = None
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
     def unload_if_idle(self, now: float | None = None) -> bool:
         if not self.is_loaded or self._last_used_at is None:
@@ -223,30 +226,34 @@ class Music2EmoMoodAnalyzer:
         if self.is_loaded:
             return
 
-        if not MODEL_ROOT.exists():
-            raise FileNotFoundError(
-                f"Music2Emo model directory does not exist: {MODEL_ROOT}"
-            )
+        with self._model_lock:
+            if self.is_loaded:
+                return
 
-        self._processor = Wav2Vec2FeatureExtractor.from_pretrained(
-            MERT_NAME,
-            trust_remote_code=True,
-        )
-        self._mert = AutoModel.from_pretrained(
-            MERT_NAME,
-            trust_remote_code=True,
-        ).to(self.device)
-        self._mert.eval()
-        self._mood_head = _load_mood_head(self.device)
-        (
-            self._chord_model,
-            self._chord_mean,
-            self._chord_std,
-        ) = _load_chord_model(self.device)
-        self._tags = np.load(
-            MODEL_ROOT / "inference" / "data" / "tag_list.npy",
-            allow_pickle=True,
-        )[127:]
+            if not MODEL_ROOT.exists():
+                raise FileNotFoundError(
+                    f"Music2Emo model directory does not exist: {MODEL_ROOT}"
+                )
+
+            self._processor = Wav2Vec2FeatureExtractor.from_pretrained(
+                MERT_NAME,
+                trust_remote_code=True,
+            )
+            self._mert = AutoModel.from_pretrained(
+                MERT_NAME,
+                trust_remote_code=True,
+            ).to(self.device)
+            self._mert.eval()
+            self._mood_head = _load_mood_head(self.device)
+            (
+                self._chord_model,
+                self._chord_mean,
+                self._chord_std,
+            ) = _load_chord_model(self.device)
+            self._tags = np.load(
+                MODEL_ROOT / "inference" / "data" / "tag_list.npy",
+                allow_pickle=True,
+            )[127:]
 
     def _extract_mert_embedding(self, audio_path: Path) -> torch.Tensor:
         assert self._processor is not None

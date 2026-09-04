@@ -1,11 +1,14 @@
 from random import Random
 
+from datetime import UTC, datetime
+
 from app.domain.models import Recommendation, Track
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.similarity import (
     SimilarTrack,
     TrackSimilarityIndex,
 )
+from app.recommenders.feedback import suppressed_track_ids
 from app.storage.protocols import MusicStore
 
 
@@ -58,6 +61,8 @@ class TrackSimilarityService:
         self,
         track_id: str,
         limit: int = 10,
+        *,
+        user_id: str | None = None,
     ) -> list[Recommendation]:
         if limit <= 0:
             raise ValueError("Limit must be positive.")
@@ -83,6 +88,19 @@ class TrackSimilarityService:
             limit + 6,
         )
         candidate_pool = list(neighbors[:candidate_pool_size])
+        excluded_track_ids: set[str] = set()
+        if user_id is not None and user_id.strip():
+            permanent, temporary = suppressed_track_ids(
+                user_id,
+                list(self.store.list_interactions()),
+                now=datetime.now(UTC),
+            )
+            excluded_track_ids = permanent | temporary
+            candidate_pool = [
+                neighbor
+                for neighbor in candidate_pool
+                if neighbor.track_id not in excluded_track_ids
+            ]
         candidate_pool.sort(
             key=lambda neighbor: (
                 neighbor.score + self.random.uniform(-0.02, 0.02)

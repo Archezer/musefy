@@ -339,6 +339,61 @@ def test_playlist_import_keeps_successes_when_one_track_fails() -> None:
     assert imported_events == [("Working track", "Working track")]
 
 
+def test_playlist_downloads_in_parallel_but_keeps_playlist_order() -> None:
+    active = 0
+    max_active = 0
+    state_lock = Lock()
+
+    class SlowDownloadProvider(FakeDownloadProvider):
+        def download(
+            self,
+            candidate: YouTubeCandidate,
+            output_dir: Path,
+        ) -> Path:
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                sleep(0.04)
+                return super().download(candidate, output_dir)
+            finally:
+                with state_lock:
+                    active -= 1
+
+    candidates = [
+        YouTubeCandidate(
+            video_id=f"video-{index}",
+            title=f"Track {index}",
+            channel_title="Artist",
+            duration_ms=None,
+            view_count=None,
+            url=f"https://www.youtube.com/watch?v=video-{index}",
+        )
+        for index in range(6)
+    ]
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        SlowDownloadProvider(),
+        search_workers=3,
+    )
+
+    progress: list[tuple[int, int]] = []
+    result = service.download_and_import_playlist(
+        candidates,
+        on_progress=lambda completed, total: progress.append(
+            (completed, total)
+        ),
+    )
+
+    assert max_active == 3
+    assert [track.title for track in result.imported] == [
+        f"Track {index}" for index in range(6)
+    ]
+    assert result.failed == ()
+    assert progress == [(index, 6) for index in range(1, 7)]
+
+
 def test_youtube_import_skips_existing_video_without_downloading(
     tmp_path,
 ) -> None:

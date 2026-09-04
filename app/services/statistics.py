@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
 from app.domain.models import InteractionType
+from app.recommenders.feedback import COMPLETION_INTERACTION_TYPES
 from app.storage.protocols import MusicStore
 
 
@@ -100,7 +101,7 @@ class ListeningStatisticsService:
             if track is None:
                 continue
             interaction_type = interaction.interaction_type
-            if interaction_type == InteractionType.LISTEN:
+            if interaction_type in COMPLETION_INTERACTION_TYPES:
                 listen_counts[track.id] += 1
                 interaction_day = self._as_utc(interaction.created_at).date()
                 listen_dates.add(interaction_day)
@@ -111,7 +112,10 @@ class ListeningStatisticsService:
                 for genre in track.genres:
                     if genre.strip():
                         daily_genres[interaction_day][genre.strip().casefold()] += 1
-            elif interaction_type == InteractionType.SKIP:
+            elif interaction_type in {
+                InteractionType.SKIP,
+                InteractionType.SKIP_UNDER_30S,
+            }:
                 skipped_counts[track.id] += 1
                 daily_skips[self._as_utc(interaction.created_at).date()] += 1
             elif interaction_type == InteractionType.LIKE:
@@ -269,13 +273,16 @@ class ListeningStatisticsService:
                 continue
             timestamp = self._as_utc(interaction.created_at)
             month = timestamp.date().replace(day=1)
-            if interaction.interaction_type == InteractionType.LISTEN:
+            if interaction.interaction_type in COMPLETION_INTERACTION_TYPES:
                 listen_counts[month][track.id] += 1
                 durations[month][track.id] += track.duration_ms or 0
                 for genre in track.genres:
                     if genre.strip():
                         genre_counts[month][genre.strip().casefold()] += 1
-            elif interaction.interaction_type == InteractionType.SKIP:
+            elif interaction.interaction_type in {
+                InteractionType.SKIP,
+                InteractionType.SKIP_UNDER_30S,
+            }:
                 skips[month] += 1
 
         results: list[MonthlyListeningStatistics] = []

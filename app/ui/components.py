@@ -976,6 +976,8 @@ _LIBRARY_ICON_PATH = (
     / "library-icon.svg"
 )
 LIBRARY_ICON = _LIBRARY_ICON_PATH.read_text(encoding="utf-8")
+_STATISTICS_ICON_PATH = _LIBRARY_ICON_PATH.with_name("statistics-icon.svg")
+STATISTICS_ICON = _STATISTICS_ICON_PATH.read_text(encoding="utf-8")
 MAP_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
@@ -1955,11 +1957,18 @@ class QueueDialog(QDialog):
         layout.addWidget(self.track_list)
 
     def set_tracks(self, tracks: list[tuple[str, str]]) -> None:
-        self.track_list.clear()
+        self.begin_tracks(len(tracks))
+        self.append_tracks(tracks)
 
-        if not tracks:
+    def begin_tracks(self, total_count: int) -> None:
+        """Reset the list before incremental queue rows are appended."""
+
+        self.track_list.clear()
+        if total_count <= 0:
             self.track_list.addItem("Nothing queued")
-            return
+
+    def append_tracks(self, tracks: list[tuple[str, str]]) -> None:
+        """Append only the next rendered queue slice."""
 
         for title, artist in tracks:
             item = QListWidgetItem()

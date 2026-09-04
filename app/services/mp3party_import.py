@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from app.domain.models import Track
 from app.ingestion.audio import AudioIngestionService
+from app.services.parallel_playlist import parallel_playlist_import
 
 SUPPORTED_MP3PARTY_HOSTS = {
     "mp3party.net",
@@ -173,35 +174,24 @@ class Mp3PartyImportService:
         on_track_imported: Callable[[Mp3PartyCandidate, Track], None]
         | None = None,
     ) -> Mp3PartyPlaylistImportResult:
-        """Download selected MP3Party tracks one by one.
+        """Download selected MP3Party tracks concurrently.
 
         A single unavailable item must not discard successful downloads from
         the same selection, so the result keeps per-track failures just like
         the YouTube and SoundCloud playlist import flows.
         """
 
-        imported: list[Track] = []
-        failed: list[tuple[Mp3PartyCandidate, str]] = []
-        imported_candidates: list[tuple[Mp3PartyCandidate, Track]] = []
-        total = len(candidates)
-
-        for completed, candidate in enumerate(candidates, start=1):
-            try:
-                track = self.download(candidate)
-                imported.append(track)
-                imported_candidates.append((candidate, track))
-                if on_track_imported is not None:
-                    on_track_imported(candidate, track)
-            except (OSError, RuntimeError, ValueError) as error:
-                failed.append((candidate, str(error)))
-            finally:
-                if on_progress is not None:
-                    on_progress(completed, total)
+        imported, failed, imported_candidates = parallel_playlist_import(
+            candidates,
+            self.download,
+            on_progress=on_progress,
+            on_track_imported=on_track_imported,
+        )
 
         return Mp3PartyPlaylistImportResult(
-            imported=tuple(imported),
-            failed=tuple(failed),
-            imported_candidates=tuple(imported_candidates),
+            imported=imported,
+            failed=failed,
+            imported_candidates=imported_candidates,
         )
 
     @staticmethod

@@ -56,3 +56,56 @@ def test_statistics_builds_completed_listens_and_daily_breakdown() -> None:
     assert len(result.monthly) == 12
     assert result.monthly[-1].top_genre == "Electronic"
     assert result.monthly[-1].track_count == 1
+
+
+def test_statistics_counts_new_completion_and_short_skip_events() -> None:
+    now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Alex"))
+    track = Track(
+        id="track",
+        title="Completed track",
+        artist="Artist",
+        genres=("electronic",),
+        duration_ms=120_000,
+    )
+    store.add_track(track)
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            track.id,
+            InteractionType.PLAY_START,
+            now,
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            track.id,
+            InteractionType.PLAYED_30S,
+            now,
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            track.id,
+            InteractionType.COMPLETED_80,
+            now,
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            track.id,
+            InteractionType.SKIP_UNDER_30S,
+            now,
+        )
+    )
+
+    result = ListeningStatisticsService(store).build("user-1", now=now)
+
+    assert result.completed_listens == 1
+    assert result.skipped_count == 1
+    assert result.daily[-1].completed_listens == 1
+    assert result.daily[-1].skipped == 1

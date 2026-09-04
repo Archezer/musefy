@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRunnable,
+    QSettings,
     QSize,
     Qt,
     QThread,
@@ -56,6 +57,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from app.domain.models import (
@@ -151,6 +153,7 @@ from app.ui.components import (
     SMART_SHUFFLE_ICON,
     SOUNDCLOUD_ICON,
     SPOTIFY_ICON,
+    STATISTICS_ICON,
     VOLUME_ICON,
     YOUTUBE_ICON,
     CreatePlaylistCard,
@@ -184,12 +187,15 @@ from app.ui.dialogs import (
 from app.ui.music_map import MusicMapWidget
 from app.ui.theme import DARK_THEME
 
-MAX_AUDIO_GAIN = 0.22
+MAX_AUDIO_GAIN = 0.3432
 DEFAULT_VOLUME_PERCENT = 50
+DEFAULT_MASTER_VOLUME_PERCENT = 100
 RECOMMENDATION_QUEUE_SIZE = 30
 RECOMMENDATION_REFILL_THRESHOLD = 10
 INITIAL_TRACK_BATCH_SIZE = 30
 DEFERRED_TRACK_BATCH_SIZE = 30
+QUEUE_RENDER_BATCH_SIZE = 12
+QUEUE_RENDER_INTERVAL_MS = 12
 # A carousel page never shows more than seven playlist-sized cards.  The
 # navigation cards (Main library and Mood) count towards this limit, as does
 # the Create playlist card on the last page.
@@ -496,6 +502,10 @@ class MainWindow(QMainWindow):
         self.session_mood_name: str | None = None
         self.current_track_id: str | None = None
         self._current_track_listen_recorded = False
+        self._current_track_played_30s_recorded = False
+        self._current_track_played_ms = 0
+        self._current_track_last_position_ms: int | None = None
+        self._current_track_early_exit_recorded = False
         self._library_tracks: list[Track] = []
         self._track_scope_tracks: list[Track] = []
         self._visible_tracks: list[Track] = []
@@ -521,6 +531,9 @@ class MainWindow(QMainWindow):
         self._radio_recommendation_inflight = False
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id: str | None = None
+        self._queue_render_generation = 0
+        self._queue_render_track_ids: tuple[str, ...] = ()
+        self._queue_render_index = 0
         # Modeless dialogs use the native minimize button, but keeping their
         # minimized state in the app makes it possible to restore them without
         # hunting through the Windows taskbar.  Compact restore buttons are
@@ -549,6 +562,14 @@ class MainWindow(QMainWindow):
         self._track_radio_enabled = False
         self._repeat_mode = RepeatMode.OFF
         self._player_duration_ms = 0
+        self._volume_settings = QSettings("Musefy", "Musefy")
+        self._master_volume_percent = self._clamp_master_volume_percent(
+            self._volume_settings.value(
+                "playback/master_volume_percent",
+                DEFAULT_MASTER_VOLUME_PERCENT,
+                type=int,
+            )
+        )
         self._genre_analysis_service = (
             GenreAnalysisService(
                 top_k=10,
@@ -566,7 +587,9 @@ class MainWindow(QMainWindow):
         self._watch_folder_timer.timeout.connect(self._sync_watch_folder)
         self._watch_folder_timer.start()
         self._genre_analysis_pool = QThreadPool(self)
-        self._genre_analysis_pool.setMaxThreadCount(1)
+        self._genre_analysis_pool.setMaxThreadCount(
+            self._genre_analysis_service.analysis_worker_count
+        )
         self._track_batch_pool = QThreadPool(self)
         self._track_batch_pool.setMaxThreadCount(1)
         # Recommendation scoring can scan the whole library or lazily build
@@ -585,7 +608,10 @@ class MainWindow(QMainWindow):
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(
-            self._output_volume(DEFAULT_VOLUME_PERCENT)
+            self._output_volume(
+                DEFAULT_VOLUME_PERCENT,
+                self._master_volume_percent,
+            )
         )
 
         self.media_player = QMediaPlayer(self)
@@ -773,10 +799,11 @@ class MainWindow(QMainWindow):
             "Library health & backup…",
             self._open_library_maintenance,
         )
-        library_menu.addAction(
-            "Listening habits dashboard…",
-            self._show_statistics_dashboard,
+        import_log_action = library_menu.addAction(
+            "Import log",
+            self._show_import_log,
         )
+        import_log_action.setIcon(svg_icon(LOG_ICON))
         library_menu.addSeparator()
         library_menu.addAction("Refresh", self._refresh_content)
         library_button.setMenu(library_menu)
@@ -793,16 +820,16 @@ class MainWindow(QMainWindow):
         self.map_cycle_button.clicked.connect(self._toggle_music_map)
         sidebar_layout.addWidget(self.map_cycle_button, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        self.import_log_button = RailIconButton(
-            LOG_ICON,
-            tooltip="Import log",
+        self.statistics_button = RailIconButton(
+            STATISTICS_ICON,
+            tooltip="Listening statistics",
             variant="log",
             icon_size=RailIconButton.ICON_SIZE,
         )
-        self.import_log_button.setObjectName("railButton")
-        self.import_log_button.clicked.connect(self._show_import_log)
+        self.statistics_button.setObjectName("railButton")
+        self.statistics_button.clicked.connect(self._show_statistics_dashboard)
         sidebar_layout.addWidget(
-            self.import_log_button,
+            self.statistics_button,
             0,
             Qt.AlignmentFlag.AlignHCenter,
         )
@@ -948,6 +975,28 @@ class MainWindow(QMainWindow):
             self._remove_selected_playlist_track,
         )
         playlist_menu.addSeparator()
+        master_volume_menu = playlist_menu.addMenu("Master volume")
+        master_volume_widget = QWidget(master_volume_menu)
+        master_volume_widget.setMinimumWidth(212)
+        master_volume_layout = QVBoxLayout(master_volume_widget)
+        master_volume_layout.setContentsMargins(12, 10, 12, 10)
+        master_volume_layout.setSpacing(6)
+        self.master_volume_label = QLabel(master_volume_widget)
+        master_volume_layout.addWidget(self.master_volume_label)
+        self.master_volume_slider = QSlider(
+            Qt.Orientation.Horizontal,
+            master_volume_widget,
+        )
+        self.master_volume_slider.setRange(0, 100)
+        self.master_volume_slider.setValue(self._master_volume_percent)
+        self.master_volume_slider.valueChanged.connect(
+            self._set_master_volume_percent
+        )
+        master_volume_layout.addWidget(self.master_volume_slider)
+        self._update_master_volume_label()
+        master_volume_action = QWidgetAction(master_volume_menu)
+        master_volume_action.setDefaultWidget(master_volume_widget)
+        master_volume_menu.addAction(master_volume_action)
         self.liquid_glass_action = playlist_menu.addAction(
             "Liquid glass panels",
         )
@@ -1332,6 +1381,22 @@ class MainWindow(QMainWindow):
         player_menu.addAction(
             "Skip and tune recommendations",
             self._skip_current_track,
+        )
+        player_menu.addAction(
+            "Not now (14 days)",
+            self._snooze_current_track,
+        )
+        player_menu.addAction(
+            "Dislike current track",
+            self._dislike_current_track,
+        )
+        player_menu.addAction(
+            "Don't recommend current track",
+            self._do_not_recommend_current_track,
+        )
+        player_menu.addAction(
+            "Allow recommendations again",
+            self._allow_recommend_current_track,
         )
         self.track_radio_action = player_menu.addAction(
             "Track radio",
@@ -2124,7 +2189,11 @@ class MainWindow(QMainWindow):
                 interaction
                 for interaction in self.store.list_interactions()
                 if interaction.user_id == self.user_id
-                and interaction.interaction_type == InteractionType.PLAY
+                and interaction.interaction_type
+                in {
+                    InteractionType.PLAY,
+                    InteractionType.PLAY_START,
+                }
             ),
             key=lambda interaction: interaction.created_at,
             reverse=True,
@@ -2711,9 +2780,10 @@ class MainWindow(QMainWindow):
             mode=self._playback_mode,
         )
         self._restore_manual_queue(manual_track_ids)
-        self._load_queue()
         if restart:
             self._play_current_queue_track()
+        else:
+            self._load_queue()
 
     def _manual_queue_snapshot(self) -> tuple[str, ...]:
         queue = self.playback_queue_service.queue
@@ -2795,9 +2865,10 @@ class MainWindow(QMainWindow):
             mode=QueueMode.RECOMMENDATIONS,
         )
         self._restore_manual_queue(manual_track_ids)
-        self._load_queue()
         if restart:
             self._play_current_queue_track()
+        else:
+            self._load_queue()
         # Start playback first.  Filling the radio queue happens in the
         # background and appends tracks in visible batches as they arrive.
         self._replenish_recommendation_queue(force=True)
@@ -3028,18 +3099,25 @@ class MainWindow(QMainWindow):
     def _load_queue(self) -> None:
         queue = self.playback_queue_service.queue
         track_ids = (
-            self.playback_queue_service.upcoming_track_ids()
+            tuple(self.playback_queue_service.upcoming_track_ids())
             if queue is not None
             else ()
         )
-        tracks = [
-            track
-            for track_id in track_ids
-            if (track := self.store.get_track(track_id)) is not None
-        ]
 
-        if tracks:
-            next_track = tracks[0]
+        self._queue_render_generation += 1
+        generation = self._queue_render_generation
+        self._queue_render_track_ids = track_ids
+        self._queue_render_index = 0
+
+        next_track = next(
+            (
+                track
+                for track_id in track_ids[:4]
+                if (track := self.store.get_track(track_id)) is not None
+            ),
+            None,
+        )
+        if next_track is not None:
             self.next_track_title_label.setText(next_track.title)
             self.next_track_artist_label.setText(next_track.artist)
         else:
@@ -3048,37 +3126,69 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "queue_count_label"):
             self.queue_count_label.setText(
-                f"{len(tracks)} track{'s' if len(tracks) != 1 else ''}"
+                f"{len(track_ids)} track{'s' if len(track_ids) != 1 else ''}"
             )
 
         if hasattr(self, "queue_list"):
             self.queue_list.clear()
-            if not tracks:
+            if not track_ids:
                 empty_item = QListWidgetItem("Nothing queued")
                 empty_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 self.queue_list.addItem(empty_item)
-            else:
-                for track in tracks:
-                    item = QListWidgetItem()
-                    item.setData(Qt.ItemDataRole.UserRole, track.id)
-                    item.setSizeHint(QSize(0, 46))
-                    self.queue_list.addItem(item)
-                    identity = TrackIdentityWidget(
-                        track.title,
-                        track.artist,
-                        cover_path=track.cover_path,
-                        compact=True,
-                    )
-                    identity.play_requested.connect(
-                        lambda track_id=track.id: self._play_track_now(
-                            track_id
-                        )
-                    )
-                    self.queue_list.setItemWidget(item, identity)
+        if self.queue_dialog.isVisible():
+            self.queue_dialog.begin_tracks(len(track_ids))
+        if track_ids:
+            QTimer.singleShot(
+                0,
+                lambda: self._append_queue_render_batch(generation),
+            )
 
-        self.queue_dialog.set_tracks(
-            [(track.title, track.artist) for track in tracks]
-        )
+    def _append_queue_render_batch(self, generation: int) -> None:
+        """Render a small queue slice, yielding to playback between slices."""
+
+        if generation != self._queue_render_generation:
+            return
+
+        track_ids = self._queue_render_track_ids
+        start = self._queue_render_index
+        if start >= len(track_ids):
+            return
+
+        end = min(start + QUEUE_RENDER_BATCH_SIZE, len(track_ids))
+        tracks = [
+            track
+            for track_id in track_ids[start:end]
+            if (track := self.store.get_track(track_id)) is not None
+        ]
+        self._queue_render_index = end
+
+        if hasattr(self, "queue_list"):
+            for track in tracks:
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, track.id)
+                item.setSizeHint(QSize(0, 46))
+                self.queue_list.addItem(item)
+                identity = TrackIdentityWidget(
+                    track.title,
+                    track.artist,
+                    cover_path=track.cover_path,
+                    compact=True,
+                )
+                identity.play_requested.connect(
+                    lambda track_id=track.id: self._play_track_now(track_id)
+                )
+                self.queue_list.setItemWidget(item, identity)
+
+        if self.queue_dialog.isVisible():
+            self.queue_dialog.append_tracks(
+                [(track.title, track.artist) for track in tracks]
+            )
+
+        if self._queue_render_index < len(track_ids):
+            QTimer.singleShot(
+                QUEUE_RENDER_INTERVAL_MS,
+                lambda: self._append_queue_render_batch(generation),
+            )
 
     def _play_queued_item(self, item: QListWidgetItem) -> None:
         track_id = item.data(Qt.ItemDataRole.UserRole)
@@ -3091,8 +3201,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Upcoming queue cleared")
 
     def _show_queue(self) -> None:
-        self._load_queue()
         self._show_auxiliary_dialog(self.queue_dialog)
+        self._load_queue()
 
     def _show_track_context_menu(self, position: object) -> None:
         index = self.track_table.indexAt(position)
@@ -3150,6 +3260,40 @@ class MainWindow(QMainWindow):
                     selected_track_id,
                 )
             )
+        menu.addSeparator()
+        feedback_menu = menu.addMenu("Tune recommendations")
+        feedback_menu.addAction(
+            "Not now (14 days)",
+            lambda checked=False, value=track_id: self._record_track_feedback(
+                value,
+                InteractionType.SNOOZE,
+                advance=False,
+            ),
+        )
+        feedback_menu.addAction(
+            "Dislike",
+            lambda checked=False, value=track_id: self._record_track_feedback(
+                value,
+                InteractionType.DISLIKE,
+                advance=False,
+            ),
+        )
+        feedback_menu.addAction(
+            "Don't recommend this track",
+            lambda checked=False, value=track_id: self._record_track_feedback(
+                value,
+                InteractionType.DO_NOT_RECOMMEND,
+                advance=False,
+            ),
+        )
+        feedback_menu.addAction(
+            "Allow recommendations again",
+            lambda checked=False, value=track_id: self._record_track_feedback(
+                value,
+                InteractionType.ALLOW_RECOMMEND,
+                advance=False,
+            ),
+        )
         menu.addSeparator()
         analyze_action = menu.addAction("Analyze genres")
         analyze_action.triggered.connect(
@@ -4020,6 +4164,8 @@ class MainWindow(QMainWindow):
         self.player_position_label.setText(
             self._format_duration(max(position_ms, 0))
         )
+        self._accumulate_playback_time(position_ms)
+        self._record_played_30_seconds()
         self._record_completed_listen(position_ms)
         if (
             self._player_duration_ms <= 0
@@ -4031,8 +4177,55 @@ class MainWindow(QMainWindow):
             round(position_ms * 1000 / self._player_duration_ms)
         )
 
+    def _accumulate_playback_time(self, position_ms: int) -> None:
+        """Track real playback time without counting seek jumps."""
+
+        if self.current_track_id is None:
+            return
+
+        previous = self._current_track_last_position_ms
+        self._current_track_last_position_ms = max(position_ms, 0)
+        if previous is None:
+            return
+
+        delta_ms = position_ms - previous
+        if 0 < delta_ms <= 5_000:
+            self._current_track_played_ms += delta_ms
+
+    def _record_playback_signal(
+        self,
+        interaction_type: InteractionType,
+    ) -> None:
+        """Persist passive playback telemetry without interrupting audio."""
+
+        if self.current_track_id is None:
+            return
+        try:
+            self.interaction_service.record(
+                user_id=self.user_id,
+                track_id=self.current_track_id,
+                interaction_type=interaction_type,
+                mood_context=self._get_active_mood_context(),
+            )
+        except ValueError as error:
+            # Telemetry must never interrupt playback or surface a modal.
+            self.statusBar().showMessage(f"Playback stat failed: {error}")
+
+    def _record_played_30_seconds(self) -> None:
+        """Record a positive signal after 30 seconds actually played."""
+
+        if (
+            self._current_track_played_30s_recorded
+            or self.current_track_id is None
+            or self._current_track_played_ms < 30_000
+        ):
+            return
+
+        self._current_track_played_30s_recorded = True
+        self._record_playback_signal(InteractionType.PLAYED_30S)
+
     def _record_completed_listen(self, position_ms: int) -> None:
-        """Count a listening session once playback reaches 85%."""
+        """Record a completed listen at 80% of real playback progress."""
 
         if self._current_track_listen_recorded or self.current_track_id is None:
             return
@@ -4040,20 +4233,13 @@ class MainWindow(QMainWindow):
         if duration_ms <= 0:
             track = self.store.get_track(self.current_track_id)
             duration_ms = track.duration_ms if track is not None else 0
-        if duration_ms <= 0 or position_ms * 100 < duration_ms * 85:
+        if duration_ms <= 0 or position_ms * 100 < duration_ms * 80:
+            return
+        if self._current_track_played_ms < duration_ms * 0.8:
             return
 
         self._current_track_listen_recorded = True
-        try:
-            self.interaction_service.record(
-                user_id=self.user_id,
-                track_id=self.current_track_id,
-                interaction_type=InteractionType.LISTEN,
-                mood_context=self._get_active_mood_context(),
-            )
-        except ValueError as error:
-            # Playback should never be interrupted by a statistics write.
-            self.statusBar().showMessage(f"Listening stat failed: {error}")
+        self._record_playback_signal(InteractionType.COMPLETED_80)
 
     def _seek_player(self) -> None:
         if self._player_duration_ms <= 0:
@@ -4065,6 +4251,8 @@ class MainWindow(QMainWindow):
             / self.player_progress_slider.maximum()
         )
         self.media_player.setPosition(position_ms)
+        self._current_track_last_position_ms = position_ms
+        self._record_playback_signal(InteractionType.SEEK)
 
     def _import_track(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -4353,7 +4541,7 @@ class MainWindow(QMainWindow):
             thread.deleteLater()
 
     def _show_statistics_dashboard(self) -> None:
-        """Show the rolling listening-habits heatmap for the active user."""
+        """Show the four-panel listening dashboard for the active user."""
 
         try:
             statistics = self.statistics_service.build(self.user_id)
@@ -4365,8 +4553,15 @@ class MainWindow(QMainWindow):
             )
             return
 
+        track_catalog = tuple(self._library_tracks)
+        if not track_catalog:
+            track_catalog = tuple(self.store.list_tracks())
         self._show_auxiliary_dialog(
-            ListeningStatisticsDialog(statistics, self)
+            ListeningStatisticsDialog(
+                statistics,
+                self,
+                track_catalog=track_catalog,
+            )
         )
 
     def _scan_library_health(
@@ -7427,17 +7622,25 @@ class MainWindow(QMainWindow):
             )
             return False
 
+        # Moving away from a short session is useful negative feedback even
+        # when the user clicked another track instead of the skip button.
+        self._record_early_exit_if_needed()
+
         source_url = QUrl.fromLocalFile(str(audio_path.resolve()))
         self._player_duration_ms = 0
         self.player_position_label.setText("0:00")
         self.player_duration_label.setText("0:00")
         self.player_progress_slider.setValue(0)
+        self._current_track_played_ms = 0
+        self._current_track_last_position_ms = None
+        self._current_track_played_30s_recorded = False
+        self._current_track_listen_recorded = False
+        self._current_track_early_exit_recorded = False
         self.media_player.setSource(source_url)
         self.media_player.play()
         self.current_track_id = track.id
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id = None
-        self._current_track_listen_recorded = False
         self.player_title_label.setText(track.title)
         self.player_title_label.setToolTip(track.title)
         self.player_artist_label.setText(track.artist)
@@ -7448,17 +7651,7 @@ class MainWindow(QMainWindow):
         )
         self._update_like_button()
 
-        try:
-            self.interaction_service.record(
-                user_id=self.user_id,
-                track_id=track.id,
-                interaction_type=InteractionType.PLAY,
-                mood_context=self._get_active_mood_context(),
-            )
-        except ValueError as error:
-            self.statusBar().showMessage(
-                f"Interaction failed: {error}"
-            )
+        self._record_playback_signal(InteractionType.PLAY_START)
 
         self._load_history()
         self._load_queue()
@@ -7469,13 +7662,32 @@ class MainWindow(QMainWindow):
         return True
 
     def _stop_playback(self) -> None:
+        self._record_early_exit_if_needed()
         self.media_player.stop()
         self.statusBar().showMessage(
             "Playback stopped"
         )
 
     def _skip_current_track(self) -> None:
-        self._record_interaction(InteractionType.SKIP)
+        interaction_type = InteractionType.SKIP
+        if (
+            self._player_duration_ms > 0
+            and self._current_track_played_ms < 30_000
+        ):
+            interaction_type = InteractionType.SKIP_UNDER_30S
+        self._record_interaction(interaction_type)
+
+    def _snooze_current_track(self) -> None:
+        self._record_interaction(InteractionType.SNOOZE)
+
+    def _dislike_current_track(self) -> None:
+        self._record_interaction(InteractionType.DISLIKE)
+
+    def _do_not_recommend_current_track(self) -> None:
+        self._record_interaction(InteractionType.DO_NOT_RECOMMEND)
+
+    def _allow_recommend_current_track(self) -> None:
+        self._record_interaction(InteractionType.ALLOW_RECOMMEND)
 
     def _save_current_track(self) -> None:
         self._record_interaction(InteractionType.SAVE)
@@ -7558,8 +7770,13 @@ class MainWindow(QMainWindow):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             if self._repeat_mode == RepeatMode.TRACK:
                 self._current_track_listen_recorded = False
+                self._current_track_played_30s_recorded = False
+                self._current_track_played_ms = 0
+                self._current_track_last_position_ms = 0
                 self.media_player.setPosition(0)
                 self.media_player.play()
+                self._record_playback_signal(InteractionType.REPEAT)
+                self._record_playback_signal(InteractionType.PLAY_START)
                 return
 
             if self._repeat_mode == RepeatMode.QUEUE:
@@ -7581,15 +7798,38 @@ class MainWindow(QMainWindow):
         value: int,
     ) -> None:
         self.audio_output.setVolume(
-            self._output_volume(value)
+            self._output_volume(value, self._master_volume_percent)
         )
 
         self.statusBar().showMessage(
             f"Volume: {value}%"
         )
 
+    def _set_master_volume_percent(self, value: int) -> None:
+        """Persist the master gain and apply it to the current volume."""
+
+        master_volume = self._clamp_master_volume_percent(value)
+        self._master_volume_percent = master_volume
+        self._volume_settings.setValue(
+            "playback/master_volume_percent",
+            master_volume,
+        )
+        self._update_master_volume_label()
+        if hasattr(self, "volume_slider"):
+            self._handle_volume_changed(self.volume_slider.value())
+
+    def _update_master_volume_label(self) -> None:
+        if hasattr(self, "master_volume_label"):
+            self.master_volume_label.setText(
+                f"Master volume: {self._master_volume_percent}%"
+            )
+
     @staticmethod
-    def _output_volume(value: int) -> float:
+    def _clamp_master_volume_percent(value: int) -> int:
+        return max(0, min(int(value), 100))
+
+    @staticmethod
+    def _output_volume(value: int, master_volume: int = 100) -> float:
         normalized = max(0, min(value, 100)) / 100
         if normalized <= 0.5:
             # The first half is deliberately gentle, giving the user a
@@ -7601,7 +7841,8 @@ class MainWindow(QMainWindow):
             # while retaining the 20% higher maximum gain.
             loud_position = (normalized - 0.5) / 0.5
             response = 0.5 + 0.5 * loud_position**0.72
-        return response * MAX_AUDIO_GAIN
+        master_gain = max(0, min(master_volume, 100)) / 100
+        return response * MAX_AUDIO_GAIN * master_gain
 
     def _get_active_mood_context(self) -> str | None:
         queue = self.playback_queue_service.queue
@@ -7626,38 +7867,64 @@ class MainWindow(QMainWindow):
             )
             return
 
+        is_skip_signal = interaction_type in {
+            InteractionType.SKIP,
+            InteractionType.SKIP_UNDER_30S,
+        }
+        if is_skip_signal:
+            self._current_track_early_exit_recorded = True
+
+        self._record_track_feedback(
+            self.current_track_id,
+            interaction_type,
+            advance=interaction_type
+            in {
+                InteractionType.SKIP,
+                InteractionType.SKIP_UNDER_30S,
+                InteractionType.SNOOZE,
+                InteractionType.DO_NOT_RECOMMEND,
+            },
+        )
+
+    def _record_early_exit_if_needed(self) -> None:
+        if (
+            self._current_track_early_exit_recorded
+            or self.current_track_id is None
+            or self._player_duration_ms <= 0
+            or self._current_track_played_ms >= 30_000
+        ):
+            return
+        self._current_track_early_exit_recorded = True
+        self._record_playback_signal(InteractionType.SKIP_UNDER_30S)
+
+    def _record_track_feedback(
+        self,
+        track_id: str,
+        interaction_type: InteractionType,
+        *,
+        advance: bool,
+    ) -> None:
+        """Record explicit feedback without interrupting the player."""
+
         try:
             result = self.interaction_service.record(
                 user_id=self.user_id,
-                track_id=self.current_track_id,
+                track_id=track_id,
                 interaction_type=interaction_type,
                 mood_context=self._get_active_mood_context(),
             )
         except ValueError as error:
-            QMessageBox.warning(
-                self,
-                "Interaction failed",
-                str(error),
-            )
+            self.statusBar().showMessage(f"Feedback failed: {error}")
             return
 
         self._load_recommendations()
-
-        if interaction_type == InteractionType.SKIP:
+        if advance and track_id == self.current_track_id:
             self._play_next_from_queue()
 
-        if result.created:
-            message = (
-                f"Interaction recorded: "
-                f"{interaction_type.value}"
-            )
-        else:
-            message = (
-                f"Interaction already exists: "
-                f"{interaction_type.value}"
-            )
-
-        self.statusBar().showMessage(message)
+        status = "recorded" if result.created else "already recorded"
+        self.statusBar().showMessage(
+            f"Feedback {status}: {interaction_type.value}"
+        )
 
     def _refresh_content(self) -> None:
         self.recommendation_service.refresh()

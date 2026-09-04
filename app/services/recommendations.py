@@ -74,6 +74,7 @@ class RecommendationService:
             return self.track_radio.recommendations_for(
                 context.seed_track_id,
                 limit=limit,
+                user_id=normalized_user_id,
             )
 
         return self.recommender.recommend(

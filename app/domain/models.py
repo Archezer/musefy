@@ -7,21 +7,43 @@ from app.domain.recommendations import RecommendationMode
 
 
 class InteractionType(str, Enum):
+    # ``PLAY`` and ``LISTEN`` are retained for imported/legacy history.
+    # New playback sessions use milestone events so a one-second preview
+    # cannot look like a positive listen.
     PLAY = "play"
     LISTEN = "listen"
+    PLAY_START = "play_start"
+    PLAYED_30S = "played_30s"
+    COMPLETED_80 = "completed_80"
+    SEEK = "seek"
     LIKE = "like"
     SAVE = "save"
     SKIP = "skip"
+    SKIP_UNDER_30S = "skip_under_30s"
+    SNOOZE = "snooze"
+    DISLIKE = "dislike"
+    DO_NOT_RECOMMEND = "do_not_recommend"
+    ALLOW_RECOMMEND = "allow_recommend"
     REPEAT = "repeat"
 
     @property
     def weight(self) -> float:
         weights = {
-            InteractionType.PLAY: 1.0,
+            # A start is telemetry, not a preference signal.
+            InteractionType.PLAY: 0.0,
             InteractionType.LISTEN: 1.0,
+            InteractionType.PLAY_START: 0.0,
+            InteractionType.PLAYED_30S: 1.0,
+            InteractionType.COMPLETED_80: 2.0,
+            InteractionType.SEEK: 0.0,
             InteractionType.LIKE: 4.0,
             InteractionType.SAVE: 5.0,
             InteractionType.SKIP: -2.0,
+            InteractionType.SKIP_UNDER_30S: -1.0,
+            InteractionType.SNOOZE: -0.5,
+            InteractionType.DISLIKE: -4.0,
+            InteractionType.DO_NOT_RECOMMEND: -8.0,
+            InteractionType.ALLOW_RECOMMEND: 0.0,
             InteractionType.REPEAT: 2.0,
         }
 

@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.models import Track
+from app.domain.models import Interaction, InteractionType, Track, User
 from app.recommenders.similarity import (
     TrackSimilarityIndex,
     cosine_similarity,
@@ -154,3 +154,39 @@ def test_similarity_service_removes_deleted_track_from_index() -> None:
     service.remove_track("neighbor")
 
     assert service.recommendations_for("seed", limit=1) == []
+
+
+def test_similarity_service_respects_permanent_user_block() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="neighbor",
+            title="Neighbor",
+            artist="Artist",
+            track_embedding=(0.9, 0.1),
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="neighbor",
+            interaction_type=InteractionType.DO_NOT_RECOMMEND,
+        )
+    )
+
+    recommendations = TrackSimilarityService(store).recommendations_for(
+        "seed",
+        limit=1,
+        user_id="user-1",
+    )
+
+    assert recommendations == []

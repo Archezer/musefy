@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import UTC, datetime
 from math import exp
 from random import Random
 
@@ -9,6 +10,13 @@ from app.domain.models import (
     Track,
 )
 from app.domain.recommendations import RecommendationMode
+from app.recommenders.feedback import (
+    DEFAULT_INTEREST_HALF_LIFE_DAYS,
+    PLAYBACK_SESSION_TYPES,
+    PLAYBACK_INTERACTION_TYPES,
+    effective_weight,
+    suppressed_track_ids,
+)
 from app.recommenders.protocols import Recommender
 from app.storage.protocols import MusicStore
 
@@ -20,14 +28,6 @@ GENRE_PREFERENCE_FACTOR = 0.5
 PARENT_GENRE_RELEVANCE = 0.5
 SUBGENRE_RECOMMENDATION_MIN_SCORE = 0.25
 
-PLAYBACK_INTERACTION_TYPES = frozenset(
-    {
-        InteractionType.PLAY,
-        InteractionType.REPEAT,
-    }
-)
-
-
 class MostPopularRecommender(Recommender):
     def __init__(
         self,
@@ -36,7 +36,8 @@ class MostPopularRecommender(Recommender):
         exploration_pool_size: int = (
             DEFAULT_EXPLORATION_POOL_SIZE
         ),
-        random_generator: Random | None = None
+        random_generator: Random | None = None,
+        interest_half_life_days: float = DEFAULT_INTEREST_HALF_LIFE_DAYS,
     ) -> None:
         if replay_cooldown < 0:
             raise ValueError(
@@ -48,12 +49,18 @@ class MostPopularRecommender(Recommender):
                 "Exploration pool size must be positive"
             )
 
+        if interest_half_life_days <= 0:
+            raise ValueError(
+                "Interest half-life must be positive"
+            )
+
         self.store = store
         self.replay_cooldown = replay_cooldown
         self.exploration_pool_size = (
             exploration_pool_size
         )
         self.random = random_generator or Random()
+        self.interest_half_life_days = interest_half_life_days
 
     def _get_cooldown_track_ids(
         self,
@@ -69,13 +76,11 @@ class MostPopularRecommender(Recommender):
             if (
                 interaction.user_id == user_id
                 and interaction.interaction_type
-                in PLAYBACK_INTERACTION_TYPES
+                in PLAYBACK_SESSION_TYPES
             )
         ]
 
-        playback_history.sort(
-            key=lambda interaction: interaction.created_at
-        )
+        playback_history.sort(key=lambda interaction: interaction.created_at)
 
         recent_playback = playback_history[
             -self.replay_cooldown:
@@ -134,11 +139,17 @@ class MostPopularRecommender(Recommender):
         self,
         user_id: str,
         interactions: list[Interaction],
+        now: datetime,
     ) -> dict[str, float]:
         genre_scores: dict[str, float] = defaultdict(float)
 
         for interaction in interactions:
             if interaction.user_id != user_id:
+                continue
+            if interaction.interaction_type in {
+                InteractionType.DO_NOT_RECOMMEND,
+                InteractionType.ALLOW_RECOMMEND,
+            }:
                 continue
 
             track = self.store.get_track(
@@ -152,7 +163,11 @@ class MostPopularRecommender(Recommender):
                 self._get_track_genre_features(track).items()
             ):
                 genre_scores[genre] += (
-                    interaction.interaction_type.weight
+                    effective_weight(
+                        interaction,
+                        now=now,
+                        half_life_days=self.interest_half_life_days,
+                    )
                     * GENRE_PREFERENCE_FACTOR
                     * relevance
                 )
@@ -223,14 +238,20 @@ class MostPopularRecommender(Recommender):
 
 
     def _get_user_artist_scores(
-            self,
-            user_id: str,
-            interactions: list[Interaction]
+        self,
+        user_id: str,
+        interactions: list[Interaction],
+        now: datetime,
     ) -> dict[str, float]:
         artist_scores: dict[str, float] = defaultdict(float)
 
         for interaction in interactions:
             if interaction.user_id != user_id:
+                continue
+            if interaction.interaction_type in {
+                InteractionType.DO_NOT_RECOMMEND,
+                InteractionType.ALLOW_RECOMMEND,
+            }:
                 continue
 
             track = self.store.get_track(
@@ -241,7 +262,11 @@ class MostPopularRecommender(Recommender):
                 continue
 
             artist_scores[track.artist] += (
-                interaction.interaction_type.weight
+                effective_weight(
+                    interaction,
+                    now=now,
+                    half_life_days=self.interest_half_life_days,
+                )
                 * ARTIST_PREFERENCE_FACTOR
             )
 
@@ -279,14 +304,28 @@ class MostPopularRecommender(Recommender):
         self,
         user_id: str,
         limit: int = 10,
+        *,
+        now: datetime | None = None,
     ) -> list[Recommendation]:
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
 
+        current_time = now or datetime.now(UTC)
+        all_interactions = list(self.store.list_interactions())
         interactions = [
             interaction
-            for interaction in self.store.list_interactions()
+            for interaction in all_interactions
             if interaction.mood_context is None
+        ]
+        suppression_interactions = [
+            interaction
+            for interaction in all_interactions
+            if interaction.mood_context is None
+            or interaction.interaction_type
+            in {
+                InteractionType.DO_NOT_RECOMMEND,
+                InteractionType.ALLOW_RECOMMEND,
+            }
         ]
         tracks = list(self.store.list_tracks())
 
@@ -299,6 +338,9 @@ class MostPopularRecommender(Recommender):
             if interaction.interaction_type in {
                 InteractionType.LIKE,
                 InteractionType.SAVE,
+                InteractionType.DISLIKE,
+                InteractionType.DO_NOT_RECOMMEND,
+                InteractionType.ALLOW_RECOMMEND,
             }:
                 state_key = (
                     interaction.user_id,
@@ -311,14 +353,32 @@ class MostPopularRecommender(Recommender):
 
                 seen_states.add(state_key)
 
+            # Permanent hide/restore decisions belong to one user and must
+            # never change global popularity for everyone else.
+            if interaction.interaction_type in {
+                InteractionType.DO_NOT_RECOMMEND,
+                InteractionType.ALLOW_RECOMMEND,
+            }:
+                continue
+            if (
+                interaction.interaction_type == InteractionType.DISLIKE
+                and interaction.user_id != user_id
+            ):
+                continue
+
             track_scores[interaction.track_id] += (
-                interaction.interaction_type.weight
+                effective_weight(
+                    interaction,
+                    now=current_time,
+                    half_life_days=self.interest_half_life_days,
+                )
             )
 
         user_artist_scores = (
             self._get_user_artist_scores(
                 user_id=user_id,
                 interactions=interactions,
+                now=current_time,
             )
         )
 
@@ -334,6 +394,7 @@ class MostPopularRecommender(Recommender):
             self._get_user_genre_scores(
                 user_id=user_id,
                 interactions=interactions,
+                now=current_time,
             )
         )
 
@@ -352,8 +413,6 @@ class MostPopularRecommender(Recommender):
 
             track_scores[track.id] += genre_bonus
 
-        latest_user_interactions = {}
-
         cooldown_track_ids = (
             self._get_cooldown_track_ids(
                 user_id=user_id,
@@ -361,33 +420,14 @@ class MostPopularRecommender(Recommender):
             )
         )
 
-        for interaction in interactions:
-            if interaction.user_id != user_id:
-                continue
-
-            previous_interaction = latest_user_interactions.get(
-                interaction.track_id
-            )
-
-            if (
-                previous_interaction is None
-                or interaction.created_at
-                > previous_interaction.created_at
-            ):
-                latest_user_interactions[
-                    interaction.track_id
-                ] = interaction
-
-        skipped_track_ids = {
-            track_id
-            for track_id, interaction
-            in latest_user_interactions.items()
-            if interaction.interaction_type
-            == InteractionType.SKIP
-        }
+        permanent_track_ids, temporary_track_ids = suppressed_track_ids(
+            user_id,
+            suppression_interactions,
+            now=current_time,
+        )
 
         excluded_track_ids = (
-            skipped_track_ids | cooldown_track_ids
+            permanent_track_ids | temporary_track_ids | cooldown_track_ids
         )
 
         candidate_tracks = [
@@ -400,7 +440,7 @@ class MostPopularRecommender(Recommender):
         if fallback_used:
             candidate_tracks = [
                 track for track in tracks
-                if track.id not in skipped_track_ids
+                if track.id not in permanent_track_ids
             ]
 
         last_played_at = self._get_last_played_at(

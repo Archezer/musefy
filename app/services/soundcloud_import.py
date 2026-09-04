@@ -16,6 +16,7 @@ from app.ingestion.audio import (
     SUPPORTED_AUDIO_EXTENSIONS,
     AudioIngestionService,
 )
+from app.services.parallel_playlist import parallel_playlist_import
 
 SUPPORTED_SOUNDCLOUD_HOSTS = {
     "soundcloud.com",
@@ -190,30 +191,19 @@ class SoundCloudImportService:
         on_track_imported: Callable[[SoundCloudCandidate, Track], None]
         | None = None,
     ) -> SoundCloudPlaylistImportResult:
-        """Download selected set items one by one and keep partial successes."""
+        """Download selected set items concurrently and keep partial successes."""
 
-        imported: list[Track] = []
-        failed: list[tuple[SoundCloudCandidate, str]] = []
-        imported_candidates: list[tuple[SoundCloudCandidate, Track]] = []
-        total = len(candidates)
-
-        for completed, candidate in enumerate(candidates, start=1):
-            try:
-                track = self.download(candidate)
-                imported.append(track)
-                imported_candidates.append((candidate, track))
-                if on_track_imported is not None:
-                    on_track_imported(candidate, track)
-            except (OSError, RuntimeError, ValueError) as error:
-                failed.append((candidate, str(error)))
-            finally:
-                if on_progress is not None:
-                    on_progress(completed, total)
+        imported, failed, imported_candidates = parallel_playlist_import(
+            candidates,
+            self.download,
+            on_progress=on_progress,
+            on_track_imported=on_track_imported,
+        )
 
         return SoundCloudPlaylistImportResult(
-            imported=tuple(imported),
-            failed=tuple(failed),
-            imported_candidates=tuple(imported_candidates),
+            imported=imported,
+            failed=failed,
+            imported_candidates=imported_candidates,
         )
 
     def download(self, source: str | SoundCloudCandidate) -> Track:

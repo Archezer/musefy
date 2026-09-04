@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from math import exp
 from random import Random
 
@@ -9,6 +10,10 @@ from app.domain.models import (
 )
 from app.domain.mood import MoodVector
 from app.domain.recommendations import RecommendationMode
+from app.recommenders.feedback import (
+    PLAYBACK_SESSION_TYPES,
+    suppressed_track_ids,
+)
 from app.storage.protocols import MusicStore
 
 DEFAULT_REPLAY_COOLDOWN = 30
@@ -50,18 +55,28 @@ class MoodRecommender:
         target_mood: MoodVector,
         limit: int = 10,
         mood_name: str | None = None,
+        *,
+        now: datetime | None = None,
     ) -> list[Recommendation]:
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
 
+        current_time = now or datetime.now(UTC)
         interactions = self._get_context_interactions(
             user_id=user_id,
             mood_name=mood_name,
         )
+        all_interactions = list(self.store.list_interactions())
         tracks = list(self.store.list_tracks())
-        skipped_track_ids = self._get_skipped_track_ids(
+        permanent_track_ids, _ = suppressed_track_ids(
+            user_id,
+            all_interactions,
+            now=current_time,
+        )
+        _, temporary_track_ids = suppressed_track_ids(
             user_id,
             interactions,
+            now=current_time,
         )
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
@@ -73,7 +88,8 @@ class MoodRecommender:
             for track in tracks
             if (
                 track.mood is not None
-                and track.id not in skipped_track_ids
+                and track.id not in permanent_track_ids
+                and track.id not in temporary_track_ids
                 and track.id not in cooldown_track_ids
             )
         ]
@@ -84,7 +100,8 @@ class MoodRecommender:
                 for track in tracks
                 if (
                     track.mood is not None
-                    and track.id not in skipped_track_ids
+                    and track.id not in permanent_track_ids
+                    and track.id not in temporary_track_ids
                 )
             ]
 
@@ -170,13 +187,22 @@ class MoodRecommender:
             if interaction.interaction_type not in {
                 InteractionType.LIKE,
                 InteractionType.SAVE,
+                InteractionType.DISLIKE,
             }:
                 continue
 
-            feedback_scores[interaction.track_id] = min(
-                MOOD_FEEDBACK_FACTOR,
-                feedback_scores.get(interaction.track_id, 0.0)
-                + MOOD_FEEDBACK_FACTOR,
+            direction = (
+                -1.0
+                if interaction.interaction_type == InteractionType.DISLIKE
+                else 1.0
+            )
+            current_score = feedback_scores.get(interaction.track_id, 0.0)
+            feedback_scores[interaction.track_id] = max(
+                -MOOD_FEEDBACK_FACTOR,
+                min(
+                    MOOD_FEEDBACK_FACTOR,
+                    current_score + direction * MOOD_FEEDBACK_FACTOR,
+                ),
             )
 
         return feedback_scores
@@ -244,16 +270,14 @@ class MoodRecommender:
         self,
         user_id: str,
         interactions: list[Interaction],
+        now: datetime | None = None,
     ) -> set[str]:
-        latest_interactions = self._get_latest_user_interactions(
+        _, temporary = suppressed_track_ids(
             user_id,
             interactions,
+            now=now or datetime.now(UTC),
         )
-        return {
-            track_id
-            for track_id, interaction in latest_interactions.items()
-            if interaction.interaction_type == InteractionType.SKIP
-        }
+        return temporary
 
     def _get_cooldown_track_ids(
         self,
@@ -269,7 +293,7 @@ class MoodRecommender:
             if (
                 interaction.user_id == user_id
                 and interaction.interaction_type
-                in {InteractionType.PLAY, InteractionType.REPEAT}
+                in PLAYBACK_SESSION_TYPES
             )
         ]
         playback_history.sort(

@@ -14,6 +14,9 @@ STATEFUL_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE,
         InteractionType.SAVE,
+        InteractionType.DISLIKE,
+        InteractionType.DO_NOT_RECOMMEND,
+        InteractionType.ALLOW_RECOMMEND,
     }
 )
 

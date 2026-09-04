@@ -126,6 +126,17 @@ QFrame#listeningTotalDivider {
     border: none;
     max-width: 1px;
 }
+QFrame#listeningGraphPanel, QFrame#listeningDiagramPanel,
+QFrame#listeningDetailPanel {
+    background-color: rgba(8, 11, 13, 112);
+    border: 1px solid rgba(181, 251, 224, 24);
+    border-radius: 11px;
+}
+QLabel#listeningPanelHeading {
+    color: #B5FBE0;
+    font-size: 11px;
+    font-weight: 700;
+}
 QLabel#searchElapsedTime {
     color: #899692;
     font-size: 11px;
@@ -460,11 +471,6 @@ QTableWidget::item:selected, QListWidget::item:selected {
     border-left: none;
     border-right: none;
 }
-QFrame#listeningHighlights {
-    background-color: rgba(255, 255, 255, 6);
-    border: 1px solid rgba(181, 251, 224, 28);
-    border-radius: 13px;
-}
 QLabel#listeningSectionHeading {
     color: #B5FBE0;
     font-size: 11px;
@@ -483,10 +489,10 @@ QTableWidget#listeningHighlightsTable QHeaderView::section {
     background-color: rgba(255, 255, 255, 8);
     color: #9FADA8;
     border-bottom: 1px solid rgba(181, 251, 224, 24);
-    padding: 6px 8px;
+    padding: 5px 7px;
 }
 QTableWidget#listeningHighlightsTable::item {
-    padding: 6px 8px;
+    padding: 4px 7px;
     border-bottom: 1px solid rgba(255, 255, 255, 11);
 }
 QTableWidget#listeningHighlightsTable::item:alternate {
