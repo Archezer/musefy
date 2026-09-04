@@ -3,25 +3,19 @@ import random
 import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from threading import Event
 
 from PySide6.QtCore import (
     QEasingCurve,
-    QEvent,
-    QObject,
     QPoint,
     QPropertyAnimation,
-    QRunnable,
     QSettings,
     QSize,
     Qt,
-    QThread,
     QThreadPool,
     QTimer,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import (
     QAction,
@@ -132,6 +126,7 @@ from app.sources.youtube import YouTubeCandidate
 from app.storage.database import create_database, engine
 from app.storage.paths import DATA_DIR, PLAYLIST_EXPORTS_DIR
 from app.storage.protocols import MusicStore
+from app.ui.auxiliary_dialogs import AuxiliaryDialogManager
 from app.ui.components import (
     CLEAR_ICON,
     HEART_ICON,
@@ -189,6 +184,15 @@ from app.ui.dialogs import (
 )
 from app.ui.music_map import MusicMapWidget
 from app.ui.theme import DARK_THEME
+from app.ui.workers import (
+    AlternativePlaylistSearchResult,
+    GenreAnalysisTask,
+    LibraryHealthTaskThread,
+    RecommendationTask,
+    TrackBatchTask,
+    WatchFolderTaskThread,
+    YouTubeTaskThread,
+)
 
 MAX_AUDIO_GAIN = 0.3432
 DEFAULT_VOLUME_PERCENT = 50
@@ -216,271 +220,6 @@ LIBRARY_PLAYBACK_MODES = (
 )
 MAP_MODES = ("background", "focus", "hidden")
 MY_WAVE_SESSION_NAME = "my_wave"
-
-
-@dataclass(frozen=True)
-class AlternativePlaylistSearchResult:
-    """Candidates returned while searching failed playlist tracks elsewhere."""
-
-    provider: str
-    candidates: tuple[
-        YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
-        ...,
-    ]
-    failed: tuple[tuple[SpotifyTrack, str], ...]
-    failed_positions: tuple[int, ...]
-
-
-class YouTubeTaskThread(QThread):
-    result_ready = Signal(object)
-    error_occurred = Signal(str)
-    cancelled = Signal()
-    progress_updated = Signal(int, int)
-    # completed, total, found, failed, current track title
-    search_progress_updated = Signal(int, int, int, int, str)
-    track_imported = Signal(object, object)
-
-    def __init__(
-        self,
-        task: Callable[[], object],
-        parent: QWidget,
-    ) -> None:
-        super().__init__(parent)
-        self.task = task
-        self._cancel_event = Event()
-
-    def cancel(self) -> None:
-        """Request cooperative cancellation of the current operation."""
-
-        self._cancel_event.set()
-        self.requestInterruption()
-
-    def is_cancelled(self) -> bool:
-        return self._cancel_event.is_set() or self.isInterruptionRequested()
-
-    def run(self) -> None:
-        if self.is_cancelled():
-            self.cancelled.emit()
-            return
-        try:
-            result = self.task()
-        except OperationCancelled:
-            self.cancelled.emit()
-            return
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            message = str(error) or error.__class__.__name__
-            self.error_occurred.emit(message)
-        else:
-            if self.is_cancelled():
-                self.cancelled.emit()
-            else:
-                self.result_ready.emit(result)
-
-
-class LibraryHealthTaskThread(QThread):
-    """Keep slow decoding and fingerprinting outside Qt's UI thread."""
-
-    result_ready = Signal(object)
-    error_occurred = Signal(str)
-
-    def __init__(
-        self,
-        service: LibraryHealthService,
-        parent: QWidget,
-    ) -> None:
-        super().__init__(parent)
-        self.service = service
-
-    def run(self) -> None:
-        try:
-            result = self.service.scan()
-        except (OSError, RuntimeError, ValueError) as error:
-            self.error_occurred.emit(str(error) or error.__class__.__name__)
-        else:
-            self.result_ready.emit(result)
-
-
-class WatchFolderTaskThread(QThread):
-    """Run a watch-folder pass without blocking playback controls."""
-
-    result_ready = Signal(object)
-    error_occurred = Signal(str)
-
-    def __init__(self, task: Callable[[], object], parent: QWidget) -> None:
-        super().__init__(parent)
-        self.task = task
-
-    def run(self) -> None:
-        try:
-            result = self.task()
-        except (OSError, RuntimeError, ValueError) as error:
-            self.error_occurred.emit(str(error) or error.__class__.__name__)
-        else:
-            self.result_ready.emit(result)
-
-
-class GenreAnalysisSignals(QObject):
-    result_ready = Signal(str, object)
-    error_occurred = Signal(str, str)
-
-
-class GenreAnalysisTask(QRunnable):
-    def __init__(
-        self,
-        service: GenreAnalysisService,
-        track_id: str,
-        audio_path: Path,
-    ) -> None:
-        super().__init__()
-
-        self.service = service
-        self.track_id = track_id
-        self.audio_path = audio_path
-        self.signals = GenreAnalysisSignals()
-
-    def run(self) -> None:
-        try:
-            analysis_result = self.service.analyze_track_result(
-                self.audio_path
-            )
-        except (
-            FileNotFoundError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ) as error:
-            self.signals.error_occurred.emit(
-                self.track_id,
-                str(error),
-            )
-        else:
-            self.signals.result_ready.emit(
-                self.track_id,
-                analysis_result,
-            )
-
-
-class TrackBatchSignals(QObject):
-    batch_ready = Signal(int, int, object)
-    finished = Signal(int)
-
-
-class TrackBatchTask(QRunnable):
-    """Prepare deferred table batches without blocking the UI thread."""
-
-    def __init__(
-        self,
-        tracks: list[Track],
-        start_index: int,
-        generation: int,
-        batch_size: int,
-    ) -> None:
-        super().__init__()
-        self.tracks = tuple(tracks)
-        self.start_index = start_index
-        self.generation = generation
-        self.batch_size = batch_size
-        self.cancel_requested = Event()
-        self.signals = TrackBatchSignals()
-
-    def cancel(self) -> None:
-        self.cancel_requested.set()
-
-    def run(self) -> None:
-        for start in range(
-            self.start_index,
-            len(self.tracks),
-            self.batch_size,
-        ):
-            if self.cancel_requested.is_set():
-                return
-
-            batch = self.tracks[start : start + self.batch_size]
-            self.signals.batch_ready.emit(
-                self.generation,
-                start,
-                batch,
-            )
-            # Let the main thread paint between batches so long libraries
-            # appear progressively instead of freezing the window.
-            QThread.msleep(8)
-
-        self.signals.finished.emit(self.generation)
-
-
-class RecommendationSignals(QObject):
-    """Signals emitted while recommendations are calculated off the UI thread."""
-
-    batch_ready = Signal(int, object)
-    finished = Signal(int)
-    error_occurred = Signal(int, str)
-
-
-class RecommendationTask(QRunnable):
-    """Calculate recommendations in small batches so playback stays responsive."""
-
-    def __init__(
-        self,
-        fetcher: Callable[[], object],
-        generation: int,
-        *,
-        batch_size: int = 5,
-        cancellable_fetcher: Callable[[Callable[[], bool]], object]
-        | None = None,
-    ) -> None:
-        super().__init__()
-        self.fetcher = fetcher
-        self.cancellable_fetcher = cancellable_fetcher
-        self.generation = generation
-        self.batch_size = max(1, batch_size)
-        self.cancel_requested = Event()
-        self.signals = RecommendationSignals()
-
-    def cancel(self) -> None:
-        self.cancel_requested.set()
-
-    def is_cancelled(self) -> bool:
-        """Return whether the producer should stop expensive work."""
-
-        return self.cancel_requested.is_set()
-
-    def run(self) -> None:
-        if self.cancel_requested.is_set():
-            return
-
-        try:
-            if self.cancellable_fetcher is not None:
-                recommendations = list(
-                    self.cancellable_fetcher(self.is_cancelled)
-                )
-            else:
-                recommendations = list(self.fetcher())
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            # A cancellable recommender exits through RuntimeError once it
-            # observes the flag.  Cancellation is an expected outcome, not a
-            # user-visible failure.
-            if self.cancel_requested.is_set():
-                return
-            self.signals.error_occurred.emit(
-                self.generation,
-                str(error) or error.__class__.__name__,
-            )
-            return
-
-        for start in range(0, len(recommendations), self.batch_size):
-            if self.cancel_requested.is_set():
-                return
-
-            self.signals.batch_ready.emit(
-                self.generation,
-                tuple(recommendations[start : start + self.batch_size]),
-            )
-            # Give the main thread a chance to paint each partial result.  The
-            # first batch is therefore visible while the rest is still being
-            # added to the sidebar/queue.
-            QThread.msleep(20)
-
-        self.signals.finished.emit(self.generation)
 
 
 class MainWindow(QMainWindow):
@@ -563,13 +302,9 @@ class MainWindow(QMainWindow):
         self._queue_render_generation = 0
         self._queue_render_track_ids: tuple[str, ...] = ()
         self._queue_render_index = 0
-        # Modeless dialogs use the native minimize button, but keeping their
-        # minimized state in the app makes it possible to restore them without
-        # hunting through the Windows taskbar.  Compact restore buttons are
-        # inserted next to the top-right playlist menu.
-        self._auxiliary_dialog_buttons: dict[QDialog, QToolButton] = {}
         self._auxiliary_minimized_container: QWidget | None = None
         self._auxiliary_minimized_layout: QHBoxLayout | None = None
+        self._auxiliary_dialogs: AuxiliaryDialogManager | None = None
         self._search_row: QWidget | None = None
         self._search_actions_container: QWidget | None = None
         self._spotify_sync_timer = QTimer(self)
@@ -671,6 +406,18 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_THEME)
 
         self._build_interface()
+        if (
+            self._auxiliary_minimized_container is None
+            or self._auxiliary_minimized_layout is None
+        ):
+            raise RuntimeError("Auxiliary dialog area was not initialized.")
+        self._auxiliary_dialogs = AuxiliaryDialogManager(
+            container=self._auxiliary_minimized_container,
+            layout=self._auxiliary_minimized_layout,
+            reposition=self._position_search_actions,
+            cancel_task=self._cancel_dialog_task,
+            parent=self,
+        )
         self._find_shortcut = QShortcut(
             QKeySequence("Ctrl+F"),
             self,
@@ -5839,31 +5586,9 @@ class MainWindow(QMainWindow):
             )
 
     def _show_auxiliary_dialog(self, dialog: QDialog) -> None:
-        """Show a modeless dialog and wire its in-app minimize affordance."""
-
-        self._register_auxiliary_dialog(dialog)
-        self._restore_auxiliary_dialog(dialog)
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _register_auxiliary_dialog(self, dialog: QDialog) -> None:
-        """Track a dialog so native minimize becomes an in-app chip."""
-
-        if dialog.property("musefyAuxiliaryRegistered"):
-            return
-
-        dialog.setProperty("musefyAuxiliaryRegistered", True)
-        dialog.installEventFilter(self)
-        dialog.finished.connect(
-            lambda _result, target=dialog: self._forget_auxiliary_dialog(target)
-        )
-        closed_signal = getattr(dialog, "closed", None)
-        if closed_signal is not None:
-            closed_signal.connect(
-                lambda target=dialog: self._cancel_dialog_task(target)
-            )
+        if self._auxiliary_dialogs is None:
+            raise RuntimeError("Auxiliary dialog manager is not initialized.")
+        self._auxiliary_dialogs.show(dialog)
 
     def _cancel_dialog_task(self, dialog: QDialog) -> None:
         """Stop the task owned by a loader that was explicitly closed."""
@@ -5880,112 +5605,11 @@ class MainWindow(QMainWindow):
             self._youtube_thread = None
             self._youtube_thread_dialog = None
 
-    def _forget_auxiliary_dialog(self, dialog: QDialog) -> None:
-        """Remove a closed dialog's restore chip, if it still has one."""
-
-        button = self._auxiliary_dialog_buttons.pop(dialog, None)
-        if button is not None:
-            layout = self._auxiliary_minimized_layout
-            if layout is not None:
-                layout.removeWidget(button)
-            button.deleteLater()
-
-        container = self._auxiliary_minimized_container
-        if container is not None and not self._auxiliary_dialog_buttons:
-            container.hide()
-        self._position_search_actions()
-        QTimer.singleShot(0, self._position_search_actions)
-
-    def _minimize_auxiliary_dialog(self, dialog: QDialog) -> None:
-        """Hide a dialog and expose a compact restore button in the top bar."""
-
-        if dialog in self._auxiliary_dialog_buttons:
-            return
-
-        layout = self._auxiliary_minimized_layout
-        container = self._auxiliary_minimized_container
-        if layout is None or container is None:
-            return
-
-        title = dialog.windowTitle().strip() or "Auxiliary window"
-        if len(title) > 28:
-            title = f"{title[:27].rstrip()}…"
-
-        button = QToolButton(container)
-        button.setObjectName("auxiliaryMinimizedButton")
-        button.setText(title)
-        button.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextOnly
-        )
-        button.setToolTip(f"Restore {dialog.windowTitle()}")
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setMaximumWidth(220)
-        button.clicked.connect(
-            lambda _checked=False, target=dialog: self._restore_auxiliary_dialog(
-                target
-            )
-        )
-        self._auxiliary_dialog_buttons[dialog] = button
-        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-        container.show()
-        self._position_search_actions()
-        QTimer.singleShot(0, self._position_search_actions)
-
-        dialog.setProperty("musefyAuxiliaryMinimized", True)
-        # Clear the native minimized state before hiding so the OS does not
-        # retain an additional taskbar item for a window represented in Musefy.
-        dialog.setWindowState(Qt.WindowState.WindowNoState)
-        # A native showMinimized() can finish its own visibility update after
-        # WindowStateChange is delivered.  Deferring the final hide by one
-        # event-loop turn makes the in-app chip win that race consistently.
-        QTimer.singleShot(
-            0,
-            lambda target=dialog: self._hide_minimized_auxiliary_dialog(target),
-        )
-
-    def _hide_minimized_auxiliary_dialog(self, dialog: QDialog) -> None:
-        if (
-            dialog in self._auxiliary_dialog_buttons
-            and dialog.property("musefyAuxiliaryMinimized")
-        ):
-            dialog.setWindowState(Qt.WindowState.WindowNoState)
-            dialog.hide()
-
-    def _restore_auxiliary_dialog(self, dialog: QDialog) -> None:
-        """Restore a dialog from its compact top-bar button."""
-
-        was_minimized = bool(
-            dialog.property("musefyAuxiliaryMinimized")
-        )
-        button = self._auxiliary_dialog_buttons.pop(dialog, None)
-        if button is not None:
-            layout = self._auxiliary_minimized_layout
-            if layout is not None:
-                layout.removeWidget(button)
-            button.deleteLater()
-
-        container = self._auxiliary_minimized_container
-        if container is not None and not self._auxiliary_dialog_buttons:
-            container.hide()
-        self._position_search_actions()
-        QTimer.singleShot(0, self._position_search_actions)
-
-        dialog.setProperty("musefyAuxiliaryMinimized", False)
-        dialog.setWindowState(Qt.WindowState.WindowNoState)
-        if was_minimized:
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-
     def eventFilter(self, watched: object, event: object) -> bool:
-        if (
-            isinstance(watched, QDialog)
-            and watched.property("musefyAuxiliaryRegistered")
-            and isinstance(event, QEvent)
-            and event.type() == QEvent.Type.WindowStateChange
-            and watched.windowState() & Qt.WindowState.WindowMinimized
+        if self._auxiliary_dialogs is not None and self._auxiliary_dialogs.event_filter(
+            watched,
+            event,
         ):
-            self._minimize_auxiliary_dialog(watched)
             return True
 
         return super().eventFilter(watched, event)
@@ -5995,8 +5619,8 @@ class MainWindow(QMainWindow):
 
         self._spotify_sync_timer.stop()
         self._watch_folder_timer.stop()
-        for dialog in tuple(self._auxiliary_dialog_buttons):
-            dialog.close()
+        if self._auxiliary_dialogs is not None:
+            self._auxiliary_dialogs.close_all()
 
         for thread in tuple(self._youtube_threads):
             if not thread.isRunning():
