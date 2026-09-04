@@ -1,7 +1,7 @@
 [project]
 name = "music-recommendation-system"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "A local Windows music library with mood-aware recommendations"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -39,6 +39,7 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 
 [[tool.uv.index]]
 name = "pytorch-cuda"

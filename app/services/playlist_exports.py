@@ -35,7 +35,9 @@ def read_playlist_export(path: Path) -> ExportedPlaylist:
         raise ValueError(f"Could not read playlist export: {path}") from error
 
     if not isinstance(payload, dict):
-        raise ValueError("Playlist export must contain a JSON object.")
+        raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+            "Playlist export must contain a JSON object."
+        )
 
     export_format = payload.get("format")
     if not (
@@ -49,10 +51,14 @@ def read_playlist_export(path: Path) -> ExportedPlaylist:
     raw_tracks = payload.get("tracks")
 
     if not isinstance(playlist, dict):
-        raise ValueError("Playlist export does not contain playlist metadata.")
+        raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+            "Playlist export does not contain playlist metadata."
+        )
 
     if not isinstance(raw_tracks, list):
-        raise ValueError("Playlist export does not contain a tracks list.")
+        raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+            "Playlist export does not contain a tracks list."
+        )
 
     source = _required_text(playlist.get("source"), "playlist source").lower()
     if source not in SUPPORTED_EXPORT_SOURCES:
@@ -84,7 +90,9 @@ def _parse_track(
     fallback_position: int,
 ) -> ExportedPlaylistTrack:
     if not isinstance(payload, dict):
-        raise ValueError("Playlist export contains an invalid track.")
+        raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+            "Playlist export contains an invalid track."
+        )
 
     artist = _required_text(payload.get("artist"), "track artist")
     title = _required_text(payload.get("title"), "track title")

@@ -2,17 +2,13 @@
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TypeVar
 
 from app.domain.models import Track
 
 DEFAULT_PLAYLIST_IMPORT_WORKERS = 6
 MAX_PLAYLIST_IMPORT_WORKERS = 16
 
-CandidateT = TypeVar("CandidateT")
-
-
-def parallel_playlist_import(
+def parallel_playlist_import[CandidateT](
     candidates: Sequence[CandidateT],
     import_one: Callable[[CandidateT], Track],
     *,

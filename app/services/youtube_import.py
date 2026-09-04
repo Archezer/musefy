@@ -382,9 +382,11 @@ class YouTubeImportService:
                     index,
                     spotify_track,
                     None,
-                    "Duration mismatch: Spotify "
-                    f"{_format_duration(spotify_track.duration_ms)} vs "
-                    f"YouTube {_format_duration(candidate.duration_ms)}.",
+                    (
+                        "Duration mismatch: Spotify "
+                        f"{_format_duration(spotify_track.duration_ms)} vs "
+                        f"YouTube {_format_duration(candidate.duration_ms)}."
+                    ),
                 )
 
             return (

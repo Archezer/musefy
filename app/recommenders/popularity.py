@@ -12,8 +12,8 @@ from app.domain.models import (
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.feedback import (
     DEFAULT_INTEREST_HALF_LIFE_DAYS,
-    PLAYBACK_SESSION_TYPES,
     PLAYBACK_INTERACTION_TYPES,
+    PLAYBACK_SESSION_TYPES,
     effective_weight,
     suppressed_track_ids,
 )

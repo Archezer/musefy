@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QToolTip, QWidget
 
 from app.domain.models import Track
 
-
 # Dusty rather than neon: the map should feel like a music atlas, not a chart.
 COMMUNITY_COLORS = (
     (115, 137, 166),  # slate blue

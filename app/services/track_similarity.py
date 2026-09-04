@@ -1,14 +1,13 @@
-from random import Random
-
 from datetime import UTC, datetime
+from random import Random
 
 from app.domain.models import Recommendation, Track
 from app.domain.recommendations import RecommendationMode
+from app.recommenders.feedback import suppressed_track_ids
 from app.recommenders.similarity import (
     SimilarTrack,
     TrackSimilarityIndex,
 )
-from app.recommenders.feedback import suppressed_track_ids
 from app.storage.protocols import MusicStore
 
 

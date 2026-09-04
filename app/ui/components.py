@@ -3,7 +3,10 @@ from __future__ import annotations
 import html
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
+from typing import ClassVar
 
 from PySide6.QtCore import (
     Property,
@@ -192,6 +195,12 @@ def _color_with_alpha(value: str, alpha: int) -> QColor:
     return color
 
 
+def _clamp_opacity(value: float) -> float:
+    """Keep animated UI opacity values inside Qt's valid range."""
+
+    return max(0.0, min(1.0, float(value)))
+
+
 class RailIconButton(QToolButton):
     """A rail action with a quiet, per-icon graph-shaped hover glow."""
 
@@ -202,7 +211,9 @@ class RailIconButton(QToolButton):
     ICON_SIZE = 24
     CONTENT_OFFSET_X = 0
 
-    _GRAPH_VARIANTS = {
+    _GRAPH_VARIANTS: ClassVar[
+        Mapping[str, tuple[tuple[tuple[float, float], ...], tuple[str, str]]]
+    ] = MappingProxyType({
         "download": (
             (
                 (0.28, 0.30),
@@ -244,7 +255,7 @@ class RailIconButton(QToolButton):
             ),
             ("#B5FBE0", "#3C8176"),
         ),
-    }
+    })
 
     def __init__(
         self,
@@ -297,12 +308,12 @@ class RailIconButton(QToolButton):
         )
 
     @Property(float)
-    def graphOpacity(self) -> float:  # noqa: N802 - Qt property name
+    def graphOpacity(self) -> float:
         return self._graph_opacity
 
     @graphOpacity.setter
-    def graphOpacity(self, value: float) -> None:  # noqa: N802
-        self._graph_opacity = max(0.0, min(1.0, float(value)))
+    def graphOpacity(self, value: float) -> None:
+        self._graph_opacity = _clamp_opacity(value)
         self.update()
 
     def enterEvent(self, event: object) -> None:
@@ -661,12 +672,12 @@ class FadingVolumeSlider(QSlider):
         self.setFixedHeight(20)
 
     @Property(float)
-    def handleOpacity(self) -> float:  # noqa: N802 - Qt property name
+    def handleOpacity(self) -> float:
         return self._handle_opacity
 
     @handleOpacity.setter
-    def handleOpacity(self, value: float) -> None:  # noqa: N802
-        self._handle_opacity = max(0.0, min(1.0, float(value)))
+    def handleOpacity(self, value: float) -> None:
+        self._handle_opacity = _clamp_opacity(value)
         self.update()
 
     def mousePressEvent(self, event: object) -> None:
@@ -774,7 +785,7 @@ class MarqueeLabel(QLabel):
         )
         self.setText(text)
 
-    def setText(self, text: str) -> None:  # noqa: N802 - Qt API name
+    def setText(self, text: str) -> None:
         self._full_text = str(text)
         self._offset = 0
         self._pause_until = time.monotonic() + 1.7
@@ -1095,12 +1106,12 @@ class PlaylistGradientSurface(QFrame):
         )
 
     @Property(float)
-    def hoverOpacity(self) -> float:  # noqa: N802 - Qt property name
+    def hoverOpacity(self) -> float:
         return self._hover_opacity
 
     @hoverOpacity.setter
-    def hoverOpacity(self, value: float) -> None:  # noqa: N802
-        self._hover_opacity = max(0.0, min(1.0, float(value)))
+    def hoverOpacity(self, value: float) -> None:
+        self._hover_opacity = _clamp_opacity(value)
         self.update()
 
     def set_colors(self, colors: tuple[QColor, QColor, QColor]) -> None:

@@ -21,9 +21,9 @@ from app.domain.mood import MoodVector
 from app.domain.recommendations import RecommendationMode
 from app.storage.models import (
     InteractionRecord,
-    RecommendationImpressionRecord,
     PlaylistEntryRecord,
     PlaylistRecord,
+    RecommendationImpressionRecord,
     TrackRecord,
     UserRecord,
 )

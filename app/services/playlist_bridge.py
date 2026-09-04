@@ -62,16 +62,22 @@ class PlaylistBridgeServer:
 
     def save_export(self, payload: object) -> dict[str, object]:
         if not isinstance(payload, dict):
-            raise ValueError("Playlist export must be a JSON object.")
+            raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+                "Playlist export must be a JSON object."
+            )
 
         playlist = payload.get("playlist")
         tracks = payload.get("tracks")
 
         if not isinstance(playlist, dict):
-            raise ValueError("Playlist export does not contain playlist metadata.")
+            raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+                "Playlist export does not contain playlist metadata."
+            )
 
         if not isinstance(tracks, list):
-            raise ValueError("Playlist export does not contain a tracks list.")
+            raise ValueError(  # noqa: TRY004 - malformed JSON is a validation error
+                "Playlist export does not contain a tracks list."
+            )
 
         source = str(playlist.get("source") or "").strip().lower()
         if source not in SUPPORTED_SOURCES:

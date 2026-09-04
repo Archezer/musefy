@@ -28,9 +28,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
-    QGridLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -2421,7 +2421,7 @@ class ListeningStatisticsDialog(QDialog):
         if self._chart_items:
             self._show_chart_period(len(self._chart_items) - 1)
 
-    def showEvent(self, event: object) -> None:  # noqa: N802 - Qt override
+    def showEvent(self, event: object) -> None:
         super().showEvent(event)
         # Rebuild after the dialog receives its final size.  This also makes
         # reopening the modeless statistics window refresh the graph instead

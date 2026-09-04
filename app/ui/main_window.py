@@ -833,7 +833,7 @@ class MainWindow(QMainWindow):
             "Library health & backup…",
             self._open_library_maintenance,
         )
-        import_log_action = library_menu.addAction(
+        library_menu.addAction(
             "Import log",
             self._show_import_log,
         )

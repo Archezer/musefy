@@ -1,7 +1,7 @@
 from pathlib import Path
+from typing import Self
 
 import app.services.playlists as playlist_service_module
-
 from app.domain.models import PlaylistEntry, Track
 from app.services.playlists import PlaylistManagementService
 from app.storage.memory import InMemoryMusicStore
@@ -142,7 +142,7 @@ def test_playlist_artwork_can_be_downloaded_from_export_url(
     class FakeResponse:
         headers = FakeHeaders()
 
-        def __enter__(self) -> "FakeResponse":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *_args: object) -> None:
