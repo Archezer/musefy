@@ -1,6 +1,7 @@
 from pathlib import Path
 from threading import Lock
 from time import sleep
+from types import SimpleNamespace
 from typing import Self
 
 import pytest
@@ -209,7 +210,7 @@ class FakeYoutubeDownloadWriter:
         output_path.touch()
 
 
-def test_download_prefers_m4a_audio(monkeypatch, tmp_path) -> None:
+def test_download_requests_best_audio(monkeypatch, tmp_path) -> None:
     captured_options: list[dict] = []
 
     def create_downloader(options: dict) -> FakeYoutubeDownloadWriter:
@@ -246,6 +247,80 @@ def test_download_prefers_m4a_audio(monkeypatch, tmp_path) -> None:
         youtube_source.YOUTUBE_AUDIO_FORMAT
     )
     assert "[vcodec=none]" in captured_options[0]["format"]
+
+
+def test_download_remuxes_best_webm_opus_without_reencoding(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured_commands: list[list[str]] = []
+
+    class FakeWebmDownloader:
+        def __init__(self, options: dict) -> None:
+            self.options = options
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def download(self, urls: list[str]) -> None:
+            output_path = Path(
+                self.options["outtmpl"].replace("%(ext)s", "webm")
+            )
+            output_path.touch()
+
+    def create_downloader(options: dict) -> FakeWebmDownloader:
+        return FakeWebmDownloader(options)
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        captured_commands.append(command)
+        Path(command[-1]).touch()
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(
+        youtube_source.yt_dlp,
+        "YoutubeDL",
+        create_downloader,
+    )
+    monkeypatch.setattr(
+        youtube_source,
+        "_authentication_sources",
+        lambda: ("none",),
+    )
+    monkeypatch.setattr(
+        youtube_source,
+        "_find_ffmpeg",
+        lambda: "ffmpeg",
+    )
+    monkeypatch.setattr(
+        youtube_source.subprocess,
+        "run",
+        fake_run,
+    )
+
+    candidate = YouTubeCandidate(
+        video_id="video-opus",
+        title="Opus track",
+        channel_title="Artist",
+        duration_ms=None,
+        view_count=None,
+        url="https://www.youtube.com/watch?v=video-opus",
+    )
+
+    downloaded_path = YouTubeSearchProvider().download(
+        candidate,
+        tmp_path,
+    )
+
+    assert downloaded_path.suffix == ".opus"
+    assert not (tmp_path / "video-opus.webm").exists()
+    assert captured_commands
+    assert "-c:a" in captured_commands[0]
+    assert captured_commands[0][
+        captured_commands[0].index("-c:a") + 1
+    ] == "copy"
 
 
 def test_download_rejects_video_container(monkeypatch, tmp_path) -> None:

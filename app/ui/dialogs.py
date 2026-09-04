@@ -49,7 +49,6 @@ from app.domain.models import Track
 from app.ingestion.metadata import AudioMetadata
 from app.services.library_maintenance import LibraryHealthReport
 from app.services.mp3party_import import Mp3PartyCandidate
-from app.services.recommendation_analytics import RecommendationMetrics
 from app.services.soundcloud_import import SoundCloudCandidate
 from app.services.statistics import ListeningStatistics
 from app.services.watch_folder import WatchFolderConfig, WatchFolderReport
@@ -2182,7 +2181,6 @@ class ListeningStatisticsDialog(QDialog):
         parent: QWidget | None = None,
         *,
         track_catalog: tuple[Track, ...] | list[Track] = (),
-        recommendation_metrics: RecommendationMetrics | None = None,
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
@@ -2190,7 +2188,6 @@ class ListeningStatisticsDialog(QDialog):
         self.setWindowTitle("Listening habits")
         self.resize(940, 700)
         self._statistics = statistics
-        self._recommendation_metrics = recommendation_metrics
         self._track_catalog = {
             (track.title.casefold(), track.artist.casefold()): track
             for track in track_catalog
@@ -2245,53 +2242,6 @@ class ListeningStatisticsDialog(QDialog):
                 metric_row.addWidget(divider)
         total_layout.addLayout(metric_row)
         layout.addWidget(total_frame)
-
-        if recommendation_metrics is not None:
-            recommendation_heading = QLabel("Recommendation quality")
-            recommendation_heading.setObjectName("listeningTotalHeading")
-            layout.addWidget(recommendation_heading)
-
-            recommendation_frame = QFrame()
-            recommendation_frame.setObjectName("listeningTotal")
-            recommendation_layout = QHBoxLayout(recommendation_frame)
-            recommendation_layout.setContentsMargins(14, 6, 14, 7)
-            recommendation_layout.setSpacing(8)
-            recommendation_values = (
-                (str(recommendation_metrics.impressions), "impressions"),
-                (
-                    self._format_percent(
-                        recommendation_metrics.completion_rate
-                    ),
-                    "completion rate",
-                ),
-                (
-                    self._format_percent(recommendation_metrics.skip_rate),
-                    "skip rate",
-                ),
-                (
-                    self._format_percent(recommendation_metrics.recall_at_10),
-                    "Recall@10",
-                ),
-                (
-                    self._format_percent(recommendation_metrics.ndcg_at_10),
-                    "NDCG@10",
-                ),
-                (
-                    self._format_percent(
-                        recommendation_metrics.artist_diversity
-                    ),
-                    "artist diversity",
-                ),
-            )
-            for index, (value, label) in enumerate(recommendation_values):
-                self._add_metric(recommendation_layout, value, label)
-                if index < len(recommendation_values) - 1:
-                    divider = QFrame()
-                    divider.setObjectName("listeningTotalDivider")
-                    divider.setFrameShape(QFrame.Shape.VLine)
-                    divider.setFixedWidth(1)
-                    recommendation_layout.addWidget(divider)
-            layout.addWidget(recommendation_frame)
 
         # Keep the date range with the chart it describes instead of spending
         # a separate row above the dashboard.
@@ -2504,10 +2454,6 @@ class ListeningStatisticsDialog(QDialog):
         minutes = max(0, round(milliseconds / 60_000))
         hours, remainder = divmod(minutes, 60)
         return f"{hours}h {remainder:02d}m" if hours else f"{remainder}m"
-
-    @staticmethod
-    def _format_percent(value: float) -> str:
-        return f"{max(0.0, min(1.0, value)) * 100:.0f}%"
 
     def _change_chart_mode(self, index: int) -> None:
         self._chart_mode = "month" if index == 1 else "day"

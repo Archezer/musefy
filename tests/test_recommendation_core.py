@@ -120,6 +120,33 @@ def test_recommender_rejects_invalid_configuration():
         )
 
 
+def test_mood_recommender_honors_cancellation_before_scanning_store():
+    recommender = MoodRecommender(make_store())
+
+    with pytest.raises(
+        RuntimeError,
+        match="Recommendation calculation cancelled",
+    ):
+        recommender.recommend(
+            user_id="user-1",
+            target_mood=MOOD_PRESETS["dark"],
+            should_cancel=lambda: True,
+        )
+
+
+def test_my_wave_recommender_honors_cancellation_before_scanning_store():
+    recommender = MoodRecommender(make_store())
+
+    with pytest.raises(
+        RuntimeError,
+        match="Recommendation calculation cancelled",
+    ):
+        recommender.recommend_my_wave(
+            user_id="user-1",
+            should_cancel=lambda: True,
+        )
+
+
 def test_like_from_any_user_affects_global_popularity():
     store = make_store()
 

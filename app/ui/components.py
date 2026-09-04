@@ -21,7 +21,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QCursor,
-    QFont,
     QFontMetrics,
     QIcon,
     QLinearGradient,
@@ -1013,30 +1012,6 @@ JSON_ICON = """
  <path d="M9 5c-2 0-2 2-2 3.2v1.2c0 1.1-.58 1.6-1.5 1.6.92 0 1.5.5 1.5 1.6v1.2C7 15 7 17 9 17M15 5c2 0 2 2 2 3.2v1.2c0 1.1.58 1.6 1.5 1.6-.92 0-1.5.5-1.5 1.6v1.2c0 1.2 0 3.2-2 3.2" stroke="#C9C9CE" stroke-width="1.6" stroke-linecap="round"/>
 </svg>
 """
-LOG_ICON = """
-<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
- <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
- <rect x="5" y="4" width="14" height="16" rx="2.2" stroke="url(#accent)" stroke-width="1.35"/>
- <path d="M8 8h8M8 11.5h8M8 15h4" stroke="url(#accent)" stroke-width="1.25" stroke-linecap="round"/>
- <circle cx="16" cy="15" r="1.35" fill="url(#accent)"/>
-</svg>
-"""
-
-
-def playlist_badge_text(name: str) -> str:
-    """Create a compact, readable badge from a playlist name."""
-
-    words = [word for word in name.split() if word]
-    if not words:
-        return "♫"
-
-    if len(words) == 1:
-        letters = "".join(character for character in words[0] if character.isalnum())
-        return (letters[:2] or "♫").upper()
-
-    return "".join(word[0] for word in words[:2]).upper()
-
-
 def _cover_palette(pixmap: QPixmap) -> tuple[QColor, QColor, QColor]:
     """Extract three bright, distinct colors from a playlist cover."""
 
@@ -1406,17 +1381,6 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
             )
         painter.restore()
 
-        initials = playlist_badge_text(name)
-        font = painter.font()
-        font.setPointSize(22 if len(initials) > 1 else 24)
-        font.setWeight(QFont.Weight.DemiBold)
-        painter.setFont(font)
-        painter.setPen(QColor("#E4E9E7"))
-        painter.drawText(
-            pixmap.rect().adjusted(0, -2, 0, -2),
-            Qt.AlignmentFlag.AlignCenter,
-            initials,
-        )
         return pixmap
 
 

@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from app.domain.models import Recommendation, Track
 from app.domain.mood import MoodVector
 from app.domain.recommendations import (
@@ -38,6 +40,7 @@ class RecommendationService:
         limit: int = 10,
         context: RecommendationContext | None = None,
         target_mood: MoodVector | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[Recommendation]:
         normalized_user_id = user_id.strip()
 
@@ -60,19 +63,33 @@ class RecommendationService:
             if self.mood_recommender is None:
                 raise RuntimeError("Mood recommender is not configured.")
             assert context.target_mood is not None
+            if should_cancel is None:
+                return self.mood_recommender.recommend(
+                    user_id=normalized_user_id,
+                    target_mood=context.target_mood,
+                    limit=limit,
+                    mood_name=context.mood_name,
+                )
             return self.mood_recommender.recommend(
                 user_id=normalized_user_id,
                 target_mood=context.target_mood,
                 limit=limit,
                 mood_name=context.mood_name,
+                should_cancel=should_cancel,
             )
 
         if context.mode == RecommendationMode.MY_WAVE:
             if self.mood_recommender is None:
                 raise RuntimeError("Mood recommender is not configured.")
+            if should_cancel is None:
+                return self.mood_recommender.recommend_my_wave(
+                    user_id=normalized_user_id,
+                    limit=limit,
+                )
             return self.mood_recommender.recommend_my_wave(
                 user_id=normalized_user_id,
                 limit=limit,
+                should_cancel=should_cancel,
             )
 
         if context.mode == RecommendationMode.TRACK_RADIO:

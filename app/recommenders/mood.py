@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from math import exp
 from random import Random
@@ -69,17 +70,22 @@ class MoodRecommender:
         mood_name: str | None = None,
         *,
         now: datetime | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[Recommendation]:
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
 
+        self._check_cancelled(should_cancel)
         current_time = now or datetime.now(UTC)
         interactions = self._get_context_interactions(
             user_id=user_id,
             mood_name=mood_name,
+            should_cancel=should_cancel,
         )
+        self._check_cancelled(should_cancel)
         all_interactions = list(self.store.list_interactions())
         tracks = list(self.store.list_tracks())
+        self._check_cancelled(should_cancel)
         permanent_track_ids, _ = suppressed_track_ids(
             user_id,
             all_interactions,
@@ -93,43 +99,50 @@ class MoodRecommender:
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
             interactions,
+            should_cancel=should_cancel,
         )
 
-        candidates = [
-            track
-            for track in tracks
+        candidates = []
+        for index, track in enumerate(tracks):
+            if index % 64 == 0:
+                self._check_cancelled(should_cancel)
             if (
                 track.mood is not None
                 and track.id not in permanent_track_ids
                 and track.id not in temporary_track_ids
                 and track.id not in cooldown_track_ids
-            )
-        ]
+            ):
+                candidates.append(track)
 
         if not candidates:
-            candidates = [
-                track
-                for track in tracks
+            candidates = []
+            for index, track in enumerate(tracks):
+                if index % 64 == 0:
+                    self._check_cancelled(should_cancel)
                 if (
                     track.mood is not None
                     and track.id not in permanent_track_ids
                     and track.id not in temporary_track_ids
-                )
-            ]
+                ):
+                    candidates.append(track)
 
         feedback_scores = self._get_feedback_scores(
             user_id=user_id,
             interactions=interactions,
+            should_cancel=should_cancel,
         )
 
-        scored_tracks = [
-            (
-                track,
-                self._similarity(track.mood, target_mood),
-                feedback_scores.get(track.id, 0.0),
+        scored_tracks = []
+        for index, track in enumerate(candidates):
+            if index % 32 == 0:
+                self._check_cancelled(should_cancel)
+            scored_tracks.append(
+                (
+                    track,
+                    self._similarity(track.mood, target_mood),
+                    feedback_scores.get(track.id, 0.0),
+                )
             )
-            for track in candidates
-        ]
         scored_tracks.sort(
             key=lambda item: (
                 -(item[1] + item[2]),
@@ -171,6 +184,7 @@ class MoodRecommender:
         limit: int = 10,
         *,
         now: datetime | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[Recommendation]:
         """Return a personalized mood/content wave for one user.
 
@@ -183,14 +197,17 @@ class MoodRecommender:
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
 
+        self._check_cancelled(should_cancel)
         current_time = now or datetime.now(UTC)
         all_interactions = list(self.store.list_interactions())
+        self._check_cancelled(should_cancel)
         user_interactions = [
             interaction
             for interaction in all_interactions
             if interaction.user_id == user_id
         ]
         tracks = list(self.store.list_tracks())
+        self._check_cancelled(should_cancel)
         permanent_track_ids, temporary_track_ids = suppressed_track_ids(
             user_id,
             all_interactions,
@@ -199,6 +216,7 @@ class MoodRecommender:
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
             user_interactions,
+            should_cancel=should_cancel,
         )
         excluded_track_ids = (
             permanent_track_ids
@@ -210,20 +228,22 @@ class MoodRecommender:
             for interaction in user_interactions
             if interaction.interaction_type in MY_WAVE_POSITIVE_TYPES
         }
-        candidates = [
-            track
-            for track in tracks
+        candidates = []
+        for index, track in enumerate(tracks):
+            if index % 64 == 0:
+                self._check_cancelled(should_cancel)
             if (
                 track.id not in excluded_track_ids
                 and track.id not in positive_track_ids
-            )
-        ]
+            ):
+                candidates.append(track)
         if not candidates:
-            candidates = [
-                track
-                for track in tracks
-                if track.id not in permanent_track_ids
-            ]
+            candidates = []
+            for index, track in enumerate(tracks):
+                if index % 64 == 0:
+                    self._check_cancelled(should_cancel)
+                if track.id not in permanent_track_ids:
+                    candidates.append(track)
 
         tracks_by_id = {track.id: track for track in tracks}
         profile_mood_valence = 0.0
@@ -233,7 +253,9 @@ class MoodRecommender:
         artist_weights: dict[str, float] = {}
         genre_weights: dict[str, float] = {}
 
-        for interaction in user_interactions:
+        for index, interaction in enumerate(user_interactions):
+            if index % 32 == 0:
+                self._check_cancelled(should_cancel)
             if interaction.interaction_type not in MY_WAVE_POSITIVE_TYPES:
                 continue
             weight = max(
@@ -286,7 +308,9 @@ class MoodRecommender:
         max_genre_weight = max(genre_weights.values(), default=0.0)
 
         scored_tracks: list[tuple[Track, float, float, float]] = []
-        for track in candidates:
+        for index, track in enumerate(candidates):
+            if index % 32 == 0:
+                self._check_cancelled(should_cancel)
             mood_similarity = (
                 self._similarity(track.mood, profile_mood)
                 if profile_mood is not None
@@ -294,9 +318,13 @@ class MoodRecommender:
             )
             embedding_similarity = 0.0
             if track.track_embedding and profile_embeddings:
-                embedding_similarity = max(
-                    0.0,
-                    max(
+                embedding_scores: list[float] = []
+                for profile_index, (embedding, _) in enumerate(
+                    profile_embeddings
+                ):
+                    if profile_index % 32 == 0:
+                        self._check_cancelled(should_cancel)
+                    embedding_scores.append(
                         (
                             cosine_similarity(
                                 embedding,
@@ -305,8 +333,10 @@ class MoodRecommender:
                             + 1.0
                         )
                         / 2.0
-                        for embedding, _ in profile_embeddings
-                    ),
+                    )
+                embedding_similarity = max(
+                    0.0,
+                    max(embedding_scores, default=0.0),
                 )
 
             artist_affinity = (
@@ -377,10 +407,19 @@ class MoodRecommender:
             if track.id in selected_ids
         ]
 
+    @staticmethod
+    def _check_cancelled(
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError("Recommendation calculation cancelled")
+
     def _get_context_interactions(
         self,
         user_id: str,
         mood_name: str | None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[Interaction]:
         normalized_mood_name = (
             mood_name.strip().casefold()
@@ -388,23 +427,28 @@ class MoodRecommender:
             else None
         )
 
-        return [
-            interaction
-            for interaction in self.store.list_interactions()
+        interactions: list[Interaction] = []
+        for index, interaction in enumerate(self.store.list_interactions()):
+            if index % 64 == 0:
+                self._check_cancelled(should_cancel)
             if (
                 interaction.user_id == user_id
                 and interaction.mood_context == normalized_mood_name
-            )
-        ]
+            ):
+                interactions.append(interaction)
+        return interactions
 
     @staticmethod
     def _get_feedback_scores(
         user_id: str,
         interactions: list[Interaction],
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, float]:
         feedback_scores: dict[str, float] = {}
 
-        for interaction in interactions:
+        for index, interaction in enumerate(interactions):
+            if index % 64 == 0:
+                MoodRecommender._check_cancelled(should_cancel)
             if interaction.user_id != user_id:
                 continue
 
@@ -507,19 +551,21 @@ class MoodRecommender:
         self,
         user_id: str,
         interactions: list[Interaction],
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> set[str]:
         if self.replay_cooldown == 0:
             return set()
 
-        playback_history = [
-            interaction
-            for interaction in interactions
+        playback_history: list[Interaction] = []
+        for index, interaction in enumerate(interactions):
+            if index % 64 == 0:
+                self._check_cancelled(should_cancel)
             if (
                 interaction.user_id == user_id
-                and interaction.interaction_type
-                in PLAYBACK_SESSION_TYPES
-            )
-        ]
+                and interaction.interaction_type in PLAYBACK_SESSION_TYPES
+            ):
+                playback_history.append(interaction)
         playback_history.sort(
             key=lambda interaction: interaction.created_at
         )

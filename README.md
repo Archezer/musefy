@@ -72,12 +72,16 @@ Mood sessions prioritise mood features rather than the global library score.
 Feedback inside a mood session is stored separately, so liking a calm study
 track does not make it dominate the general library feed. The available profiles
 include melancholic, calm, happy, energetic, dark, romantic, focus and party.
+Mood/My Wave scoring and session refill run in a background worker, with
+cooperative cancellation when the user starts another queue or closes the app.
 
 The **My Wave** entry in the Mood card builds a local profile from positive
 listening signals, combining the user's mood centroid with audio similarity and
 artist/genre affinity. Its recommendation impressions and subsequent playback
 events are stored locally, and the Listening statistics window reports
-completion rate, skip rate, Recall@10, NDCG@10 and artist diversity.
+the regular listening dashboard while the recommendation metrics remain
+available locally for analysis (completion rate, skip rate, Recall@10,
+NDCG@10 and artist diversity).
 
 ### Queue and smart shuffle
 
@@ -252,7 +256,8 @@ the database, and schedules analysis in the background.
   `https://www.youtube.com/playlist?list=...` and press **Load** to retrieve
   its items before downloading selected tracks.
 
-The importer requests audio-only formats and prefers M4A/AAC where available;
+The importer requests the best available audio-only stream. WebM/Opus sources
+are remuxed to Ogg Opus without re-encoding, so the source quality is retained;
 it does not intentionally save the full video. A YouTube video already present
 in the library is recognised by source ID, so it is not duplicated. If the
 database record exists but the local audio file was removed, importing it again

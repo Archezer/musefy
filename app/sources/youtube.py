@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,10 +24,10 @@ SUPPORTED_DOWNLOAD_EXTENSIONS = {
     ".wav",
 }
 
-YOUTUBE_AUDIO_FORMAT = (
-    "bestaudio[ext=m4a][vcodec=none]/"
-    "bestaudio[acodec*=mp4a][vcodec=none]"
-)
+# Prefer the best audio-only stream regardless of codec.  YouTube commonly
+# serves its highest-bitrate audio as Opus in a WebM container; that stream is
+# remuxed to Ogg Opus below without re-encoding.
+YOUTUBE_AUDIO_FORMAT = "bestaudio[vcodec=none]/bestaudio"
 YOUTUBE_SEARCH_TIMEOUT_SECONDS = 20
 
 DEFAULT_COOKIES_FILE = DATA_DIR / "youtube_cookies.txt"
@@ -463,8 +464,11 @@ class YouTubeSearchProvider:
             )
             if (
                 path.is_file()
-                and path.suffix.lower()
-                in SUPPORTED_DOWNLOAD_EXTENSIONS
+                and (
+                    path.suffix.lower()
+                    in SUPPORTED_DOWNLOAD_EXTENSIONS
+                    or path.suffix.lower() == ".webm"
+                )
             )
         ]
 
@@ -473,7 +477,85 @@ class YouTubeSearchProvider:
                 "Downloaded format is not supported."
             )
 
-        return downloaded_files[0]
+        downloaded_path = downloaded_files[0]
+        if downloaded_path.suffix.lower() == ".webm":
+            return _remux_webm_opus(
+                downloaded_path,
+                output_dir / f"{candidate.video_id}.opus",
+            )
+
+        return downloaded_path
+
+
+def _find_ffmpeg() -> str | None:
+    """Locate FFmpeg, including the Windows WinGet installation used by Musefy."""
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        return ffmpeg_path
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+
+    candidates = sorted(
+        Path(local_app_data).glob(
+            "Microsoft/WinGet/Packages/"
+            "Gyan.FFmpeg.Shared_*/*/bin/ffmpeg.exe"
+        )
+    )
+    return str(candidates[-1]) if candidates else None
+
+
+def _remux_webm_opus(
+    source_path: Path,
+    destination_path: Path,
+) -> Path:
+    """Convert a WebM container to Ogg Opus while copying the audio stream."""
+
+    ffmpeg_path = _find_ffmpeg()
+    if ffmpeg_path is None:
+        raise RuntimeError(
+            "FFmpeg is required to keep the best YouTube Opus quality. "
+            "Install FFmpeg and try again."
+        )
+
+    destination_path.unlink(missing_ok=True)
+    command = [
+        ffmpeg_path,
+        "-nostdin",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "copy",
+        str(destination_path),
+    ]
+    creation_flags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if os.name == "nt"
+        else 0
+    )
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        creationflags=creation_flags,
+    )
+    if result.returncode != 0 or not destination_path.is_file():
+        error = result.stderr.strip()
+        raise RuntimeError(
+            "Could not remux the best YouTube audio to Opus."
+            + (f" {error}" if error else "")
+        )
+
+    source_path.unlink(missing_ok=True)
+    return destination_path
 
 
 _DNS_FALLBACK_LOCK = RLock()

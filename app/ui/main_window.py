@@ -70,7 +70,10 @@ from app.domain.models import (
     Track,
 )
 from app.domain.mood import MOOD_PRESETS
-from app.domain.recommendations import RecommendationContext
+from app.domain.recommendations import (
+    RecommendationContext,
+    RecommendationMode,
+)
 from app.ingestion.audio import (
     SUPPORTED_AUDIO_EXTENSIONS,
     AudioIngestionService,
@@ -137,7 +140,6 @@ from app.ui.components import (
     JSON_ICON,
     LIBRARY_ICON,
     LOCAL_FILE_ICON,
-    LOG_ICON,
     MAP_ICON,
     NEXT_ICON,
     PAUSE_ICON,
@@ -423,9 +425,12 @@ class RecommendationTask(QRunnable):
         generation: int,
         *,
         batch_size: int = 5,
+        cancellable_fetcher: Callable[[Callable[[], bool]], object]
+        | None = None,
     ) -> None:
         super().__init__()
         self.fetcher = fetcher
+        self.cancellable_fetcher = cancellable_fetcher
         self.generation = generation
         self.batch_size = max(1, batch_size)
         self.cancel_requested = Event()
@@ -434,13 +439,28 @@ class RecommendationTask(QRunnable):
     def cancel(self) -> None:
         self.cancel_requested.set()
 
+    def is_cancelled(self) -> bool:
+        """Return whether the producer should stop expensive work."""
+
+        return self.cancel_requested.is_set()
+
     def run(self) -> None:
         if self.cancel_requested.is_set():
             return
 
         try:
-            recommendations = list(self.fetcher())
+            if self.cancellable_fetcher is not None:
+                recommendations = list(
+                    self.cancellable_fetcher(self.is_cancelled)
+                )
+            else:
+                recommendations = list(self.fetcher())
         except (OSError, RuntimeError, TypeError, ValueError) as error:
+            # A cancellable recommender exits through RuntimeError once it
+            # observes the flag.  Cancellation is an expected outcome, not a
+            # user-visible failure.
+            if self.cancel_requested.is_set():
+                return
             self.signals.error_occurred.emit(
                 self.generation,
                 str(error) or error.__class__.__name__,
@@ -528,6 +548,13 @@ class MainWindow(QMainWindow):
         self._library_health_thread: LibraryHealthTaskThread | None = None
         self._recommendation_task: RecommendationTask | None = None
         self._recommendation_generation = 0
+        self._mood_session_task: RecommendationTask | None = None
+        self._mood_session_generation = 0
+        self._mood_session_result_generation: int | None = None
+        self._mood_session_pending_name: str | None = None
+        self._mood_refill_task: RecommendationTask | None = None
+        self._mood_refill_generation = 0
+        self._mood_refill_inflight = False
         self._radio_recommendation_task: RecommendationTask | None = None
         self._radio_recommendation_generation = 0
         self._radio_recommendation_inflight = False
@@ -602,6 +629,8 @@ class MainWindow(QMainWindow):
         # sidebar suggestions progress independently.
         self._recommendation_pool = QThreadPool(self)
         self._recommendation_pool.setMaxThreadCount(1)
+        self._mood_recommendation_pool = QThreadPool(self)
+        self._mood_recommendation_pool.setMaxThreadCount(1)
         self._radio_recommendation_pool = QThreadPool(self)
         self._radio_recommendation_pool.setMaxThreadCount(1)
         self._model_idle_timer = QTimer(self)
@@ -808,7 +837,6 @@ class MainWindow(QMainWindow):
             "Import log",
             self._show_import_log,
         )
-        import_log_action.setIcon(svg_icon(LOG_ICON))
         library_menu.addSeparator()
         library_menu.addAction("Refresh", self._refresh_content)
         library_button.setMenu(library_menu)
@@ -2497,14 +2525,30 @@ class MainWindow(QMainWindow):
         self.recommendation_list.clear()
         self.recommendation_list.addItem("Loading recommendations…")
 
+        fetcher = lambda: self.recommendation_service.get_recommendations(
+            user_id=self.user_id,
+            limit=10,
+            context=context,
+        )
+        cancellable_fetcher = None
+        if context.mode in {
+            RecommendationMode.MOOD,
+            RecommendationMode.MY_WAVE,
+        }:
+            cancellable_fetcher = (
+                lambda should_cancel: self.recommendation_service.get_recommendations(
+                    user_id=self.user_id,
+                    limit=10,
+                    context=context,
+                    should_cancel=should_cancel,
+                )
+            )
+
         task = RecommendationTask(
-            lambda: self.recommendation_service.get_recommendations(
-                user_id=self.user_id,
-                limit=10,
-                context=context,
-            ),
+            fetcher,
             generation,
             batch_size=5,
+            cancellable_fetcher=cancellable_fetcher,
         )
         task.signals.batch_ready.connect(
             self._handle_recommendation_batch
@@ -2602,49 +2646,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        target_mood = MOOD_PRESETS[self.selected_mood_name]
-        recommendations = self.recommendation_service.get_recommendations(
-            user_id=self.user_id,
-            limit=30,
+        mood_name = self.selected_mood_name
+        self._schedule_mood_session(
             context=RecommendationContext.mood(
-                target_mood,
-                mood_name=self.selected_mood_name,
+                MOOD_PRESETS[mood_name],
+                mood_name=mood_name,
             ),
-        )
-        track_ids = [
-            recommendation.track.id
-            for recommendation in recommendations
-            if (
-                recommendation.track.mood is not None
-                and
-                recommendation.track.local_path
-                and Path(recommendation.track.local_path).exists()
-            )
-        ]
-
-        if not track_ids:
-            QMessageBox.information(
-                self,
-                "Session unavailable",
-                "No analyzed local tracks match this mood yet.",
-            )
-            return
-
-        self._record_recommendation_impressions(
-            tuple(
-                recommendation
-                for recommendation in recommendations
-                if recommendation.track.id in track_ids
-            )
-        )
-        self.session_mood_name = self.selected_mood_name
-        self.playback_queue_service.start(
-            track_ids,
-            mode=QueueMode.SESSION,
-        )
-        self._play_current_queue_track()
-        self.statusBar().showMessage(
-            f"Now session started: {self.selected_mood_name.title()}"
+            session_name=mood_name,
+            unavailable_message="No analyzed local tracks match this mood yet.",
         )
 
     def _start_mood_session_from_card(self, mood_name: str) -> None:
@@ -2657,33 +2666,100 @@ class MainWindow(QMainWindow):
     def _start_my_wave_session(self) -> None:
         """Start a personalized mood session based on listening history."""
 
-        try:
-            recommendations = self.recommendation_service.get_recommendations(
-                user_id=self.user_id,
-                limit=30,
-                context=RecommendationContext.my_wave(),
+        self._schedule_mood_session(
+            context=RecommendationContext.my_wave(),
+            session_name=MY_WAVE_SESSION_NAME,
+            unavailable_message=(
+                "Analyze or add a few local tracks to build your wave."
+            ),
+        )
+
+    def _schedule_mood_session(
+        self,
+        *,
+        context: RecommendationContext,
+        session_name: str,
+        unavailable_message: str,
+    ) -> None:
+        """Calculate and start a Mood/My Wave session away from the GUI thread."""
+
+        if self._mood_session_task is not None:
+            self._mood_session_task.cancel()
+        self._cancel_mood_refill()
+
+        self._mood_session_generation += 1
+        generation = self._mood_session_generation
+        self._mood_session_result_generation = None
+        self._mood_session_pending_name = session_name
+
+        task = RecommendationTask(
+            lambda: (),
+            generation,
+            batch_size=30,
+            cancellable_fetcher=lambda should_cancel: (
+                self.recommendation_service.get_recommendations(
+                    user_id=self.user_id,
+                    limit=30,
+                    context=context,
+                    should_cancel=should_cancel,
+                )
+            ),
+        )
+        task.signals.batch_ready.connect(
+            lambda task_generation, batch, name=session_name: (
+                self._handle_mood_session_batch(
+                    task_generation,
+                    name,
+                    unavailable_message,
+                    batch,
+                )
             )
-        except (RuntimeError, ValueError) as error:
-            QMessageBox.warning(
-                self,
-                "My Wave unavailable",
-                str(error),
-            )
+        )
+        task.signals.finished.connect(self._finish_mood_session_loading)
+        task.signals.error_occurred.connect(
+            self._handle_mood_session_error
+        )
+        self._mood_session_task = task
+        self.statusBar().showMessage(
+            "Preparing My Wave…"
+            if session_name == MY_WAVE_SESSION_NAME
+            else f"Preparing {session_name.title()} session…"
+        )
+        self._mood_recommendation_pool.start(task)
+
+    def _handle_mood_session_batch(
+        self,
+        generation: int,
+        session_name: str,
+        unavailable_message: str,
+        batch: object,
+    ) -> None:
+        if generation != self._mood_session_generation:
             return
 
+        self._mood_session_result_generation = generation
+        recommendations = tuple(
+            recommendation
+            for recommendation in batch
+            if isinstance(recommendation, Recommendation)
+        )
         track_ids = [
             recommendation.track.id
             for recommendation in recommendations
             if (
-                recommendation.track.local_path
+                (
+                    session_name == MY_WAVE_SESSION_NAME
+                    or recommendation.track.mood is not None
+                )
+                and recommendation.track.local_path
                 and Path(recommendation.track.local_path).exists()
             )
         ]
         if not track_ids:
             QMessageBox.information(
                 self,
-                "My Wave unavailable",
-                "Analyze or add a few local tracks to build your wave.",
+                "Session unavailable",
+                unavailable_message,
             )
             return
 
@@ -2694,14 +2770,67 @@ class MainWindow(QMainWindow):
                 if recommendation.track.id in track_ids
             )
         )
-        self.selected_mood_name = None
-        self.session_mood_name = MY_WAVE_SESSION_NAME
+        self.selected_mood_name = (
+            None
+            if session_name == MY_WAVE_SESSION_NAME
+            else session_name
+        )
+        self.session_mood_name = session_name
         self.playback_queue_service.start(
             track_ids,
             mode=QueueMode.SESSION,
         )
         self._play_current_queue_track()
-        self.statusBar().showMessage("My Wave session started")
+        self.statusBar().showMessage(
+            "My Wave session started"
+            if session_name == MY_WAVE_SESSION_NAME
+            else f"Now session started: {session_name.title()}"
+        )
+
+    def _finish_mood_session_loading(self, generation: int) -> None:
+        if generation != self._mood_session_generation:
+            return
+
+        if self._mood_session_result_generation != generation:
+            session_name = self._mood_session_pending_name
+            title = (
+                "My Wave unavailable"
+                if session_name == MY_WAVE_SESSION_NAME
+                else "Session unavailable"
+            )
+            message = (
+                "Analyze or add a few local tracks to build your wave."
+                if session_name == MY_WAVE_SESSION_NAME
+                else "No analyzed local tracks match this mood yet."
+            )
+            QMessageBox.information(self, title, message)
+
+        self._mood_session_task = None
+        self._mood_session_pending_name = None
+        self._mood_session_result_generation = None
+        if self.session_mood_name is not None:
+            self._load_queue()
+
+    def _handle_mood_session_error(
+        self,
+        generation: int,
+        message: str,
+    ) -> None:
+        if generation != self._mood_session_generation:
+            return
+
+        session_name = self._mood_session_pending_name
+        self._mood_session_task = None
+        self._mood_session_pending_name = None
+        self._mood_session_result_generation = None
+        if message:
+            QMessageBox.warning(
+                self,
+                "My Wave unavailable"
+                if session_name == MY_WAVE_SESSION_NAME
+                else "Session unavailable",
+                message,
+            )
 
     def _cycle_playback_mode(self) -> None:
         """Cycle sequential, shuffle and smart-shuffle library playback."""
@@ -2831,6 +2960,7 @@ class MainWindow(QMainWindow):
         if track is None:
             return
 
+        self._cancel_mood_session()
         manual_track_ids = self._manual_queue_snapshot()
         if self._track_radio_enabled:
             self._start_recommendation_queue(
@@ -2968,6 +3098,7 @@ class MainWindow(QMainWindow):
         if track is None:
             return
 
+        self._cancel_mood_session()
         if manual_track_ids is None:
             manual_track_ids = self._manual_queue_snapshot()
 
@@ -3185,7 +3316,7 @@ class MainWindow(QMainWindow):
         upcoming_count = len(
             self.playback_queue_service.upcoming_track_ids()
         )
-        if upcoming_count > 5:
+        if upcoming_count > 5 or self._mood_refill_inflight:
             return
 
         if self.session_mood_name == MY_WAVE_SESSION_NAME:
@@ -3196,18 +3327,51 @@ class MainWindow(QMainWindow):
                 target_mood,
                 mood_name=self.session_mood_name,
             )
-        recommendations = self.recommendation_service.get_recommendations(
-            user_id=self.user_id,
-            limit=10,
-            context=context,
+        self._mood_refill_generation += 1
+        generation = self._mood_refill_generation
+        task = RecommendationTask(
+            lambda: (),
+            generation,
+            batch_size=10,
+            cancellable_fetcher=lambda should_cancel: (
+                self.recommendation_service.get_recommendations(
+                    user_id=self.user_id,
+                    limit=10,
+                    context=context,
+                    should_cancel=should_cancel,
+                )
+            ),
         )
+        task.signals.batch_ready.connect(
+            self._handle_mood_refill_batch
+        )
+        task.signals.finished.connect(self._finish_mood_refill)
+        task.signals.error_occurred.connect(self._handle_mood_refill_error)
+        self._mood_refill_task = task
+        self._mood_refill_inflight = True
+        self._mood_recommendation_pool.start(task)
+
+    def _handle_mood_refill_batch(
+        self,
+        generation: int,
+        batch: object,
+    ) -> None:
+        if generation != self._mood_refill_generation:
+            return
+
+        queue = self.playback_queue_service.queue
+        if queue is None or queue.mode != QueueMode.SESSION:
+            return
+
         existing_ids = {
             queue.current_track_id,
             *self.playback_queue_service.upcoming_track_ids(),
         }
 
         shown_recommendations: list[Recommendation] = []
-        for recommendation in recommendations:
+        for recommendation in batch:
+            if not isinstance(recommendation, Recommendation):
+                continue
             track = recommendation.track
             if track.id in existing_ids:
                 continue
@@ -3219,6 +3383,44 @@ class MainWindow(QMainWindow):
             shown_recommendations.append(recommendation)
 
         self._record_recommendation_impressions(shown_recommendations)
+
+    def _finish_mood_refill(self, generation: int) -> None:
+        if generation != self._mood_refill_generation:
+            return
+
+        self._mood_refill_task = None
+        self._mood_refill_inflight = False
+
+    def _handle_mood_refill_error(
+        self,
+        generation: int,
+        message: str,
+    ) -> None:
+        if generation != self._mood_refill_generation:
+            return
+
+        self._mood_refill_task = None
+        self._mood_refill_inflight = False
+        if message:
+            self.statusBar().showMessage(
+                f"Mood session refill unavailable: {message}"
+            )
+
+    def _cancel_mood_refill(self) -> None:
+        self._mood_refill_generation += 1
+        if self._mood_refill_task is not None:
+            self._mood_refill_task.cancel()
+        self._mood_refill_task = None
+        self._mood_refill_inflight = False
+
+    def _cancel_mood_session(self) -> None:
+        self._mood_session_generation += 1
+        if self._mood_session_task is not None:
+            self._mood_session_task.cancel()
+        self._mood_session_task = None
+        self._mood_session_pending_name = None
+        self._mood_session_result_generation = None
+        self._cancel_mood_refill()
 
     def _load_queue(self) -> None:
         queue = self.playback_queue_service.queue
@@ -4124,6 +4326,7 @@ class MainWindow(QMainWindow):
         if playlist is None:
             return
 
+        self._cancel_mood_session()
         tracks = self.playlist_management_service.get_playlist_tracks(
             playlist.id
         )
@@ -4721,9 +4924,6 @@ class MainWindow(QMainWindow):
 
         try:
             statistics = self.statistics_service.build(self.user_id)
-            recommendation_metrics = self.recommendation_analytics_service.build(
-                self.user_id
-            )
         except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.warning(
                 self,
@@ -4740,7 +4940,6 @@ class MainWindow(QMainWindow):
                 statistics,
                 self,
                 track_catalog=track_catalog,
-                recommendation_metrics=recommendation_metrics,
             )
         )
 
@@ -5834,12 +6033,15 @@ class MainWindow(QMainWindow):
 
         if self._recommendation_task is not None:
             self._recommendation_task.cancel()
+        self._cancel_mood_session()
         self._cancel_radio_recommendations()
         self._genre_analysis_pool.clear()
         self._track_batch_pool.clear()
         self._recommendation_pool.clear()
+        self._mood_recommendation_pool.clear()
         self._radio_recommendation_pool.clear()
         self._recommendation_pool.waitForDone(3_000)
+        self._mood_recommendation_pool.waitForDone(3_000)
         self._radio_recommendation_pool.waitForDone(3_000)
         self.media_player.stop()
         super().closeEvent(event)
