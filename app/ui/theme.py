@@ -95,6 +95,30 @@ QToolButton#librarySearchClear {
 QToolButton#librarySearchClear:hover {
     background-color: rgba(255, 255, 255, 22);
 }
+QDialog {
+    background-color: #111416;
+    border: 1px solid rgba(181, 251, 224, 42);
+    border-radius: 18px;
+}
+QDialog QLabel {
+    background: transparent;
+}
+QDialog QLineEdit {
+    background-color: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 28);
+    border-radius: 9px;
+    padding: 7px 9px;
+    selection-background-color: #4D9F8A;
+    selection-color: #07100F;
+}
+QDialog QLineEdit:focus {
+    border-color: rgba(181, 251, 224, 112);
+}
+QDialog QListWidget {
+    background-color: rgba(8, 11, 13, 165);
+    border-color: rgba(181, 251, 224, 34);
+    border-radius: 12px;
+}
 QFrame#spotifySyncRow, QFrame#spotifySettingsSection {
     background-color: rgba(255, 255, 255, 8);
     border: 1px solid rgba(255, 255, 255, 22);

@@ -24,6 +24,7 @@ from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
+from app.ui.dialog_style import prepare_dialog
 
 SearchCandidate = (
     YouTubeCandidate
@@ -163,6 +164,7 @@ class SpotifySettingsDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        prepare_dialog(self)
         self.setObjectName("spotifySettingsDialog")
         self.setWindowTitle("Spotify settings")
         self.resize(500, 300)
@@ -224,7 +226,7 @@ class SpotifySettingsDialog(QDialog):
         sync_description.setWordWrap(True)
         sync_layout.addWidget(sync_description)
 
-        self.sync_now_button = QPushButton("Sync all")
+        self.sync_now_button = QPushButton("Sync All")
         self.sync_now_button.setObjectName("spotifySyncAllButton")
         self.sync_now_button.setToolTip(
             "Read all saved Spotify tracks now."
@@ -301,6 +303,7 @@ class TrackMetadataDialog(QDialog):
         artist: str | None = None,
     ) -> None:
         super().__init__(parent)
+        prepare_dialog(self)
 
         self.setWindowTitle("Track metadata")
 
@@ -395,6 +398,7 @@ class YouTubeSearchDialog(QDialog):
         spotify_sync_enabled: bool = False,
     ) -> None:
         super().__init__(parent)
+        prepare_dialog(self)
 
         self._busy = False
         self._playlist_mode = False
@@ -921,14 +925,24 @@ class YouTubeSearchDialog(QDialog):
 
 
 class PlaylistImportResultDialog(QDialog):
+    """Show per-track failures and offer alternate source searches."""
+
     retry_requested = Signal(object)
+    youtube_search_requested = Signal()
+    soundcloud_search_requested = Signal()
+    mp3party_search_requested = Signal()
+    # Compatibility signal retained for integrations using the old dialog
+    # API.  It is emitted together with ``youtube_search_requested``.
     search_requested = Signal()
 
     def __init__(
         self,
         imported_count: int,
         failed: tuple[
-            tuple[YouTubeCandidate | SoundCloudCandidate, str],
+            tuple[
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
+                str,
+            ],
             ...,
         ],
         parent: QWidget | None = None,
@@ -938,6 +952,10 @@ class PlaylistImportResultDialog(QDialog):
         allow_search: bool = True,
     ) -> None:
         super().__init__(parent)
+        prepare_dialog(self)
+        # Kept for backwards compatibility; alternate-source actions are now
+        # always shown together.
+        _ = allow_search
 
         self.failed = failed
         self.unmatched = unmatched
@@ -955,6 +973,9 @@ class PlaylistImportResultDialog(QDialog):
 
         layout.addWidget(QLabel("Not imported:"))
         failed_tracks = QListWidget()
+        failed_tracks.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
 
         for candidate, error in failed:
             failed_tracks.addItem(
@@ -972,20 +993,31 @@ class PlaylistImportResultDialog(QDialog):
         buttons_layout = QHBoxLayout()
 
         failed_count = len(failed) + len(unmatched)
-        if allow_search:
-            search_button = QPushButton(
-                f"Search failed tracks again ({failed_count})"
-            )
-            search_button.setEnabled(bool(failed_count))
-            search_button.clicked.connect(self._request_search)
-            buttons_layout.addWidget(search_button)
-
-        retry_button = QPushButton(
-            f"Try failed downloads again ({len(failed)})"
+        # Keep the labels short and consistent: each action starts with a
+        # capital letter and names the source it will search.
+        youtube_button = QPushButton("Try YouTube Again")
+        youtube_button.setToolTip(
+            f"Search YouTube again for {failed_count} failed track(s)."
         )
-        retry_button.setEnabled(bool(failed))
-        retry_button.clicked.connect(self._request_retry)
-        buttons_layout.addWidget(retry_button)
+        youtube_button.setEnabled(bool(failed_count))
+        youtube_button.clicked.connect(self._request_youtube_search)
+        buttons_layout.addWidget(youtube_button)
+
+        soundcloud_button = QPushButton("Try SoundCloud")
+        soundcloud_button.setToolTip(
+            f"Search SoundCloud for {failed_count} failed track(s)."
+        )
+        soundcloud_button.setEnabled(bool(failed_count))
+        soundcloud_button.clicked.connect(self._request_soundcloud_search)
+        buttons_layout.addWidget(soundcloud_button)
+
+        mp3party_button = QPushButton("Try MP3Party")
+        mp3party_button.setToolTip(
+            f"Search MP3Party for {failed_count} failed track(s)."
+        )
+        mp3party_button.setEnabled(bool(failed_count))
+        mp3party_button.clicked.connect(self._request_mp3party_search)
+        buttons_layout.addWidget(mp3party_button)
         buttons_layout.addStretch()
 
         close_button = QPushButton("Close")
@@ -1000,5 +1032,17 @@ class PlaylistImportResultDialog(QDialog):
         self.accept()
 
     def _request_search(self) -> None:
+        self._request_youtube_search()
+
+    def _request_youtube_search(self) -> None:
+        self.youtube_search_requested.emit()
         self.search_requested.emit()
+        self.accept()
+
+    def _request_soundcloud_search(self) -> None:
+        self.soundcloud_search_requested.emit()
+        self.accept()
+
+    def _request_mp3party_search(self) -> None:
+        self.mp3party_search_requested.emit()
         self.accept()

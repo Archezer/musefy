@@ -2,6 +2,7 @@ import os
 import random
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 
@@ -82,6 +83,7 @@ from app.services.interactions import InteractionService
 from app.services.mp3party_import import (
     Mp3PartyCandidate,
     Mp3PartyImportService,
+    Mp3PartyPlaylistImportResult,
 )
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
@@ -181,6 +183,19 @@ LIBRARY_PLAYBACK_MODES = (
     QueueMode.SMART_SHUFFLE,
 )
 MAP_MODES = ("background", "focus", "hidden")
+
+
+@dataclass(frozen=True)
+class AlternativePlaylistSearchResult:
+    """Candidates returned while searching failed playlist tracks elsewhere."""
+
+    provider: str
+    candidates: tuple[
+        YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
+        ...,
+    ]
+    failed: tuple[tuple[SpotifyTrack, str], ...]
+    failed_positions: tuple[int, ...]
 
 
 class YouTubeTaskThread(QThread):
@@ -3704,7 +3719,7 @@ class MainWindow(QMainWindow):
             )
         )
 
-        dialog.exec()
+        self._show_auxiliary_dialog(dialog)
 
     def _start_soundcloud_download(
         self,
@@ -3938,7 +3953,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._start_youtube_thread(thread, dialog)
-        dialog.exec()
+        self._show_auxiliary_dialog(dialog)
 
     def _handle_exported_playlist_search_result(
         self,
@@ -4080,6 +4095,13 @@ class MainWindow(QMainWindow):
             self._start_soundcloud_playlist_import(dialog, candidates)
             return
 
+        if isinstance(candidates, list) and candidates and all(
+            isinstance(candidate, Mp3PartyCandidate)
+            for candidate in candidates
+        ):
+            self._start_mp3party_playlist_import(dialog, candidates)
+            return
+
         self._start_youtube_playlist_import(dialog, candidates)
 
     def _start_soundcloud_playlist_import(
@@ -4149,6 +4171,74 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _start_mp3party_playlist_import(
+        self,
+        dialog: YouTubeSearchDialog,
+        candidates: object,
+    ) -> None:
+        """Download selected MP3Party candidates with playlist progress."""
+
+        if self._youtube_thread is not None:
+            return
+
+        if not isinstance(candidates, list):
+            self._handle_youtube_error(
+                dialog,
+                "MP3Party playlist selection is invalid.",
+            )
+            return
+
+        selected_candidates = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, Mp3PartyCandidate)
+        ]
+        if not selected_candidates:
+            return
+
+        self._playlist_import_active = True
+        dialog.set_busy(
+            True,
+            (
+                "Downloading MP3Party playlist: "
+                f"0/{len(selected_candidates)}..."
+            ),
+        )
+
+        def import_playlist() -> Mp3PartyPlaylistImportResult:
+            return self.mp3party_import_service.download_and_import_playlist(
+                selected_candidates,
+                on_progress=thread.progress_updated.emit,
+                on_track_imported=thread.track_imported.emit,
+            )
+
+        thread = YouTubeTaskThread(import_playlist, self)
+        thread.track_imported.connect(
+            lambda candidate, track: (
+                self._handle_playlist_track_imported(
+                    dialog,
+                    candidate,
+                    track,
+                )
+            )
+        )
+        thread.progress_updated.connect(
+            dialog.update_playlist_download_progress
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_mp3party_playlist_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_playlist_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
     def _open_spotify_settings(
         self,
         source_dialog: YouTubeSearchDialog | None = None,
@@ -4168,16 +4258,33 @@ class MainWindow(QMainWindow):
         settings_dialog.sync_requested.connect(
             lambda: self._start_spotify_sync_all(settings_dialog)
         )
+        settings_dialog.finished.connect(
+            lambda _result: self._handle_spotify_settings_closed(source_dialog)
+        )
 
-        settings_dialog.exec()
+        self._show_auxiliary_dialog(settings_dialog)
 
+    def _handle_spotify_settings_closed(
+        self,
+        source_dialog: YouTubeSearchDialog | None,
+    ) -> None:
         if source_dialog is not None:
+            provider = self.youtube_import_service.spotify_provider
             source_dialog.set_spotify_authenticated(
                 provider.has_saved_credentials()
             )
             source_dialog.set_spotify_sync_enabled(
                 self.spotify_fav_sync_service.is_enabled()
             )
+
+    @staticmethod
+    def _show_auxiliary_dialog(dialog: QDialog) -> None:
+        """Show a dialog without blocking the player window."""
+
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _handle_spotify_sync_toggled(
         self,
@@ -4371,7 +4478,7 @@ class MainWindow(QMainWindow):
         ):
             self._handle_spotify_sync_error(
                 dialog,
-                "Spotify Sync all returned an invalid result.",
+                "Spotify Sync All returned an invalid result.",
             )
             return
 
@@ -4379,13 +4486,13 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.set_busy(
                 False,
-                f"Sync all found {len(sync_result.new_tracks)} saved track(s).",
+                f"Sync All found {len(sync_result.new_tracks)} saved track(s).",
             )
             dialog.accept()
 
         if search_result is None:
             self.statusBar().showMessage(
-                "Spotify Sync all: no saved tracks found."
+                "Spotify Sync All: no saved tracks found."
             )
             return
 
@@ -4443,7 +4550,7 @@ class MainWindow(QMainWindow):
             unmatched=result.failed,
             unmatched_positions=result.failed_positions,
         )
-        dialog.exec()
+        self._show_auxiliary_dialog(dialog)
 
     def _start_youtube_playlist_import(
         self,
@@ -4591,6 +4698,197 @@ class MainWindow(QMainWindow):
             )
         )
         self._start_youtube_thread(thread, dialog)
+
+    @staticmethod
+    def _playlist_retry_tracks(
+        failed: tuple[
+            tuple[
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
+                str,
+            ],
+            ...,
+        ],
+        unmatched: tuple[tuple[SpotifyTrack, str], ...],
+        unmatched_positions: tuple[int, ...],
+    ) -> list[tuple[int, SpotifyTrack]]:
+        """Convert failure entries back into ordered Spotify-style queries."""
+
+        retry_tracks: list[tuple[int, SpotifyTrack]] = []
+        used_positions: set[int] = set()
+        next_position = 0
+
+        def allocate_position(position: int | None) -> int:
+            nonlocal next_position
+            if position is not None and position not in used_positions:
+                used_positions.add(position)
+                next_position = max(next_position, position + 1)
+                return position
+
+            while next_position in used_positions:
+                next_position += 1
+            allocated = next_position
+            used_positions.add(allocated)
+            next_position += 1
+            return allocated
+
+        for candidate, _ in failed:
+            title = getattr(candidate, "requested_title", None) or candidate.title
+            artist = (
+                getattr(candidate, "requested_artist", None)
+                or getattr(candidate, "artist", None)
+                or getattr(candidate, "channel_title", None)
+            )
+            retry_tracks.append(
+                (
+                    allocate_position(getattr(candidate, "playlist_position", None)),
+                    SpotifyTrack(title=title, artist=artist),
+                )
+            )
+
+        for index, (track, _) in enumerate(unmatched):
+            position = (
+                unmatched_positions[index]
+                if index < len(unmatched_positions)
+                else None
+            )
+            retry_tracks.append((allocate_position(position), track))
+
+        retry_tracks.sort(key=lambda item: item[0])
+        return retry_tracks
+
+    def _start_alternative_playlist_search(
+        self,
+        dialog: YouTubeSearchDialog,
+        failed: tuple[
+            tuple[
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
+                str,
+            ],
+            ...,
+        ],
+        unmatched: tuple[tuple[SpotifyTrack, str], ...],
+        unmatched_positions: tuple[int, ...],
+        provider: str,
+    ) -> None:
+        """Search every failed playlist item on the selected provider."""
+
+        if provider not in {"youtube", "soundcloud", "mp3party"}:
+            return
+        if self._youtube_thread is not None:
+            return
+
+        retry_tracks = self._playlist_retry_tracks(
+            failed,
+            unmatched,
+            unmatched_positions,
+        )
+        if not retry_tracks:
+            return
+
+        if provider == "youtube":
+            service = self.youtube_import_service
+            source_label = "YouTube tracks"
+            status_label = "YouTube"
+        elif provider == "soundcloud":
+            service = self.soundcloud_import_service
+            source_label = "SoundCloud tracks"
+            status_label = "SoundCloud"
+        else:
+            service = self.mp3party_import_service
+            source_label = "MP3Party tracks"
+            status_label = "MP3Party"
+
+        dialog.set_busy(
+            True,
+            f"Searching {status_label}: 0/{len(retry_tracks)}...",
+        )
+
+        def search_playlist() -> AlternativePlaylistSearchResult:
+            candidates: list[
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate
+            ] = []
+            search_failures: list[tuple[SpotifyTrack, str]] = []
+            failed_positions: list[int] = []
+
+            for position, track in retry_tracks:
+                try:
+                    if provider == "youtube":
+                        matches = service.search(track.search_query)
+                    else:
+                        matches = service.search(
+                            track.search_query,
+                            max_results=5,
+                        )
+                except (OSError, RuntimeError, ValueError) as error:
+                    search_failures.append((track, str(error)))
+                    failed_positions.append(position)
+                    continue
+
+                if not matches:
+                    search_failures.append(
+                        (track, f"No {status_label} match found.")
+                    )
+                    failed_positions.append(position)
+                    continue
+
+                match = matches[0]
+                if isinstance(match, YouTubeCandidate):
+                    match = replace(
+                        match,
+                        playlist_position=position,
+                        requested_title=track.title,
+                        requested_artist=track.artist,
+                    )
+                else:
+                    match = replace(match, playlist_position=position)
+                candidates.append(match)
+
+            return AlternativePlaylistSearchResult(
+                provider=provider,
+                candidates=tuple(candidates),
+                failed=tuple(search_failures),
+                failed_positions=tuple(failed_positions),
+            )
+
+        thread = YouTubeTaskThread(search_playlist, self)
+        thread.result_ready.connect(
+            lambda result: self._handle_alternative_playlist_search_result(
+                dialog,
+                result,
+                source_label,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda message: self._handle_youtube_error(
+                dialog,
+                message,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _handle_alternative_playlist_search_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+        source_label: str,
+    ) -> None:
+        if not isinstance(result, AlternativePlaylistSearchResult):
+            self._handle_youtube_error(
+                dialog,
+                "Alternative source search returned an invalid result.",
+            )
+            return
+
+        dialog.set_search_query(dialog.playlist_name or source_label)
+        dialog.set_candidates(
+            list(result.candidates),
+            playlist=True,
+            playlist_name=dialog.playlist_name,
+            playlist_cover_url=dialog.playlist_cover_url,
+            unmatched=result.failed,
+            unmatched_positions=result.failed_positions,
+            source_label=source_label,
+        )
 
     def _start_youtube_thread(
         self,
@@ -4876,7 +5174,7 @@ class MainWindow(QMainWindow):
                 unmatched=unmatched,
                 unmatched_positions=dialog.unmatched_playlist_positions,
             )
-            result_dialog.search_requested.connect(
+            result_dialog.youtube_search_requested.connect(
                 lambda: QTimer.singleShot(
                     0,
                     lambda: self._start_youtube_playlist_search(
@@ -4884,6 +5182,30 @@ class MainWindow(QMainWindow):
                         result.failed,
                         unmatched,
                         dialog.unmatched_playlist_positions,
+                    ),
+                )
+            )
+            result_dialog.soundcloud_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        unmatched,
+                        dialog.unmatched_playlist_positions,
+                        "soundcloud",
+                    ),
+                )
+            )
+            result_dialog.mp3party_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        unmatched,
+                        dialog.unmatched_playlist_positions,
+                        "mp3party",
                     ),
                 )
             )
@@ -4967,6 +5289,7 @@ class MainWindow(QMainWindow):
                 playlist=True,
                 playlist_name=dialog.playlist_name,
                 playlist_cover_url=dialog.playlist_cover_url,
+                source_label="SoundCloud tracks",
             )
             dialog.set_busy(
                 False,
@@ -4977,14 +5300,128 @@ class MainWindow(QMainWindow):
                 len(result.imported),
                 result.failed,
                 dialog,
-                allow_search=False,
             )
-            result_dialog.retry_requested.connect(
-                lambda retry_candidates: QTimer.singleShot(
+            result_dialog.youtube_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        (),
+                        (),
+                        "youtube",
+                    ),
+                )
+            )
+            result_dialog.soundcloud_search_requested.connect(
+                lambda: QTimer.singleShot(
                     0,
                     lambda: self._start_soundcloud_playlist_import(
                         dialog,
-                        retry_candidates,
+                        [candidate for candidate, _ in result.failed],
+                    ),
+                )
+            )
+            result_dialog.mp3party_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        (),
+                        (),
+                        "mp3party",
+                    ),
+                )
+            )
+            result_dialog.exec()
+            if not result.failed:
+                dialog.accept()
+            return
+
+        dialog.accept()
+
+        message = f"Imported {len(result.imported)} playlist tracks."
+        if dialog.playlist_name:
+            message += f"\nLocal playlist: {dialog.playlist_name}"
+
+        QMessageBox.information(
+            self,
+            "Playlist import completed",
+            message,
+        )
+
+    def _handle_mp3party_playlist_import_result(
+        self,
+        dialog: YouTubeSearchDialog,
+        result: object,
+    ) -> None:
+        self._playlist_import_active = False
+
+        if not isinstance(result, Mp3PartyPlaylistImportResult):
+            self._handle_youtube_error(
+                dialog,
+                "MP3Party playlist import returned an invalid result.",
+            )
+            return
+
+        self._load_queue()
+        QTimer.singleShot(
+            0,
+            self._maybe_refresh_recommendations,
+        )
+
+        if result.failed:
+            failed_candidates = [
+                candidate for candidate, _ in result.failed
+            ]
+            dialog.set_candidates(
+                failed_candidates,
+                playlist=True,
+                playlist_name=dialog.playlist_name,
+                playlist_cover_url=dialog.playlist_cover_url,
+                source_label="MP3Party tracks",
+            )
+            dialog.set_busy(
+                False,
+                f"{len(failed_candidates)} tracks failed.",
+            )
+
+            result_dialog = PlaylistImportResultDialog(
+                len(result.imported),
+                result.failed,
+                dialog,
+            )
+            result_dialog.youtube_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        (),
+                        (),
+                        "youtube",
+                    ),
+                )
+            )
+            result_dialog.soundcloud_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_alternative_playlist_search(
+                        dialog,
+                        result.failed,
+                        (),
+                        (),
+                        "soundcloud",
+                    ),
+                )
+            )
+            result_dialog.mp3party_search_requested.connect(
+                lambda: QTimer.singleShot(
+                    0,
+                    lambda: self._start_mp3party_playlist_import(
+                        dialog,
+                        [candidate for candidate, _ in result.failed],
                     ),
                 )
             )
@@ -5008,7 +5445,7 @@ class MainWindow(QMainWindow):
     def _handle_playlist_track_imported(
         self,
         dialog: YouTubeSearchDialog,
-        candidate: YouTubeCandidate | SoundCloudCandidate,
+        candidate: YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
         track: object,
     ) -> None:
         if not isinstance(track, Track):

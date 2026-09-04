@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -32,6 +33,18 @@ class Mp3PartyCandidate:
     url: str
     audio_url: str
     cover_url: str | None = None
+    # Position in the source playlist, when the candidate was found as part
+    # of a playlist retry search.  Direct searches leave it unset.
+    playlist_position: int | None = None
+
+
+@dataclass(frozen=True)
+class Mp3PartyPlaylistImportResult:
+    """Per-track results from importing an MP3Party playlist selection."""
+
+    imported: tuple[Track, ...]
+    failed: tuple[tuple[Mp3PartyCandidate, str], ...]
+    imported_candidates: tuple[tuple[Mp3PartyCandidate, Track], ...] = ()
 
 
 class _Mp3PartyHTMLParser(HTMLParser):
@@ -151,6 +164,45 @@ class Mp3PartyImportService:
                 source_id=candidate.track_id,
                 source_url=candidate.url,
             )
+
+    def download_and_import_playlist(
+        self,
+        candidates: list[Mp3PartyCandidate],
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+        on_track_imported: Callable[[Mp3PartyCandidate, Track], None]
+        | None = None,
+    ) -> Mp3PartyPlaylistImportResult:
+        """Download selected MP3Party tracks one by one.
+
+        A single unavailable item must not discard successful downloads from
+        the same selection, so the result keeps per-track failures just like
+        the YouTube and SoundCloud playlist import flows.
+        """
+
+        imported: list[Track] = []
+        failed: list[tuple[Mp3PartyCandidate, str]] = []
+        imported_candidates: list[tuple[Mp3PartyCandidate, Track]] = []
+        total = len(candidates)
+
+        for completed, candidate in enumerate(candidates, start=1):
+            try:
+                track = self.download(candidate)
+                imported.append(track)
+                imported_candidates.append((candidate, track))
+                if on_track_imported is not None:
+                    on_track_imported(candidate, track)
+            except (OSError, RuntimeError, ValueError) as error:
+                failed.append((candidate, str(error)))
+            finally:
+                if on_progress is not None:
+                    on_progress(completed, total)
+
+        return Mp3PartyPlaylistImportResult(
+            imported=tuple(imported),
+            failed=tuple(failed),
+            imported_candidates=tuple(imported_candidates),
+        )
 
     @staticmethod
     def is_supported_url(value: str) -> bool:

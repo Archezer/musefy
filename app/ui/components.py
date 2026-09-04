@@ -52,6 +52,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.dialog_style import prepare_dialog
+
 
 class SvgIconButton(QAbstractButton):
     """A compact rounded button that paints an SVG at any display scale."""
@@ -1794,6 +1796,7 @@ class QueueDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        prepare_dialog(self)
         self.setWindowTitle("Queue")
         self.setMinimumSize(340, 330)
         self.resize(380, 440)
