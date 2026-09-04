@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,12 @@ from app.sources.youtube import (
     YouTubeSearchProvider,
     extract_youtube_video_id,
 )
+
+DEFAULT_SEARCH_WORKERS = 6
+
+
+class OperationCancelled(RuntimeError):
+    """Raised when a background import/search is cancelled by the user."""
 
 
 @dataclass(frozen=True)
@@ -50,45 +57,81 @@ class YouTubeImportService:
         ingestion_service: AudioIngestionService,
         provider: YouTubeSearchProvider | None = None,
         spotify_provider: SpotifyMetadataProvider | None = None,
+        *,
+        search_workers: int = DEFAULT_SEARCH_WORKERS,
     ) -> None:
+        if not 1 <= search_workers <= 16:
+            raise ValueError("search_workers must be between 1 and 16")
+
         self.ingestion_service = ingestion_service
         self.provider = provider or YouTubeSearchProvider()
         self.spotify_provider = (
             spotify_provider or SpotifyMetadataProvider()
         )
+        self.search_workers = search_workers
 
     def search(
         self,
         query: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[YouTubeCandidate]:
-        return self.provider.search(
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
+        candidates = self.provider.search(
             query,
             max_results=5,
         )
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
+        return candidates
 
     def search_from_spotify(
         self,
         url: str,
         *,
         use_oauth: bool = False,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifySearchResult | SpotifyPlaylistSearchResult:
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
         resource_type = self.spotify_provider.get_resource_type(url)
         if resource_type == "playlist":
             return self.search_playlist_from_spotify(
                 url,
                 use_oauth=use_oauth,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
             )
         if resource_type == "album":
             return self.search_album_from_spotify(
                 url,
                 use_oauth=use_oauth,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
             )
 
         spotify_track = self.spotify_provider.get_track(url)
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
+        if on_progress is not None:
+            on_progress(0, 1, 0, 0, spotify_track.title)
         candidates = self.provider.search(
             spotify_track.search_query,
             max_results=5,
         )
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
+        if on_progress is not None:
+            on_progress(
+                1,
+                1,
+                len(candidates),
+                0 if candidates else 1,
+                spotify_track.title,
+            )
 
         return SpotifySearchResult(
             query=spotify_track.search_query,
@@ -98,6 +141,10 @@ class YouTubeImportService:
     def load_url(
         self,
         url: str,
+        *,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> (
         Track
         | list[YouTubeCandidate]
@@ -105,6 +152,8 @@ class YouTubeImportService:
         | SpotifyPlaylistSearchResult
     ):
         normalized_url = url.strip()
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
         source = self._get_url_source(normalized_url)
 
         if source == "youtube":
@@ -114,13 +163,18 @@ class YouTubeImportService:
             if resource_type == "track":
                 return self.download_and_import_url(normalized_url)
 
-            return self.get_playlist(normalized_url)
+            result = self.get_playlist(normalized_url)
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled()
+            return result
 
         return self.search_from_spotify(
             normalized_url,
             use_oauth=(
                 self.spotify_provider.has_saved_credentials()
             ),
+            on_progress=on_progress,
+            should_cancel=should_cancel,
         )
 
     def is_supported_url(self, value: str) -> bool:
@@ -170,6 +224,9 @@ class YouTubeImportService:
         url: str,
         *,
         use_oauth: bool = False,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
         if use_oauth:
             playlist = self.spotify_provider.get_authenticated_playlist(
@@ -180,11 +237,17 @@ class YouTubeImportService:
         return self._search_playlist_tracks(
             playlist.name,
             playlist.tracks,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
         )
 
     def search_playlist_export(
         self,
         path: Path,
+        *,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
         exported_playlist = read_playlist_export(path)
         tracks = tuple(
@@ -199,6 +262,8 @@ class YouTubeImportService:
             exported_playlist.title,
             tracks,
             cover_url=exported_playlist.cover_url,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
         )
 
     def _search_playlist_tracks(
@@ -208,6 +273,9 @@ class YouTubeImportService:
         *,
         cover_url: str | None = None,
         positions: tuple[int, ...] | None = None,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
         if positions is None:
             positions = tuple(range(len(tracks)))
@@ -216,41 +284,116 @@ class YouTubeImportService:
                 "Playlist track positions must match the track count."
             )
 
-        candidates = []
-        failed = []
-        failed_positions = []
+        total = len(tracks)
+        completed = 0
+        candidates_by_index: dict[int, YouTubeCandidate] = {}
+        failures_by_index: dict[int, tuple[SpotifyTrack, str]] = {}
 
-        for position, spotify_track in zip(positions, tracks):
+        def report(track: SpotifyTrack) -> None:
+            if on_progress is not None:
+                on_progress(
+                    completed,
+                    total,
+                    len(candidates_by_index),
+                    len(failures_by_index),
+                    track.title,
+                )
+
+        def search_one(
+            index: int,
+            position: int,
+            spotify_track: SpotifyTrack,
+        ) -> tuple[
+            int,
+            SpotifyTrack,
+            YouTubeCandidate | None,
+            str | None,
+        ]:
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled()
             try:
                 matches = self.provider.search(
                     spotify_track.search_query,
-                    max_results=5,
+                    # Playlist rows use only the best match.  Avoid fetching
+                    # four extra candidates for every track in a large list.
+                    max_results=1,
                 )
             except (OSError, RuntimeError, ValueError) as error:
-                failed.append((spotify_track, str(error)))
-                failed_positions.append(position)
-                continue
+                return index, spotify_track, None, str(error)
 
             if not matches:
-                failed.append(
-                    (spotify_track, "No YouTube match found.")
+                return (
+                    index,
+                    spotify_track,
+                    None,
+                    "No YouTube match found.",
                 )
-                failed_positions.append(position)
-                continue
 
-            candidates.append(
+            return (
+                index,
+                spotify_track,
                 replace(
                     matches[0],
                     requested_title=spotify_track.title,
                     requested_artist=spotify_track.artist,
                     playlist_position=position,
-                )
+                ),
+                None,
             )
 
-        if not candidates and failed:
-            raise RuntimeError(
-                "No Spotify playlist tracks could be matched on YouTube."
+        entries = tuple(zip(positions, tracks))
+        if should_cancel is not None and should_cancel():
+            raise OperationCancelled()
+        if on_progress is not None and entries:
+            on_progress(
+                0,
+                total,
+                0,
+                0,
+                f"Starting parallel search ({min(self.search_workers, total)} workers)",
             )
+
+        with ThreadPoolExecutor(
+            max_workers=min(self.search_workers, max(total, 1)),
+            thread_name_prefix="musefy-search",
+        ) as executor:
+            futures = {
+                executor.submit(search_one, index, position, track): index
+                for index, (position, track) in enumerate(entries)
+            }
+
+            for future in as_completed(futures):
+                if should_cancel is not None and should_cancel():
+                    for pending in futures:
+                        pending.cancel()
+                    raise OperationCancelled()
+
+                index, track, candidate, failure = future.result()
+                completed += 1
+                if candidate is not None:
+                    candidates_by_index[index] = candidate
+                else:
+                    failures_by_index[index] = (
+                        track,
+                        failure or "Search failed.",
+                    )
+                report(track)
+
+        candidates = [
+            candidates_by_index[index]
+            for index in range(total)
+            if index in candidates_by_index
+        ]
+        failed = [
+            failures_by_index[index]
+            for index in range(total)
+            if index in failures_by_index
+        ]
+        failed_positions = [
+            positions[index]
+            for index in range(total)
+            if index in failures_by_index
+        ]
 
         return SpotifyPlaylistSearchResult(
             playlist_name=playlist_name,
@@ -266,6 +409,9 @@ class YouTubeImportService:
         *,
         playlist_name: str,
         cover_url: str | None = None,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
         """Search a selected set of playlist tracks again.
 
@@ -279,6 +425,8 @@ class YouTubeImportService:
             tuple(track for _, track in tracks),
             cover_url=cover_url,
             positions=tuple(position for position, _ in tracks),
+            on_progress=on_progress,
+            should_cancel=should_cancel,
         )
 
     def search_album_from_spotify(
@@ -286,64 +434,48 @@ class YouTubeImportService:
         url: str,
         *,
         use_oauth: bool = False,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
         if use_oauth:
             album = self.spotify_provider.get_authenticated_album(url)
         else:
             album = self.spotify_provider.get_album(url)
 
-        return self._search_spotify_collection(album)
+        return self._search_spotify_collection(
+            album,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+        )
 
     def _search_spotify_collection(
         self,
         collection,
+        *,
+        on_progress: Callable[[int, int, int, int, str], None]
+        | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SpotifyPlaylistSearchResult:
-        candidates = []
-        failed = []
-        failed_positions = []
+        result = self._search_playlist_tracks(
+            collection.name,
+            tuple(collection.tracks),
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+        )
 
-        for position, spotify_track in enumerate(collection.tracks):
-            try:
-                matches = self.provider.search(
-                    spotify_track.search_query,
-                    max_results=5,
-                )
-            except (OSError, RuntimeError, ValueError) as error:
-                failed.append((spotify_track, str(error)))
-                failed_positions.append(position)
-                continue
-
-            if not matches:
-                failed.append(
-                    (spotify_track, "No YouTube match found.")
-                )
-                failed_positions.append(position)
-                continue
-
-            candidates.append(
-                replace(
-                    matches[0],
-                    requested_title=spotify_track.title,
-                    requested_artist=spotify_track.artist,
-                    playlist_position=position,
-                )
-            )
-
-        if not candidates and failed:
+        if not result.candidates and result.failed:
             raise RuntimeError(
                 "No Spotify collection tracks could be matched on YouTube."
             )
 
-        return SpotifyPlaylistSearchResult(
-            playlist_name=collection.name,
-            candidates=tuple(candidates),
-            failed=tuple(failed),
-            failed_positions=tuple(failed_positions),
-        )
+        return result
 
     def download_and_import(
         self,
         candidate: YouTubeCandidate,
+        *,
+        source: str = "youtube",
     ) -> Track:
         existing_track = self._find_existing_youtube_track(
             candidate.video_id
@@ -378,7 +510,11 @@ class YouTubeImportService:
                     downloaded_path,
                     title=title,
                     artist=artist,
-                    source="youtube",
+                    # A restore should retain the original provenance.  A
+                    # missing file is not a new import, so re-downloading a
+                    # Spotify favourite must not rewrite it as a YouTube
+                    # import (or vice versa).
+                    source=existing_track.source,
                     source_id=candidate.video_id,
                     source_url=candidate.url,
                 )
@@ -388,7 +524,7 @@ class YouTubeImportService:
                 title=title,
                 artist=artist,
                 track_id=f"youtube-{candidate.video_id}",
-                source="youtube",
+                source=source,
                 source_id=candidate.video_id,
                 source_url=candidate.url,
             )
@@ -397,16 +533,20 @@ class YouTubeImportService:
         self,
         video_id: str,
     ) -> Track | None:
-        existing_track = self.ingestion_service.store.get_track_by_source(
-            "youtube",
-            video_id,
-        )
-        if existing_track is not None:
-            return existing_track
+        for source in ("youtube", "spotify_favorite"):
+            existing_track = self.ingestion_service.store.get_track_by_source(
+                source,
+                video_id,
+            )
+            if existing_track is not None:
+                return existing_track
 
-        # Migrate old YouTube records that only stored source_url.
+        # Migrate older YouTube/Spotify records that only stored source_url.
         for track in self.ingestion_service.store.list_tracks():
-            if track.source != "youtube" or not track.source_url:
+            if (
+                track.source not in {"youtube", "spotify_favorite"}
+                or not track.source_url
+            ):
                 continue
 
             if extract_youtube_video_id(track.source_url) != video_id:
@@ -440,6 +580,7 @@ class YouTubeImportService:
         self,
         candidates: list[YouTubeCandidate],
         *,
+        source: str = "youtube",
         on_progress: Callable[[int, int], None] | None = None,
         on_track_imported: Callable[[YouTubeCandidate, Track], None]
         | None = None,
@@ -451,7 +592,7 @@ class YouTubeImportService:
 
         for completed, candidate in enumerate(candidates, start=1):
             try:
-                track = self.download_and_import(candidate)
+                track = self.download_and_import(candidate, source=source)
                 imported.append(track)
                 imported_candidates.append((candidate, track))
                 if on_track_imported is not None:

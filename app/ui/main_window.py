@@ -2,12 +2,14 @@ import os
 import random
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QObject,
     QPropertyAnimation,
     QRunnable,
@@ -100,6 +102,8 @@ from app.services.spotify_fav_sync import (
 )
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import (
+    DEFAULT_SEARCH_WORKERS,
+    OperationCancelled,
     SpotifyPlaylistSearchResult,
     SpotifySearchResult,
     YouTubeImportService,
@@ -117,6 +121,7 @@ from app.ui.components import (
     JSON_ICON,
     LIBRARY_ICON,
     LOCAL_FILE_ICON,
+    LOG_ICON,
     MAP_ICON,
     NEXT_ICON,
     PAUSE_ICON,
@@ -137,7 +142,9 @@ from app.ui.components import (
     YOUTUBE_ICON,
     CreatePlaylistCard,
     FadingVolumeSlider,
+    HoverCircleMenuButton,
     HoverTableWidget,
+    LibraryHeaderView,
     LiquidGlassPanel,
     MainLibraryCard,
     MarqueeLabel,
@@ -153,6 +160,7 @@ from app.ui.components import (
     track_cover_pixmap,
 )
 from app.ui.dialogs import (
+    ImportLogDialog,
     PlaylistImportResultDialog,
     SpotifySettingsDialog,
     TrackMetadataDialog,
@@ -201,7 +209,10 @@ class AlternativePlaylistSearchResult:
 class YouTubeTaskThread(QThread):
     result_ready = Signal(object)
     error_occurred = Signal(str)
+    cancelled = Signal()
     progress_updated = Signal(int, int)
+    # completed, total, found, failed, current track title
+    search_progress_updated = Signal(int, int, int, int, str)
     track_imported = Signal(object, object)
 
     def __init__(
@@ -211,15 +222,34 @@ class YouTubeTaskThread(QThread):
     ) -> None:
         super().__init__(parent)
         self.task = task
+        self._cancel_event = Event()
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation of the current operation."""
+
+        self._cancel_event.set()
+        self.requestInterruption()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set() or self.isInterruptionRequested()
 
     def run(self) -> None:
+        if self.is_cancelled():
+            self.cancelled.emit()
+            return
         try:
             result = self.task()
+        except OperationCancelled:
+            self.cancelled.emit()
+            return
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             message = str(error) or error.__class__.__name__
             self.error_occurred.emit(message)
         else:
-            self.result_ready.emit(result)
+            if self.is_cancelled():
+                self.cancelled.emit()
+            else:
+                self.result_ready.emit(result)
 
 
 class GenreAnalysisSignals(QObject):
@@ -366,6 +396,17 @@ class MainWindow(QMainWindow):
             (0, 0, True, True, True)
         ]
         self._youtube_thread: YouTubeTaskThread | None = None
+        self._youtube_thread_dialog: QDialog | None = None
+        self._youtube_threads: set[YouTubeTaskThread] = set()
+        # Modeless dialogs use the native minimize button, but keeping their
+        # minimized state in the app makes it possible to restore them without
+        # hunting through the Windows taskbar.  Compact restore buttons are
+        # inserted next to the top-right playlist menu.
+        self._auxiliary_dialog_buttons: dict[QDialog, QToolButton] = {}
+        self._auxiliary_minimized_container: QWidget | None = None
+        self._auxiliary_minimized_layout: QHBoxLayout | None = None
+        self._search_row: QWidget | None = None
+        self._search_actions_container: QWidget | None = None
         self._spotify_sync_timer = QTimer(self)
         self._spotify_sync_timer.setInterval(5 * 60 * 1000)
         self._spotify_sync_timer.timeout.connect(
@@ -512,12 +553,12 @@ class MainWindow(QMainWindow):
         sidebar.setObjectName("sidebar")
         rail_size = RailIconButton.BUTTON_SIZE
         sidebar_width = rail_size + 12
-        sidebar_height = rail_size * 3 + 20
+        sidebar_height = rail_size * 4 + 20
         # Keep the rail optically centered between the window top and the
         # selected playlist caption.  The transparent frame is intentionally
         # a little lower than the body origin so the two breathing spaces
         # balance out.
-        sidebar_top_offset = 7
+        sidebar_top_offset = 0
         sidebar.setFixedSize(sidebar_width, sidebar_height)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(6, 6, 6, 6)
@@ -608,6 +649,20 @@ class MainWindow(QMainWindow):
         self.map_cycle_button.setProperty("railButton", True)
         self.map_cycle_button.clicked.connect(self._toggle_music_map)
         sidebar_layout.addWidget(self.map_cycle_button, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.import_log_button = RailIconButton(
+            LOG_ICON,
+            tooltip="Import log",
+            variant="log",
+            icon_size=RailIconButton.ICON_SIZE,
+        )
+        self.import_log_button.setObjectName("railButton")
+        self.import_log_button.clicked.connect(self._show_import_log)
+        sidebar_layout.addWidget(
+            self.import_log_button,
+            0,
+            Qt.AlignmentFlag.AlignHCenter,
+        )
         sidebar_layout.addStretch(1)
         main_column = QWidget()
         main_layout = QVBoxLayout(main_column)
@@ -673,6 +728,44 @@ class MainWindow(QMainWindow):
 
         search_row_layout.addWidget(search_frame)
         search_row_layout.addStretch(1)
+        # Reserve the original top-right menu slot in the centering layout.
+        # The actual controls are overlaid below, so minimized dialog chips
+        # can grow without changing the search field's position.
+        search_actions_spacer = QWidget()
+        search_actions_spacer.setFixedWidth(32)
+        search_row_layout.addWidget(search_actions_spacer)
+
+        # Keep actions visually attached to the right edge without including
+        # them in the search row's stretch calculation.  Otherwise a
+        # minimized auxiliary dialog changes the amount of space on the right
+        # and pulls the centered search field to the left.
+        self._search_row = search_row
+        self._search_actions_container = QWidget(search_row)
+        self._search_actions_container.setObjectName(
+            "searchActionsContainer"
+        )
+        self._search_actions_layout = QHBoxLayout(
+            self._search_actions_container
+        )
+        self._search_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._search_actions_layout.setSpacing(6)
+
+        self._auxiliary_minimized_container = QWidget(search_row)
+        self._auxiliary_minimized_container.setObjectName(
+            "auxiliaryMinimizedContainer"
+        )
+        self._auxiliary_minimized_layout = QHBoxLayout(
+            self._auxiliary_minimized_container
+        )
+        self._auxiliary_minimized_layout.setContentsMargins(0, 0, 0, 0)
+        self._auxiliary_minimized_layout.setSpacing(6)
+        self._auxiliary_minimized_container.hide()
+        self._search_actions_layout.addWidget(
+            self._auxiliary_minimized_container,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        self._search_actions_container.show()
         main_layout.addWidget(search_row, 0)
 
         playlist_strip = QFrame()
@@ -680,14 +773,17 @@ class MainWindow(QMainWindow):
         playlist_strip_layout = QVBoxLayout(playlist_strip)
         # The main column already shares the outer 8px content inset with the
         # player bar; do not add the rail width a second time here.
-        playlist_strip_layout.setContentsMargins(0, 5, 9, 5)
+        # The carousel cards are 104px high.  Moving their content start
+        # down by 10px balances the gap below the cards against the gap under
+        # the search row while keeping the strip's fixed outer height.
+        playlist_strip_layout.setContentsMargins(0, 15, 9, 0)
         playlist_strip_layout.setSpacing(3)
         playlist_header = QHBoxLayout()
         playlist_header.setContentsMargins(0, 0, 0, 0)
         playlist_header.setSpacing(4)
         playlist_header.addStretch()
 
-        playlist_menu_button = QToolButton()
+        playlist_menu_button = HoverCircleMenuButton()
         playlist_menu_button.setObjectName("plainActionButton")
         playlist_menu_button.setText("•••")
         playlist_menu_button.setToolTip("Playlist actions")
@@ -730,14 +826,15 @@ class MainWindow(QMainWindow):
         playlist_menu_button.setMenu(playlist_menu)
         playlist_menu_button.setProperty("topMenu", True)
         playlist_menu_button.setFixedSize(32, 32)
-        search_row_layout.addWidget(
+        self._search_actions_layout.addWidget(
             playlist_menu_button,
             0,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            Qt.AlignmentFlag.AlignVCenter,
         )
         # The shared plain-action stylesheet intentionally removes minimum
         # sizes; restore a square hit area for the top-right menu button.
         playlist_menu_button.setMinimumSize(32, 32)
+        QTimer.singleShot(0, self._position_search_actions)
         playlist_strip_layout.addLayout(playlist_header)
 
         self.playlist_scroll = QScrollArea()
@@ -958,6 +1055,7 @@ class MainWindow(QMainWindow):
             tooltip="Playback order: sequential",
             diameter=30,
             flat=True,
+            icon_offset_y=1,
             parent=player_bar,
         )
         self.playback_mode_button.clicked.connect(
@@ -974,6 +1072,7 @@ class MainWindow(QMainWindow):
             tooltip="Previous track",
             diameter=36,
             flat=True,
+            icon_offset_y=-1,
             parent=player_bar,
         )
         previous_button.clicked.connect(self._go_previous)
@@ -1004,6 +1103,7 @@ class MainWindow(QMainWindow):
             tooltip="Next track",
             diameter=36,
             flat=True,
+            icon_offset_y=-1,
             parent=player_bar,
         )
         next_button.clicked.connect(self._go_next)
@@ -1069,8 +1169,9 @@ class MainWindow(QMainWindow):
         self.like_button.clicked.connect(self._toggle_like_current_track)
         layout.addWidget(self.like_button)
 
-        player_menu_button = QToolButton()
+        player_menu_button = HoverCircleMenuButton(parent=player_bar)
         player_menu_button.setObjectName("plainActionButton")
+        player_menu_button.setProperty("topMenu", True)
         player_menu_button.setText("•••")
         player_menu_button.setToolTip("Playback actions")
         player_menu_button.setPopupMode(
@@ -1140,6 +1241,32 @@ class MainWindow(QMainWindow):
                 RailIconButton.BUTTON_SIZE,
                 RailIconButton.BUTTON_SIZE,
             )
+        self._position_search_actions()
+
+    def _position_search_actions(self) -> None:
+        """Pin top-row actions to the right without affecting search centering."""
+
+        row = self._search_row
+        container = self._search_actions_container
+        if row is None or container is None:
+            return
+
+        layout = container.layout()
+        if layout is not None:
+            layout.activate()
+            width = layout.sizeHint().width()
+        else:
+            width = container.sizeHint().width()
+        width = max(0, width)
+        if width <= 0:
+            return
+        container.setGeometry(
+            max(0, row.width() - width),
+            0,
+            width,
+            row.height(),
+        )
+        container.raise_()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if (
@@ -1294,6 +1421,11 @@ class MainWindow(QMainWindow):
             RoundedScrollBar(Qt.Orientation.Vertical)
         )
         self.track_table.setColumnCount(7)
+        header = LibraryHeaderView(
+            Qt.Orientation.Horizontal,
+            self.track_table,
+        )
+        self.track_table.setHorizontalHeader(header)
         self.track_table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
@@ -1317,7 +1449,6 @@ class MainWindow(QMainWindow):
         )
         self.track_table.verticalHeader().setVisible(False)
         self.track_table.verticalHeader().setDefaultSectionSize(62)
-        header = self.track_table.horizontalHeader()
         header.setSectionResizeMode(
             0,
             QHeaderView.ResizeMode.ResizeToContents,
@@ -1355,10 +1486,14 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignVCenter
         )
+        header.setFixedHeight(36)
         header.setSectionsClickable(True)
         header.setMouseTracking(True)
         header.setCursor(Qt.CursorShape.PointingHandCursor)
-        header.setSortIndicatorShown(True)
+        # The custom header paints one centered chevron above the active
+        # label; keep Qt's edge-aligned indicator disabled to avoid a double
+        # arrow in the same section.
+        header.setSortIndicatorShown(False)
         header.sectionClicked.connect(self._handle_library_sort)
         index_header = self.track_table.horizontalHeaderItem(0)
         if index_header is not None:
@@ -1385,6 +1520,9 @@ class MainWindow(QMainWindow):
         )
         self.track_table.itemSelectionChanged.connect(
             self._handle_track_selection
+        )
+        self.track_table.row_double_clicked.connect(
+            self._play_track_from_table_row
         )
         self.track_table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
@@ -1634,6 +1772,7 @@ class MainWindow(QMainWindow):
             column,
             indicator_order,
         )
+        self.track_table.horizontalHeader().viewport().update()
         self._render_visible_tracks(self.library_title_label.text())
 
     def _sort_tracks(self, tracks: list[Track]) -> list[Track]:
@@ -1749,7 +1888,7 @@ class MainWindow(QMainWindow):
         self._populate_playlist_carousel(
             self.playlist_management_service.list_playlists()
         )
-        self.statusBar().showMessage("Main library")
+        self.statusBar().showMessage("Music library")
 
     def _load_history(self) -> None:
         if not hasattr(self, "history_list"):
@@ -1861,10 +2000,19 @@ class MainWindow(QMainWindow):
             4,
             QTableWidgetItem(self._format_duration(track.duration_ms)),
         )
-        for column in (3, 4):
+        for column in (2, 3):
             item = self.track_table.item(row_index, column)
             if item is not None:
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft
+                    | Qt.AlignmentFlag.AlignVCenter
+                )
+        duration_item = self.track_table.item(row_index, 4)
+        if duration_item is not None:
+            duration_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter
+                | Qt.AlignmentFlag.AlignVCenter
+            )
 
         self.track_table.setItem(
             row_index,
@@ -2569,9 +2717,7 @@ class MainWindow(QMainWindow):
 
     def _show_queue(self) -> None:
         self._load_queue()
-        self.queue_dialog.show()
-        self.queue_dialog.raise_()
-        self.queue_dialog.activateWindow()
+        self._show_auxiliary_dialog(self.queue_dialog)
 
     def _show_track_context_menu(self, position: object) -> None:
         index = self.track_table.indexAt(position)
@@ -3143,8 +3289,13 @@ class MainWindow(QMainWindow):
             return
 
         self.selected_playlist_id = playlist.id
+        # New playlists are sorted to the front of the carousel.  Keep the
+        # user on the first page so the newly created card is visible instead
+        # of jumping to the old last page.
+        self._playlist_page_index = 0
+        self._playlist_scroll_animation.stop()
         self._load_playlists()
-        QTimer.singleShot(0, self._scroll_playlists_to_end)
+        self.playlist_scroll.horizontalScrollBar().setValue(0)
 
     def _rename_playlist(
         self,
@@ -3468,6 +3619,23 @@ class MainWindow(QMainWindow):
             )
         self._load_recommendations()
 
+    def _play_track_from_table_row(self, row_index: int) -> None:
+        """Play a library track when its row is double-clicked."""
+
+        if row_index < 0 or row_index >= self.track_table.rowCount():
+            return
+
+        title_item = self.track_table.item(row_index, 0)
+        if title_item is None:
+            return
+
+        track_id = title_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(track_id, str):
+            return
+
+        self.track_table.selectRow(row_index)
+        self._play_track_now(track_id)
+
     def _toggle_playback(self) -> None:
         state = self.media_player.playbackState()
         if state == QMediaPlayer.PlaybackState.PlayingState:
@@ -3652,6 +3820,21 @@ class MainWindow(QMainWindow):
             message += f"\nSkipped {skipped_count} file(s)."
         QMessageBox.information(self, "Folder import completed", message)
 
+    def _show_import_log(self) -> None:
+        """Show a read-only history of successful library additions."""
+
+        try:
+            tracks = list(self.store.list_tracks())
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Import log unavailable",
+                str(error),
+            )
+            return
+
+        self._show_auxiliary_dialog(ImportLogDialog(tracks, self))
+
     def _import_from_youtube(self) -> None:
         spotify_provider = self.youtube_import_service.spotify_provider
         dialog = YouTubeSearchDialog(
@@ -3766,6 +3949,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Searching SoundCloud...")
+        dialog.start_progress("Searching SoundCloud...")
 
         thread = YouTubeTaskThread(
             lambda: self.soundcloud_import_service.search(
@@ -3797,6 +3981,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Loading SoundCloud playlist...")
+        dialog.start_progress("Loading SoundCloud playlist...")
 
         thread = YouTubeTaskThread(
             lambda: self.soundcloud_import_service.playlist(url),
@@ -3829,6 +4014,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Searching MP3Party...")
+        dialog.start_progress("Searching MP3Party...")
 
         thread = YouTubeTaskThread(
             lambda: self.mp3party_import_service.search(
@@ -3918,6 +4104,7 @@ class MainWindow(QMainWindow):
             spotify_sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
         dialog.set_busy(True, "Reading exported playlist...")
+        dialog.start_progress("Reading exported playlist...")
         dialog.playlist_import_requested.connect(
             lambda candidates: self._start_youtube_playlist_import(
                 dialog,
@@ -3936,9 +4123,14 @@ class MainWindow(QMainWindow):
 
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.search_playlist_export(
-                Path(export_path)
+                Path(export_path),
+                on_progress=thread.search_progress_updated.emit,
+                should_cancel=thread.is_cancelled,
             ),
             self,
+        )
+        thread.search_progress_updated.connect(
+            dialog.update_search_progress
         )
         thread.result_ready.connect(
             lambda result: self._handle_exported_playlist_search_result(
@@ -3978,9 +4170,13 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Searching YouTube...")
+        dialog.start_progress("Searching YouTube...")
 
         thread = YouTubeTaskThread(
-            lambda: self.youtube_import_service.search(query),
+            lambda: self.youtube_import_service.search(
+                query,
+                should_cancel=thread.is_cancelled,
+            ),
             self,
         )
         thread.result_ready.connect(
@@ -4006,6 +4202,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Authenticating Spotify...")
+        dialog.start_progress("Connecting to Spotify...")
 
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.authenticate_url(url),
@@ -4033,11 +4230,24 @@ class MainWindow(QMainWindow):
         if self._youtube_thread is not None:
             return
 
-        dialog.set_busy(True, "Detecting and loading URL...")
+        loading_message = (
+            "Connecting to Spotify and reading tracks..."
+            if "spotify" in url.casefold()
+            else "Detecting and loading URL..."
+        )
+        dialog.set_busy(True, loading_message)
+        dialog.start_progress(loading_message)
 
         thread = YouTubeTaskThread(
-            lambda: self.youtube_import_service.load_url(url),
+            lambda: self.youtube_import_service.load_url(
+                url,
+                on_progress=thread.search_progress_updated.emit,
+                should_cancel=thread.is_cancelled,
+            ),
             self,
+        )
+        thread.search_progress_updated.connect(
+            dialog.update_search_progress
         )
         thread.result_ready.connect(
             lambda result: self._handle_url_load_result(
@@ -4088,6 +4298,10 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog,
         candidates: object,
     ) -> None:
+        if isinstance(candidates, list) and not candidates:
+            self._show_skipped_playlist_review(dialog)
+            return
+
         if isinstance(candidates, list) and candidates and all(
             isinstance(candidate, SoundCloudCandidate)
             for candidate in candidates
@@ -4103,6 +4317,63 @@ class MainWindow(QMainWindow):
             return
 
         self._start_youtube_playlist_import(dialog, candidates)
+
+    def _show_skipped_playlist_review(
+        self,
+        dialog: YouTubeSearchDialog,
+    ) -> None:
+        """Keep an all-unchecked playlist actionable for alternate search."""
+
+        failed = dialog.skipped_playlist_candidates
+        unmatched = dialog.unmatched_playlist_tracks
+        if not failed and not unmatched:
+            return
+
+        unmatched_positions = dialog.unmatched_playlist_positions
+        failed_candidates = [candidate for candidate, _ in failed]
+        dialog.set_candidates(
+            failed_candidates,
+            playlist=True,
+            playlist_name=dialog.playlist_name,
+            playlist_cover_url=dialog.playlist_cover_url,
+            unmatched=unmatched,
+            unmatched_positions=unmatched_positions,
+        )
+        dialog.set_busy(
+            False,
+            (
+                f"{len(failed) + len(unmatched)} tracks were not selected "
+                "or were not found."
+            ),
+        )
+
+        result_dialog = PlaylistImportResultDialog(
+            0,
+            failed,
+            dialog,
+            unmatched=unmatched,
+            unmatched_positions=unmatched_positions,
+        )
+        for provider in ("youtube", "soundcloud", "mp3party"):
+            signal = getattr(
+                result_dialog,
+                f"{provider}_search_requested",
+            )
+            signal.connect(
+                lambda provider=provider: QTimer.singleShot(
+                    0,
+                    lambda provider=provider: (
+                        self._start_alternative_playlist_search(
+                            dialog,
+                            failed,
+                            unmatched,
+                            unmatched_positions,
+                            provider,
+                        )
+                    ),
+                )
+            )
+        result_dialog.exec()
 
     def _start_soundcloud_playlist_import(
         self,
@@ -4277,14 +4548,181 @@ class MainWindow(QMainWindow):
                 self.spotify_fav_sync_service.is_enabled()
             )
 
-    @staticmethod
-    def _show_auxiliary_dialog(dialog: QDialog) -> None:
-        """Show a dialog without blocking the player window."""
+    def _show_auxiliary_dialog(self, dialog: QDialog) -> None:
+        """Show a modeless dialog and wire its in-app minimize affordance."""
 
+        self._register_auxiliary_dialog(dialog)
+        self._restore_auxiliary_dialog(dialog)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _register_auxiliary_dialog(self, dialog: QDialog) -> None:
+        """Track a dialog so native minimize becomes an in-app chip."""
+
+        if dialog.property("musefyAuxiliaryRegistered"):
+            return
+
+        dialog.setProperty("musefyAuxiliaryRegistered", True)
+        dialog.installEventFilter(self)
+        dialog.finished.connect(
+            lambda _result, target=dialog: self._forget_auxiliary_dialog(target)
+        )
+        closed_signal = getattr(dialog, "closed", None)
+        if closed_signal is not None:
+            closed_signal.connect(
+                lambda target=dialog: self._cancel_dialog_task(target)
+            )
+
+    def _cancel_dialog_task(self, dialog: QDialog) -> None:
+        """Stop the task owned by a loader that was explicitly closed."""
+
+        if self._youtube_thread_dialog is not dialog:
+            return
+
+        thread = self._youtube_thread
+        if thread is not None and thread.isRunning():
+            thread.cancel()
+            # Detach the cancelled loader immediately.  Its in-flight
+            # network request is still allowed to unwind safely, while a new
+            # loader can be opened without inheriting the old busy state.
+            self._youtube_thread = None
+            self._youtube_thread_dialog = None
+
+    def _forget_auxiliary_dialog(self, dialog: QDialog) -> None:
+        """Remove a closed dialog's restore chip, if it still has one."""
+
+        button = self._auxiliary_dialog_buttons.pop(dialog, None)
+        if button is not None:
+            layout = self._auxiliary_minimized_layout
+            if layout is not None:
+                layout.removeWidget(button)
+            button.deleteLater()
+
+        container = self._auxiliary_minimized_container
+        if container is not None and not self._auxiliary_dialog_buttons:
+            container.hide()
+        self._position_search_actions()
+        QTimer.singleShot(0, self._position_search_actions)
+
+    def _minimize_auxiliary_dialog(self, dialog: QDialog) -> None:
+        """Hide a dialog and expose a compact restore button in the top bar."""
+
+        if dialog in self._auxiliary_dialog_buttons:
+            return
+
+        layout = self._auxiliary_minimized_layout
+        container = self._auxiliary_minimized_container
+        if layout is None or container is None:
+            return
+
+        title = dialog.windowTitle().strip() or "Auxiliary window"
+        if len(title) > 28:
+            title = f"{title[:27].rstrip()}…"
+
+        button = QToolButton(container)
+        button.setObjectName("auxiliaryMinimizedButton")
+        button.setText(title)
+        button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        button.setToolTip(f"Restore {dialog.windowTitle()}")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setMaximumWidth(220)
+        button.clicked.connect(
+            lambda _checked=False, target=dialog: self._restore_auxiliary_dialog(
+                target
+            )
+        )
+        self._auxiliary_dialog_buttons[dialog] = button
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
+        container.show()
+        self._position_search_actions()
+        QTimer.singleShot(0, self._position_search_actions)
+
+        dialog.setProperty("musefyAuxiliaryMinimized", True)
+        # Clear the native minimized state before hiding so the OS does not
+        # retain an additional taskbar item for a window represented in Musefy.
+        dialog.setWindowState(Qt.WindowState.WindowNoState)
+        # A native showMinimized() can finish its own visibility update after
+        # WindowStateChange is delivered.  Deferring the final hide by one
+        # event-loop turn makes the in-app chip win that race consistently.
+        QTimer.singleShot(
+            0,
+            lambda target=dialog: self._hide_minimized_auxiliary_dialog(target),
+        )
+
+    def _hide_minimized_auxiliary_dialog(self, dialog: QDialog) -> None:
+        if (
+            dialog in self._auxiliary_dialog_buttons
+            and dialog.property("musefyAuxiliaryMinimized")
+        ):
+            dialog.setWindowState(Qt.WindowState.WindowNoState)
+            dialog.hide()
+
+    def _restore_auxiliary_dialog(self, dialog: QDialog) -> None:
+        """Restore a dialog from its compact top-bar button."""
+
+        was_minimized = bool(
+            dialog.property("musefyAuxiliaryMinimized")
+        )
+        button = self._auxiliary_dialog_buttons.pop(dialog, None)
+        if button is not None:
+            layout = self._auxiliary_minimized_layout
+            if layout is not None:
+                layout.removeWidget(button)
+            button.deleteLater()
+
+        container = self._auxiliary_minimized_container
+        if container is not None and not self._auxiliary_dialog_buttons:
+            container.hide()
+        self._position_search_actions()
+        QTimer.singleShot(0, self._position_search_actions)
+
+        dialog.setProperty("musefyAuxiliaryMinimized", False)
+        dialog.setWindowState(Qt.WindowState.WindowNoState)
+        if was_minimized:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if (
+            isinstance(watched, QDialog)
+            and watched.property("musefyAuxiliaryRegistered")
+            and isinstance(event, QEvent)
+            and event.type() == QEvent.Type.WindowStateChange
+            and watched.windowState() & Qt.WindowState.WindowMinimized
+        ):
+            self._minimize_auxiliary_dialog(watched)
+            return True
+
+        return super().eventFilter(watched, event)
+
+    def closeEvent(self, event: object) -> None:
+        """Stop loader work before the main process is allowed to exit."""
+
+        self._spotify_sync_timer.stop()
+        for dialog in tuple(self._auxiliary_dialog_buttons):
+            dialog.close()
+
+        for thread in tuple(self._youtube_threads):
+            if not thread.isRunning():
+                continue
+            thread.cancel()
+            # Search services check the interruption flag between requests.
+            # Give in-flight network calls a short grace period first.
+            if not thread.wait(3_000):
+                # The application is already shutting down; do not leave a
+                # worker alive to block Qt's event loop indefinitely.
+                thread.terminate()
+                thread.wait(1_000)
+
+        self._genre_analysis_pool.clear()
+        self._track_batch_pool.clear()
+        self.media_player.stop()
+        super().closeEvent(event)
 
     def _handle_spotify_sync_toggled(
         self,
@@ -4334,6 +4772,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Opening Spotify OAuth...")
+        dialog.start_progress("Connecting to Spotify...")
         thread = YouTubeTaskThread(
             self.youtube_import_service.reauthorize_spotify,
             self,
@@ -4369,6 +4808,7 @@ class MainWindow(QMainWindow):
         )
         dialog.set_authenticated(authenticated)
         dialog.set_busy(False, result)
+        dialog.finish_progress(result)
         self.statusBar().showMessage(result)
 
     def _start_background_spotify_sync(self) -> None:
@@ -4401,16 +4841,32 @@ class MainWindow(QMainWindow):
         sync_all: bool,
     ) -> None:
         if dialog is not None:
-            dialog.set_busy(
-                True,
+            message = (
                 "Reading saved Spotify tracks..."
                 if sync_all
-                else "Checking Spotify for new saved tracks...",
+                else "Checking Spotify for new saved tracks..."
             )
+            dialog.set_busy(
+                True,
+                message,
+            )
+            dialog.start_progress(message)
 
         def sync() -> object:
             if not sync_all:
-                return self.spotify_fav_sync_service.sync_new_saved_tracks()
+                sync_result = (
+                    self.spotify_fav_sync_service.sync_new_saved_tracks()
+                )
+                if not sync_result.new_tracks:
+                    return sync_result
+
+                search_result = self.youtube_import_service.search_playlist_tracks(
+                    list(enumerate(sync_result.new_tracks)),
+                    playlist_name="Spotify favorites",
+                    on_progress=thread.search_progress_updated.emit,
+                    should_cancel=thread.is_cancelled,
+                )
+                return sync_result, search_result
 
             sync_result = self.spotify_fav_sync_service.sync_all_saved_tracks()
             if not sync_result.new_tracks:
@@ -4419,10 +4875,20 @@ class MainWindow(QMainWindow):
             search_result = self.youtube_import_service.search_playlist_tracks(
                 list(enumerate(sync_result.new_tracks)),
                 playlist_name="Spotify favorites",
+                on_progress=thread.search_progress_updated.emit,
+                should_cancel=thread.is_cancelled,
             )
             return sync_result, search_result
 
         thread = YouTubeTaskThread(sync, self)
+        if dialog is not None:
+            thread.search_progress_updated.connect(
+                dialog.update_search_progress
+            )
+        else:
+            thread.search_progress_updated.connect(
+                self._handle_spotify_sync_progress
+            )
         thread.result_ready.connect(
             lambda result: self._handle_spotify_sync_result(
                 dialog,
@@ -4438,6 +4904,26 @@ class MainWindow(QMainWindow):
         )
         self._start_youtube_thread(thread, dialog)
 
+    def _handle_spotify_sync_progress(
+        self,
+        completed: int,
+        total: int,
+        found: int,
+        failed: int,
+        current: str,
+    ) -> None:
+        """Keep background fav sync observable without opening a dialog."""
+
+        message = f"Spotify fav sync: Searching {completed}/{total} · found {found}"
+        if failed:
+            message += f" · failed {failed}"
+        if current:
+            current = " ".join(current.split())
+            if len(current) > 52:
+                current = f"{current[:51].rstrip()}…"
+            message += f" · {current}"
+        self.statusBar().showMessage(message)
+
     def _handle_spotify_sync_result(
         self,
         dialog: SpotifySettingsDialog | None,
@@ -4445,14 +4931,7 @@ class MainWindow(QMainWindow):
         *,
         sync_all: bool,
     ) -> None:
-        if not sync_all:
-            if not isinstance(result, SpotifyFavSyncResult):
-                self._handle_spotify_sync_error(
-                    dialog,
-                    "Spotify fav sync returned an invalid result.",
-                )
-                return
-
+        if not sync_all and isinstance(result, SpotifyFavSyncResult):
             new_tracks = result.new_tracks
             if new_tracks:
                 names = ", ".join(
@@ -4469,6 +4948,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message)
             if dialog is not None:
                 dialog.set_busy(False, message)
+                dialog.finish_progress(message)
             return
 
         if (
@@ -4483,16 +4963,24 @@ class MainWindow(QMainWindow):
             return
 
         sync_result, search_result = result
+        sync_label = "Sync All" if sync_all else "Spotify fav sync"
+        message = (
+            f"{sync_label} found {len(sync_result.new_tracks)} "
+            "saved track(s)."
+        )
         if dialog is not None:
-            dialog.set_busy(
-                False,
-                f"Sync All found {len(sync_result.new_tracks)} saved track(s).",
-            )
-            dialog.accept()
+            dialog.set_busy(False, message)
+            dialog.finish_progress(message)
+            if sync_all:
+                dialog.accept()
+        else:
+            self.statusBar().showMessage(message)
 
         if search_result is None:
             self.statusBar().showMessage(
                 "Spotify Sync All: no saved tracks found."
+                if sync_all
+                else "Spotify fav sync: no new saved tracks."
             )
             return
 
@@ -4507,6 +4995,7 @@ class MainWindow(QMainWindow):
         message: str,
     ) -> None:
         dialog.set_busy(False, "Spotify OAuth failed.")
+        dialog.finish_progress("Spotify OAuth failed.")
         QMessageBox.warning(dialog, "Spotify OAuth failed", message)
 
     def _handle_spotify_sync_error(
@@ -4516,6 +5005,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if dialog is not None:
             dialog.set_busy(False, "Spotify sync failed.")
+            dialog.finish_progress("Spotify sync failed.")
             QMessageBox.warning(dialog, "Spotify sync failed", message)
         else:
             self.statusBar().showMessage(f"Spotify fav sync failed: {message}")
@@ -4529,6 +5019,7 @@ class MainWindow(QMainWindow):
             spotify_authenticated=True,
             spotify_sync_enabled=self.spotify_fav_sync_service.is_enabled(),
         )
+        dialog.set_import_source("spotify_favorite")
         dialog.playlist_import_requested.connect(
             lambda candidates: self._start_playlist_import(dialog, candidates)
         )
@@ -4584,10 +5075,12 @@ class MainWindow(QMainWindow):
                 f"0/{len(selected_candidates)}..."
             ),
         )
+        import_source = dialog.import_source
 
         def import_playlist() -> YouTubePlaylistImportResult:
             return self.youtube_import_service.download_and_import_playlist(
                 selected_candidates,
+                source=import_source,
                 on_progress=thread.progress_updated.emit,
                 on_track_imported=thread.track_imported.emit,
             )
@@ -4674,6 +5167,10 @@ class MainWindow(QMainWindow):
             True,
             f"Searching YouTube again: 0/{len(retry_tracks)}...",
         )
+        dialog.start_progress(
+            "Searching YouTube again...",
+            total=len(retry_tracks),
+        )
 
         def search_playlist() -> SpotifyPlaylistSearchResult:
             return self.youtube_import_service.search_playlist_tracks(
@@ -4682,9 +5179,14 @@ class MainWindow(QMainWindow):
                     dialog.playlist_name or "YouTube playlist"
                 ),
                 cover_url=dialog.playlist_cover_url,
+                on_progress=thread.search_progress_updated.emit,
+                should_cancel=thread.is_cancelled,
             )
 
         thread = YouTubeTaskThread(search_playlist, self)
+        thread.search_progress_updated.connect(
+            dialog.update_search_progress
+        )
         thread.result_ready.connect(
             lambda result: self._handle_youtube_playlist_search_result(
                 dialog,
@@ -4797,20 +5299,51 @@ class MainWindow(QMainWindow):
             service = self.mp3party_import_service
             source_label = "MP3Party tracks"
             status_label = "MP3Party"
+        worker_limit = getattr(
+            service,
+            "search_workers",
+            DEFAULT_SEARCH_WORKERS,
+        )
 
         dialog.set_busy(
             True,
             f"Searching {status_label}: 0/{len(retry_tracks)}...",
         )
+        dialog.start_progress(
+            f"Searching {status_label}...",
+            total=len(retry_tracks),
+        )
 
         def search_playlist() -> AlternativePlaylistSearchResult:
-            candidates: list[
-                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate
-            ] = []
-            search_failures: list[tuple[SpotifyTrack, str]] = []
-            failed_positions: list[int] = []
+            candidates_by_index: dict[
+                int,
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate,
+            ] = {}
+            failures_by_index: dict[int, tuple[SpotifyTrack, str]] = {}
+            completed = 0
 
-            for position, track in retry_tracks:
+            def report(track: SpotifyTrack) -> None:
+                thread.search_progress_updated.emit(
+                    completed,
+                    len(retry_tracks),
+                    len(candidates_by_index),
+                    len(failures_by_index),
+                    track.title,
+                )
+
+            def search_one(
+                index: int,
+                position: int,
+                track: SpotifyTrack,
+            ) -> tuple[
+                int,
+                SpotifyTrack,
+                YouTubeCandidate | SoundCloudCandidate | Mp3PartyCandidate
+                | None,
+                str | None,
+            ]:
+                if thread.is_cancelled():
+                    raise OperationCancelled()
                 try:
                     if provider == "youtube":
                         matches = service.search(track.search_query)
@@ -4820,16 +5353,15 @@ class MainWindow(QMainWindow):
                             max_results=5,
                         )
                 except (OSError, RuntimeError, ValueError) as error:
-                    search_failures.append((track, str(error)))
-                    failed_positions.append(position)
-                    continue
+                    return index, track, None, str(error)
 
                 if not matches:
-                    search_failures.append(
-                        (track, f"No {status_label} match found.")
+                    return (
+                        index,
+                        track,
+                        None,
+                        f"No {status_label} match found.",
                     )
-                    failed_positions.append(position)
-                    continue
 
                 match = matches[0]
                 if isinstance(match, YouTubeCandidate):
@@ -4841,16 +5373,72 @@ class MainWindow(QMainWindow):
                     )
                 else:
                     match = replace(match, playlist_position=position)
-                candidates.append(match)
+                return index, track, match, None
+
+            total = len(retry_tracks)
+            thread.search_progress_updated.emit(
+                0,
+                total,
+                0,
+                0,
+                (
+                    "Starting parallel search "
+                    f"({min(worker_limit, total)} workers)"
+                ),
+            )
+            with ThreadPoolExecutor(
+                max_workers=min(worker_limit, max(total, 1)),
+                thread_name_prefix=f"musefy-{provider}-search",
+            ) as executor:
+                futures = {
+                    executor.submit(search_one, index, position, track): index
+                    for index, (position, track) in enumerate(retry_tracks)
+                }
+
+                for future in as_completed(futures):
+                    if thread.is_cancelled():
+                        for pending in futures:
+                            pending.cancel()
+                        raise OperationCancelled()
+
+                    index, track, match, failure = future.result()
+                    completed += 1
+                    if match is not None:
+                        candidates_by_index[index] = match
+                    else:
+                        failures_by_index[index] = (
+                            track,
+                            failure or "Search failed.",
+                        )
+                    report(track)
+
+            candidates = tuple(
+                candidates_by_index[index]
+                for index in range(total)
+                if index in candidates_by_index
+            )
+            search_failures = tuple(
+                failures_by_index[index]
+                for index in range(total)
+                if index in failures_by_index
+            )
+            failed_positions = tuple(
+                retry_tracks[index][0]
+                for index in range(total)
+                if index in failures_by_index
+            )
 
             return AlternativePlaylistSearchResult(
                 provider=provider,
-                candidates=tuple(candidates),
-                failed=tuple(search_failures),
-                failed_positions=tuple(failed_positions),
+                candidates=candidates,
+                failed=search_failures,
+                failed_positions=failed_positions,
             )
 
         thread = YouTubeTaskThread(search_playlist, self)
+        thread.search_progress_updated.connect(
+            dialog.update_search_progress
+        )
         thread.result_ready.connect(
             lambda result: self._handle_alternative_playlist_search_result(
                 dialog,
@@ -4896,21 +5484,39 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
     ) -> None:
         self._youtube_thread = thread
+        self._youtube_thread_dialog = dialog
+        self._youtube_threads.add(thread)
         thread.finished.connect(
-            lambda: self._finish_youtube_thread(dialog)
+            lambda worker=thread, target=dialog: self._finish_youtube_thread(
+                worker,
+                target,
+            )
+        )
+        thread.cancelled.connect(
+            lambda target=dialog: self._handle_youtube_cancelled(target)
         )
         thread.start()
 
     def _finish_youtube_thread(
         self,
+        thread: YouTubeTaskThread,
         dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
     ) -> None:
-        if self._youtube_thread is not None:
-            self._youtube_thread.deleteLater()
+        if thread is self._youtube_thread:
             self._youtube_thread = None
+            self._youtube_thread_dialog = None
+        self._youtube_threads.discard(thread)
+        thread.deleteLater()
 
         if dialog is not None and dialog.isVisible():
             dialog.set_busy(False, dialog.status_label.text())
+
+    def _handle_youtube_cancelled(
+        self,
+        dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
+    ) -> None:
+        if dialog is not None and dialog.isVisible():
+            dialog.set_busy(False, "Operation cancelled.")
 
     def _handle_authentication_result(
         self,
@@ -4928,6 +5534,7 @@ class MainWindow(QMainWindow):
             self.youtube_import_service.spotify_provider.has_saved_credentials()
         )
         dialog.set_busy(False, result)
+        dialog.finish_progress(result)
         QMessageBox.information(
             dialog,
             "Authentication",
@@ -5147,9 +5754,11 @@ class MainWindow(QMainWindow):
         )
 
         unmatched = dialog.unmatched_playlist_tracks
-        if result.failed or unmatched:
+        skipped = dialog.skipped_playlist_candidates
+        failed = (*result.failed, *skipped)
+        if failed or unmatched:
             failed_candidates = [
-                candidate for candidate, _ in result.failed
+                candidate for candidate, _ in failed
             ]
             dialog.set_candidates(
                 failed_candidates,
@@ -5163,13 +5772,13 @@ class MainWindow(QMainWindow):
                 False,
                 (
                     f"{len(failed_candidates) + len(unmatched)} "
-                    "tracks failed or were not found."
+                    "tracks failed, were not found, or were not selected."
                 ),
             )
 
             result_dialog = PlaylistImportResultDialog(
                 len(result.imported),
-                result.failed,
+                failed,
                 dialog,
                 unmatched=unmatched,
                 unmatched_positions=dialog.unmatched_playlist_positions,
@@ -5179,7 +5788,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_youtube_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         unmatched,
                         dialog.unmatched_playlist_positions,
                     ),
@@ -5190,7 +5799,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         unmatched,
                         dialog.unmatched_playlist_positions,
                         "soundcloud",
@@ -5202,7 +5811,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         unmatched,
                         dialog.unmatched_playlist_positions,
                         "mp3party",
@@ -5219,7 +5828,7 @@ class MainWindow(QMainWindow):
                 )
             )
             result_dialog.exec()
-            if not result.failed and not unmatched:
+            if not failed and not unmatched:
                 dialog.accept()
             return
 
@@ -5280,9 +5889,11 @@ class MainWindow(QMainWindow):
             self._maybe_refresh_recommendations,
         )
 
-        if result.failed:
+        skipped = dialog.skipped_playlist_candidates
+        failed = (*result.failed, *skipped)
+        if failed:
             failed_candidates = [
-                candidate for candidate, _ in result.failed
+                candidate for candidate, _ in failed
             ]
             dialog.set_candidates(
                 failed_candidates,
@@ -5298,7 +5909,7 @@ class MainWindow(QMainWindow):
 
             result_dialog = PlaylistImportResultDialog(
                 len(result.imported),
-                result.failed,
+                failed,
                 dialog,
             )
             result_dialog.youtube_search_requested.connect(
@@ -5306,7 +5917,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         (),
                         (),
                         "youtube",
@@ -5318,7 +5929,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_soundcloud_playlist_import(
                         dialog,
-                        [candidate for candidate, _ in result.failed],
+                        [candidate for candidate, _ in failed],
                     ),
                 )
             )
@@ -5327,7 +5938,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         (),
                         (),
                         "mp3party",
@@ -5335,7 +5946,7 @@ class MainWindow(QMainWindow):
                 )
             )
             result_dialog.exec()
-            if not result.failed:
+            if not failed:
                 dialog.accept()
             return
 
@@ -5371,9 +5982,11 @@ class MainWindow(QMainWindow):
             self._maybe_refresh_recommendations,
         )
 
-        if result.failed:
+        skipped = dialog.skipped_playlist_candidates
+        failed = (*result.failed, *skipped)
+        if failed:
             failed_candidates = [
-                candidate for candidate, _ in result.failed
+                candidate for candidate, _ in failed
             ]
             dialog.set_candidates(
                 failed_candidates,
@@ -5389,7 +6002,7 @@ class MainWindow(QMainWindow):
 
             result_dialog = PlaylistImportResultDialog(
                 len(result.imported),
-                result.failed,
+                failed,
                 dialog,
             )
             result_dialog.youtube_search_requested.connect(
@@ -5397,7 +6010,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         (),
                         (),
                         "youtube",
@@ -5409,7 +6022,7 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_alternative_playlist_search(
                         dialog,
-                        result.failed,
+                        failed,
                         (),
                         (),
                         "soundcloud",
@@ -5421,12 +6034,12 @@ class MainWindow(QMainWindow):
                     0,
                     lambda: self._start_mp3party_playlist_import(
                         dialog,
-                        [candidate for candidate, _ in result.failed],
+                        [candidate for candidate, _ in failed],
                     ),
                 )
             )
             result_dialog.exec()
-            if not result.failed:
+            if not failed:
                 dialog.accept()
             return
 

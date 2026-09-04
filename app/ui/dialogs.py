@@ -1,6 +1,8 @@
 from pathlib import Path
+from typing import ClassVar
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QTimer, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -9,16 +11,22 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from app.domain.models import Track
 from app.ingestion.metadata import AudioMetadata
 from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
@@ -31,6 +39,18 @@ SearchCandidate = (
     | SoundCloudCandidate
     | Mp3PartyCandidate
 )
+
+
+def _format_elapsed(milliseconds: int) -> str:
+    """Format an operation duration compactly for the dialog header."""
+
+    total_seconds = max(milliseconds, 0) // 1000
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes < 60:
+        return f"{minutes:02d}:{seconds:02d}"
+
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 class SpotifySyncRow(QFrame):
@@ -152,6 +172,7 @@ class SpotifySyncRow(QFrame):
 class SpotifySettingsDialog(QDialog):
     """Settings and connection status for Spotify integrations."""
 
+    closed = Signal()
     authenticate_requested = Signal()
     sync_toggled = Signal(bool)
     sync_requested = Signal()
@@ -165,6 +186,7 @@ class SpotifySettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
+        self._close_notified = False
         self.setObjectName("spotifySettingsDialog")
         self.setWindowTitle("Spotify settings")
         self.resize(500, 300)
@@ -242,12 +264,37 @@ class SpotifySettingsDialog(QDialog):
         self.status_label = QLabel()
         self.status_label.setObjectName("spotifySettingsStatus")
         self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.addWidget(self.status_label, 1)
+
+        self.elapsed_label = QLabel("00:00")
+        self.elapsed_label.setObjectName("searchElapsedTime")
+        self.elapsed_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.elapsed_label.hide()
+        status_layout.addWidget(self.elapsed_label)
+        layout.addLayout(status_layout)
+
+        self._progress_clock = QElapsedTimer()
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_elapsed_time)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("searchProgressBar")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.hide()
+        layout.addWidget(self.progress_bar)
 
         buttons_layout = QHBoxLayout()
         buttons_layout.addStretch()
         close_button = QPushButton("Close")
-        close_button.clicked.connect(self.accept)
+        close_button.clicked.connect(self.reject)
         buttons_layout.addWidget(close_button)
         layout.addLayout(buttons_layout)
 
@@ -287,6 +334,91 @@ class SpotifySettingsDialog(QDialog):
         )
         if message:
             self.status_label.setText(message)
+
+    def _notify_closed(self) -> None:
+        if not self._close_notified:
+            self._close_notified = True
+            self.closed.emit()
+
+    def reject(self) -> None:
+        self._notify_closed()
+        super().reject()
+
+    def closeEvent(self, event: object) -> None:
+        self._notify_closed()
+        super().closeEvent(event)
+
+    def start_progress(
+        self,
+        message: str,
+        *,
+        total: int | None = None,
+    ) -> None:
+        """Show a compact progress indicator for a background operation."""
+
+        if total is None or total <= 0:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(0)
+        self._progress_clock.start()
+        self._progress_timer.start()
+        self.elapsed_label.setText("00:00")
+        self.elapsed_label.show()
+        self.progress_bar.show()
+        self.status_label.setText(message)
+
+    def update_search_progress(
+        self,
+        completed: int,
+        total: int,
+        found: int,
+        failed: int,
+        current: str = "",
+    ) -> None:
+        """Update Spotify/playlist search progress and its micro-log line."""
+
+        total = max(total, 0)
+        if total:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(max(completed, 0), total))
+        else:
+            self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+
+        parts = [
+            f"Searching: {completed}/{total}",
+            f"found {found}",
+        ]
+        if failed:
+            parts.append(f"failed {failed}")
+        if current:
+            current = " ".join(current.split())
+            if len(current) > 52:
+                current = f"{current[:51].rstrip()}…"
+            parts.append(current)
+        self.status_label.setText(" · ".join(parts))
+
+    def finish_progress(self, message: str) -> None:
+        """Complete the visual indicator while retaining the final summary."""
+
+        if self._progress_timer.isActive():
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(100)
+            self._refresh_elapsed_time()
+            self._progress_timer.stop()
+        self.status_label.setText(message)
+
+    def hide_progress(self) -> None:
+        self.progress_bar.hide()
+        self.elapsed_label.hide()
+        self._progress_timer.stop()
+
+    def _refresh_elapsed_time(self) -> None:
+        if self._progress_clock.isValid():
+            self.elapsed_label.setText(
+                _format_elapsed(self._progress_clock.elapsed())
+            )
 
     def _is_authenticated(self) -> bool:
         return bool(self.auth_status_label.property("connected"))
@@ -375,6 +507,7 @@ class TrackMetadataDialog(QDialog):
 
 
 class YouTubeSearchDialog(QDialog):
+    closed = Signal()
     source_requested = Signal(str)
     # Kept under the old name for compatibility with existing integrations.
     soundcloud_download_requested = Signal(str)
@@ -399,9 +532,14 @@ class YouTubeSearchDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
+        self._close_notified = False
 
         self._busy = False
         self._playlist_mode = False
+        # Provenance used when the dialog downloads YouTube candidates.  The
+        # regular search flow stays labelled as YouTube, while Spotify
+        # favourite sync can opt into its own import-log method.
+        self._import_source = "youtube"
         self._playlist_name: str | None = None
         self._playlist_cover_url: str | None = None
         self._unmatched_playlist_tracks: tuple[
@@ -410,6 +548,9 @@ class YouTubeSearchDialog(QDialog):
         self._unmatched_playlist_positions: tuple[int, ...] = ()
         self._local_playlist_id: str | None = None
         self._imported_playlist_tracks: dict[int, str] = {}
+        self._skipped_playlist_candidates: tuple[
+            tuple[SearchCandidate, str],
+        ] = ()
 
         self.setWindowTitle(
             "Add from YouTube, Spotify, SoundCloud or MP3Party"
@@ -456,7 +597,7 @@ class YouTubeSearchDialog(QDialog):
         )
         search_layout.addWidget(self.soundcloud_button)
 
-        self.mp3party_button = QPushButton("Find with MP3Party")
+        self.mp3party_button = QPushButton("Search MP3Party")
         self.mp3party_button.setToolTip(
             "Search MP3Party or load a direct track URL. "
             "Use only tracks you are authorized to download."
@@ -466,17 +607,12 @@ class YouTubeSearchDialog(QDialog):
         )
         search_layout.addWidget(self.mp3party_button)
 
-        self.authenticate_button = QPushButton("Spotify OAuth")
-        self.authenticate_button.setToolTip(
-            "Authorize Spotify for private playlists and saved-track sync."
-        )
-        self.authenticate_button.clicked.connect(
-            self._request_authenticate
-        )
-        search_layout.addWidget(self.authenticate_button)
-
         self.spotify_auth_status_label = QLabel()
         self.spotify_auth_status_label.setObjectName("spotifyAuthStatus")
+        # OAuth state is already shown in the Spotify fav sync row below;
+        # keeping a second "Connected" badge in the search-actions row adds
+        # noise without providing another action.
+        self.spotify_auth_status_label.hide()
         search_layout.addWidget(self.spotify_auth_status_label)
 
         search_layout.addStretch()
@@ -508,7 +644,32 @@ class YouTubeSearchDialog(QDialog):
         self.status_label = QLabel(
             "Search YouTube or paste a YouTube, Spotify, SoundCloud or MP3Party URL."
         )
-        layout.addWidget(self.status_label)
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.addWidget(self.status_label, 1)
+
+        self.elapsed_label = QLabel("00:00")
+        self.elapsed_label.setObjectName("searchElapsedTime")
+        self.elapsed_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.elapsed_label.hide()
+        status_layout.addWidget(self.elapsed_label)
+        layout.addLayout(status_layout)
+
+        self._progress_clock = QElapsedTimer()
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_elapsed_time)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("searchProgressBar")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.hide()
+        layout.addWidget(self.progress_bar)
 
         buttons_layout = QHBoxLayout()
 
@@ -615,13 +776,34 @@ class YouTubeSearchDialog(QDialog):
     def set_spotify_sync_enabled(self, enabled: bool) -> None:
         self.spotify_sync_row.set_sync_enabled(enabled)
 
+    @property
+    def import_source(self) -> str:
+        return self._import_source
+
+    def set_import_source(self, source: str) -> None:
+        self._import_source = source.strip() or "youtube"
+
     def _request_import(self) -> None:
         candidates = self.selected_candidates()
 
-        if not candidates:
+        if not candidates and not self._playlist_mode:
             return
 
         if self._playlist_mode:
+            skipped: list[tuple[SearchCandidate, str]] = []
+            for index in range(self.results_list.count()):
+                item = self.results_list.item(index)
+                if item.checkState() == Qt.CheckState.Checked:
+                    continue
+
+                candidate = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(
+                    candidate,
+                    (YouTubeCandidate, SoundCloudCandidate, Mp3PartyCandidate),
+                ):
+                    skipped.append((candidate, "Skipped by user."))
+
+            self._skipped_playlist_candidates = tuple(skipped)
             self.playlist_import_requested.emit(candidates)
         else:
             if isinstance(candidates[0], SoundCloudCandidate):
@@ -648,9 +830,16 @@ class YouTubeSearchDialog(QDialog):
 
     def _handle_selection_changed(self) -> None:
         selected_count = len(self.selected_candidates())
+        can_review_playlist = (
+            self._playlist_mode
+            and (
+                self.results_list.count() > 0
+                or bool(self._unmatched_playlist_tracks)
+            )
+        )
         self.import_button.setEnabled(
             not self._busy
-            and selected_count > 0
+            and (selected_count > 0 or can_review_playlist)
         )
 
         if self._playlist_mode:
@@ -727,6 +916,7 @@ class YouTubeSearchDialog(QDialog):
         self._unmatched_playlist_positions = (
             unmatched_positions if playlist else ()
         )
+        self._skipped_playlist_candidates = ()
         self.results_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
             if playlist
@@ -768,7 +958,7 @@ class YouTubeSearchDialog(QDialog):
                 "Select one to download."
             )
 
-        self.status_label.setText(message)
+        self.finish_progress(message)
         self._handle_selection_changed()
 
     @property
@@ -788,6 +978,12 @@ class YouTubeSearchDialog(QDialog):
     @property
     def unmatched_playlist_positions(self) -> tuple[int, ...]:
         return self._unmatched_playlist_positions
+
+    @property
+    def skipped_playlist_candidates(
+        self,
+    ) -> tuple[tuple[SearchCandidate, str], ...]:
+        return self._skipped_playlist_candidates
 
     @property
     def local_playlist_id(self) -> str | None:
@@ -823,12 +1019,24 @@ class YouTubeSearchDialog(QDialog):
         self.source_button.setEnabled(not busy)
         self.soundcloud_button.setEnabled(not busy)
         self.mp3party_button.setEnabled(not busy)
-        self.authenticate_button.setEnabled(not busy)
         self.spotify_sync_row.setEnabled(not busy)
         self.source_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
         self._handle_selection_changed()
+
+    def _notify_closed(self) -> None:
+        if not self._close_notified:
+            self._close_notified = True
+            self.closed.emit()
+
+    def reject(self) -> None:
+        self._notify_closed()
+        super().reject()
+
+    def closeEvent(self, event: object) -> None:
+        self._notify_closed()
+        super().closeEvent(event)
 
     def update_playlist_download_progress(
         self,
@@ -838,12 +1046,88 @@ class YouTubeSearchDialog(QDialog):
         if not self._playlist_mode:
             return
 
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(min(max(completed, 0), max(total, 1)))
+        self.progress_bar.show()
         self.status_label.setText(
             f"Downloading playlist: {completed}/{total}..."
         )
 
+    def start_progress(
+        self,
+        message: str,
+        *,
+        total: int | None = None,
+    ) -> None:
+        """Show a compact determinate or indeterminate progress indicator."""
+
+        if total is None or total <= 0:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(0)
+        self._progress_clock.start()
+        self._progress_timer.start()
+        self.elapsed_label.setText("00:00")
+        self.elapsed_label.show()
+        self.progress_bar.show()
+        self.status_label.setText(message)
+
+    def update_search_progress(
+        self,
+        completed: int,
+        total: int,
+        found: int,
+        failed: int,
+        current: str = "",
+    ) -> None:
+        """Render live search counts and the currently processed track."""
+
+        total = max(total, 0)
+        if total:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(max(completed, 0), total))
+        else:
+            self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+
+        parts = [
+            f"Searching: {completed}/{total}",
+            f"found {found}",
+        ]
+        if failed:
+            parts.append(f"failed {failed}")
+        if current:
+            current = " ".join(current.split())
+            if len(current) > 52:
+                current = f"{current[:51].rstrip()}…"
+            parts.append(current)
+        self.status_label.setText(" · ".join(parts))
+
+    def finish_progress(self, message: str) -> None:
+        """Keep the completed bar visible beside the final summary."""
+
+        if self._progress_timer.isActive():
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(100)
+            self._refresh_elapsed_time()
+            self._progress_timer.stop()
+        self.status_label.setText(message)
+
+    def hide_progress(self) -> None:
+        self.progress_bar.hide()
+        self.elapsed_label.hide()
+        self._progress_timer.stop()
+
+    def _refresh_elapsed_time(self) -> None:
+        if self._progress_clock.isValid():
+            self.elapsed_label.setText(
+                _format_elapsed(self._progress_clock.elapsed())
+            )
+
     def show_error(self, message: str) -> None:
         self.set_busy(False, "Operation failed.")
+        self.finish_progress("Operation failed.")
         QMessageBox.warning(
             self,
             "Import operation failed",
@@ -1046,3 +1330,161 @@ class PlaylistImportResultDialog(QDialog):
     def _request_mp3party_search(self) -> None:
         self.mp3party_search_requested.emit()
         self.accept()
+
+
+class ImportLogDialog(QDialog):
+    """Read-only history of tracks successfully added to the library."""
+
+    _SOURCE_LABELS: ClassVar[dict[str, str]] = {
+        "local_upload": "Local file",
+        "windows_import": "Local file",
+        "windows_folder_import": "Local folder",
+        "youtube": "YouTube",
+        "soundcloud_import": "SoundCloud",
+        "mp3party": "MP3Party",
+        "spotify": "Spotify",
+        "spotify_favorite": "Spotify favorite sync",
+    }
+
+    def __init__(
+        self,
+        tracks: list[Track] | tuple[Track, ...],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+
+        self.setWindowTitle("Import log")
+        self.resize(720, 460)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                f"{len(tracks)} track(s) added to the library."
+            )
+        )
+
+        self.log_table = QTableWidget(0, 3)
+        self.log_table.setHorizontalHeaderLabels(
+            ("Added", "Track", "Method")
+        )
+        self.log_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.log_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.log_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.log_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.log_table.customContextMenuRequested.connect(
+            self._show_track_context_menu
+        )
+        self.log_table.verticalHeader().setVisible(False)
+        self.log_table.setAlternatingRowColors(True)
+        header = self.log_table.horizontalHeader()
+        header.setSectionResizeMode(
+            0,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+        header.setSectionResizeMode(
+            1,
+            QHeaderView.ResizeMode.Stretch,
+        )
+        header.setSectionResizeMode(
+            2,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+
+        ordered_tracks = sorted(
+            tracks,
+            key=lambda track: self._timestamp_sort_key(track.created_at),
+            reverse=True,
+        )
+        for track in ordered_tracks:
+            row = self.log_table.rowCount()
+            self.log_table.insertRow(row)
+            self.log_table.setItem(
+                row,
+                0,
+                QTableWidgetItem(self._format_timestamp(track.created_at)),
+            )
+            track_item = QTableWidgetItem(
+                f"{track.artist} — {track.title}"
+            )
+            if track.source_url:
+                track_item.setToolTip(track.source_url)
+                track_item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    track.source_url,
+                )
+            self.log_table.setItem(row, 1, track_item)
+            self.log_table.setItem(
+                row,
+                2,
+                QTableWidgetItem(self._source_label(track.source)),
+            )
+
+        layout.addWidget(self.log_table, 1)
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        buttons_layout.addWidget(close_button)
+        layout.addLayout(buttons_layout)
+
+    def _show_track_context_menu(self, position) -> None:
+        index = self.log_table.indexAt(position)
+        if not index.isValid():
+            return
+
+        self.log_table.selectRow(index.row())
+        track_item = self.log_table.item(index.row(), 1)
+        source_url = ""
+        if track_item is not None:
+            source_url = str(
+                track_item.data(Qt.ItemDataRole.UserRole) or ""
+            ).strip()
+
+        menu = QMenu(self.log_table)
+        copy_action = menu.addAction("Copy link")
+        copy_action.setEnabled(bool(source_url))
+        copy_action.triggered.connect(
+            lambda _checked=False, url=source_url: (
+                QGuiApplication.clipboard().setText(url)
+                if url
+                else None
+            )
+        )
+        menu.exec(
+            self.log_table.viewport().mapToGlobal(position)
+        )
+
+    @classmethod
+    def _source_label(cls, source: str) -> str:
+        return cls._SOURCE_LABELS.get(
+            source,
+            source.replace("_", " ").title() or "Unknown",
+        )
+
+    @staticmethod
+    def _format_timestamp(value: object) -> str:
+        if not hasattr(value, "strftime"):
+            return str(value)
+        if getattr(value, "tzinfo", None) is not None:
+            value = value.astimezone()
+        return value.strftime("%d %b %Y, %H:%M")
+
+    @staticmethod
+    def _timestamp_sort_key(value: object) -> float:
+        timestamp = getattr(value, "timestamp", None)
+        if not callable(timestamp):
+            return 0.0
+        try:
+            return float(timestamp())
+        except (OverflowError, OSError, ValueError):
+            return 0.0

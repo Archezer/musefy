@@ -6,10 +6,10 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QByteArray,
-    QEvent,
-    QEasingCurve,
     Property,
+    QByteArray,
+    QEasingCurve,
+    QEvent,
     QPropertyAnimation,
     QRect,
     QRectF,
@@ -20,10 +20,10 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QFontMetrics,
     QIcon,
-    QCursor,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -37,17 +37,19 @@ from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
     QScrollBar,
+    QSizePolicy,
     QSlider,
     QStyle,
     QStyleOptionSlider,
+    QStyleOptionToolButton,
     QTableWidget,
     QToolButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -133,6 +135,58 @@ class SvgIconButton(QAbstractButton):
         )
 
 
+class HoverCircleMenuButton(QToolButton):
+    """A menu button with the same quiet hover circle as the like control."""
+
+    def __init__(
+        self,
+        *,
+        diameter: int = 32,
+        offset_x: int = 0,
+        offset_y: int = 2,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._background_inset = 2
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+        self.setFixedSize(diameter, diameter)
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def paintEvent(self, event: object) -> None:
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.isDown() or self.underMouse():
+            background = QColor(
+                112,
+                224,
+                190,
+                42 if self.isDown() else 25,
+            )
+            background_rect = self.rect().adjusted(
+                self._background_inset,
+                self._background_inset,
+                -self._background_inset,
+                -self._background_inset,
+            )
+            background_rect.translate(self._offset_x, self._offset_y)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(background)
+            painter.drawEllipse(background_rect)
+
+        self.style().drawComplexControl(
+            QStyle.ComplexControl.CC_ToolButton,
+            option,
+            painter,
+            self,
+        )
+        painter.end()
+
+
 def _color_with_alpha(value: str, alpha: int) -> QColor:
     color = QColor(value)
     color.setAlpha(alpha)
@@ -180,6 +234,16 @@ class RailIconButton(QToolButton):
                 (0.25, 0.66),
             ),
             ("#8BDCC1", "#326D68"),
+        ),
+        "log": (
+            (
+                (0.28, 0.24),
+                (0.73, 0.28),
+                (0.78, 0.60),
+                (0.58, 0.78),
+                (0.24, 0.66),
+            ),
+            ("#B5FBE0", "#3C8176"),
         ),
     }
 
@@ -362,6 +426,7 @@ class HoverTableWidget(QTableWidget):
     """QTableWidget that exposes the full row under the mouse pointer."""
 
     row_hovered = Signal(int)
+    row_double_clicked = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -413,15 +478,24 @@ class HoverTableWidget(QTableWidget):
                 self._publish_row_hover(
                     self.rowAt(int(event.position().y()))
                 )
+            elif event_type == QEvent.Type.MouseButtonDblClick:
+                row_index = self.rowAt(int(event.position().y()))
+                if row_index >= 0:
+                    self.row_double_clicked.emit(row_index)
+                    return True
             elif event_type == QEvent.Type.Leave:
                 self._publish_row_hover(-1)
         elif watched in self._row_widgets:
-            if event.type() in (
+            event_type = event.type()
+            if event_type == QEvent.Type.MouseButtonDblClick:
+                self.row_double_clicked.emit(self._row_widgets[watched])
+                return True
+            if event_type in (
                 QEvent.Type.Enter,
                 QEvent.Type.MouseMove,
             ):
                 self._publish_row_hover(self._row_widgets[watched])
-            elif event.type() == QEvent.Type.Leave:
+            elif event_type == QEvent.Type.Leave:
                 local_pos = self.viewport().mapFromGlobal(QCursor.pos())
                 if not self.viewport().rect().contains(local_pos):
                     self._publish_row_hover(-1)
@@ -782,6 +856,85 @@ def svg_icon(svg: str, size: int = 18) -> QIcon:
     return QIcon(pixmap)
 
 
+class LibraryHeaderView(QHeaderView):
+    """Header whose active sort chevron sits above the column label."""
+
+    _SORTABLE_COLUMNS = frozenset({1, 2, 3, 4})
+    _CENTERED_COLUMNS = frozenset({2, 3, 4})
+
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(orientation, parent)
+        # Qt's native indicator is anchored to the section edge.  Hiding it
+        # lets us place a compact chevron over the actual heading text.
+        self.setSortIndicatorShown(False)
+        self.setMouseTracking(True)
+
+    def paintSection(
+        self,
+        painter: QPainter,
+        rect,
+        logicalIndex: int,
+    ) -> None:
+        super().paintSection(painter, rect, logicalIndex)
+
+        if (
+            logicalIndex not in self._SORTABLE_COLUMNS
+            or logicalIndex != self.sortIndicatorSection()
+        ):
+            return
+
+        model = self.model()
+        if model is None:
+            return
+        label = model.headerData(
+            logicalIndex,
+            Qt.Orientation.Horizontal,
+            Qt.ItemDataRole.DisplayRole,
+        )
+        if not isinstance(label, str) or not label:
+            return
+
+        # Metadata headers are left aligned.  Centering over the measured
+        # label keeps the chevron attached to "Genres", "Added" and
+        # "Duration" instead of the wider section's right edge.  Title keeps
+        # the edge-oriented placement because its section is stretch-sized.
+        metrics = QFontMetrics(self.font())
+        label_width = metrics.horizontalAdvance(label)
+        if logicalIndex in self._CENTERED_COLUMNS:
+            label_x = rect.left() + 7
+            center_x = label_x + label_width / 2
+        else:
+            center_x = rect.right() - 10
+        top = rect.top() + 3
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(
+            QPen(
+                QColor("#A9A9B0"),
+                1.35,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
+        )
+        path = QPainterPath()
+        if self.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder:
+            path.moveTo(center_x - 3.0, top)
+            path.lineTo(center_x, top + 3.0)
+            path.lineTo(center_x + 3.0, top)
+        else:
+            path.moveTo(center_x - 3.0, top + 3.0)
+            path.lineTo(center_x, top)
+            path.lineTo(center_x + 3.0, top + 3.0)
+        painter.drawPath(path)
+        painter.restore()
+
+
 IMPORT_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#A2F6D9"/><stop offset=".52" stop-color="#55CDB0"/><stop offset="1" stop-color="#327E76"/></linearGradient></defs>
@@ -809,23 +962,20 @@ _MUSEFY_ICON_PATH = _MUSEFY_MARK_PATH.with_name("musefy-icon.svg")
 MUSEFY_ICON_SVG = _MUSEFY_ICON_PATH.read_text(encoding="utf-8")
 PLAYLIST_SCROLL_LEFT_ICON = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M15.25 5.75 9 12l6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M14.25 5.75 8 12l6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
 PLAYLIST_SCROLL_RIGHT_ICON = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="m8.75 5.75 6.25 6.25-6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m9.75 5.75 6.25 6.25-6.25 6.25" stroke="#B5FBE0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 """
-LIBRARY_ICON = """
-<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
- <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
- <rect x="4.5" y="4.5" width="15" height="15" rx="2.5" stroke="url(#accent)" stroke-width="1.35"/>
- <path d="M7.5 8.5h6.2M7.5 11.7h4.6M7.5 14.9h3.2" stroke="url(#accent)" stroke-width="1.25" stroke-linecap="round"/>
- <circle cx="16.5" cy="14.7" r="2.25" stroke="url(#accent)" stroke-width="1.2"/>
- <circle cx="16.5" cy="14.7" r=".7" fill="url(#accent)"/>
-</svg>
-"""
+_LIBRARY_ICON_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "assets"
+    / "library-icon.svg"
+)
+LIBRARY_ICON = _LIBRARY_ICON_PATH.read_text(encoding="utf-8")
 MAP_ICON = """
 <svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
  <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
@@ -859,6 +1009,14 @@ SOUNDCLOUD_ICON = """
 JSON_ICON = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
  <path d="M9 5c-2 0-2 2-2 3.2v1.2c0 1.1-.58 1.6-1.5 1.6.92 0 1.5.5 1.5 1.6v1.2C7 15 7 17 9 17M15 5c2 0 2 2 2 3.2v1.2c0 1.1.58 1.6 1.5 1.6-.92 0-1.5.5-1.5 1.6v1.2c0 1.2 0 3.2-2 3.2" stroke="#C9C9CE" stroke-width="1.6" stroke-linecap="round"/>
+</svg>
+"""
+LOG_ICON = """
+<svg viewBox="3 3 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+ <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#B5FBE0"/><stop offset=".52" stop-color="#5DD8B7"/><stop offset="1" stop-color="#32877C"/></linearGradient></defs>
+ <rect x="5" y="4" width="14" height="16" rx="2.2" stroke="url(#accent)" stroke-width="1.35"/>
+ <path d="M8 8h8M8 11.5h8M8 15h4" stroke="url(#accent)" stroke-width="1.25" stroke-linecap="round"/>
+ <circle cx="16" cy="15" r="1.35" fill="url(#accent)"/>
 </svg>
 """
 
@@ -1115,7 +1273,7 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(self.cover_label)
 
-        self.name_label = QLabel(name)
+        self.name_label = MarqueeLabel(name)
         self.name_label.setObjectName("playlistCardName")
         self.name_label.setWordWrap(False)
         self.name_label.setFixedHeight(16)
@@ -1127,13 +1285,6 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
 
     def resizeEvent(self, event: object) -> None:
         super().resizeEvent(event)
-        self.name_label.setText(
-            QFontMetrics(self.name_label.font()).elidedText(
-                self._full_name,
-                Qt.TextElideMode.ElideRight,
-                max(8, self.name_label.width()),
-            )
-        )
 
     def set_selected(self, selected: bool) -> None:
         self._card_surface.set_selected(selected)
@@ -1405,7 +1556,7 @@ class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(cover)
 
-        name_label = QLabel(title)
+        name_label = MarqueeLabel(title)
         name_label.setObjectName("playlistCardName")
         name_label.setWordWrap(False)
         name_label.setFixedHeight(16)
@@ -1418,13 +1569,6 @@ class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
 
     def resizeEvent(self, event: object) -> None:
         super().resizeEvent(event)
-        self.name_label.setText(
-            QFontMetrics(self.name_label.font()).elidedText(
-                self._full_name,
-                Qt.TextElideMode.ElideRight,
-                max(8, self.name_label.width()),
-            )
-        )
 
     def set_selected(self, selected: bool) -> None:
         self._card_surface.set_selected(selected)
@@ -1438,7 +1582,7 @@ class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
 class MainLibraryCard(UtilityPlaylistCard):
     def __init__(self, parent: QFrame | None = None) -> None:
         super().__init__(
-            title="Main library",
+            title="Music library",
             cover_svg=MAIN_LIBRARY_SVG,
             parent=parent,
         )

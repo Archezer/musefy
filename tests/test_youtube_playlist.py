@@ -1,4 +1,6 @@
 from pathlib import Path
+from threading import Lock
+from time import sleep
 from typing import Self
 
 import pytest
@@ -500,6 +502,88 @@ def test_spotify_playlist_search_reports_failed_positions() -> None:
 
     assert result.failed_positions == (11,)
     assert result.failed[0][0] == SpotifyTrack("Missing", "Artist")
+
+
+def test_spotify_playlist_search_reports_live_progress() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+    )
+    progress: list[tuple[int, int, int, int, str]] = []
+
+    def collect_progress(
+        completed: int,
+        total: int,
+        found: int,
+        failed: int,
+        current: str,
+    ) -> None:
+        progress.append((completed, total, found, failed, current))
+
+    service.search_playlist_tracks(
+        [
+            (0, SpotifyTrack("First track", "Artist")),
+            (1, SpotifyTrack("Second track", "Artist")),
+        ],
+        playlist_name="Playlist",
+        on_progress=collect_progress,
+    )
+
+    assert progress[0] == (
+        0,
+        2,
+        0,
+        0,
+        "Starting parallel search (2 workers)",
+    )
+    assert progress[-1][:4] == (2, 2, 2, 0)
+    assert {entry[4] for entry in progress[1:]} == {
+        "First track",
+        "Second track",
+    }
+
+
+def test_spotify_playlist_search_uses_bounded_parallel_workers() -> None:
+    state_lock = Lock()
+    active = 0
+    max_active = 0
+
+    class SlowProvider(FakeSpotifyYoutubeProvider):
+        def search(
+            self,
+            query: str,
+            *,
+            max_results: int,
+        ) -> list[YouTubeCandidate]:
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            sleep(0.03)
+            with state_lock:
+                active -= 1
+            return super().search(query, max_results=max_results)
+
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        SlowProvider(),
+        search_workers=3,
+    )
+    tracks = [
+        (index, SpotifyTrack(f"Track {index}", "Artist"))
+        for index in range(6)
+    ]
+
+    result = service.search_playlist_tracks(
+        tracks,
+        playlist_name="Playlist",
+    )
+
+    assert max_active == 3
+    assert [candidate.requested_title for candidate in result.candidates] == [
+        track.title
+        for _, track in tracks
+    ]
 
 
 def test_load_url_auto_detects_spotify_playlist() -> None:

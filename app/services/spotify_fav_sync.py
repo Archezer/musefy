@@ -14,7 +14,7 @@ DEFAULT_STATE_PATH = DATA_DIR / "spotify_fav_sync.json"
 
 @dataclass(frozen=True)
 class SpotifyFavSyncResult:
-    """Tracks discovered since the user enabled favorite synchronization."""
+    """Tracks discovered since the previous successful synchronization."""
 
     new_tracks: tuple[SpotifyTrack, ...]
     synced_at: str
@@ -24,8 +24,9 @@ class SpotifyFavSyncService:
     """Persist and incrementally scan Spotify's saved-track library.
 
     Enabling the feature creates a local high-water mark. Existing Spotify
-    favorites therefore stay untouched; only tracks saved after that moment
-    are returned by subsequent syncs.
+    favorites therefore stay untouched. After the first successful scan, the
+    persisted ``last_sync_at`` cursor is used so a restart can continue from
+    the last synchronization instead of replaying the whole saved library.
     """
 
     def __init__(
@@ -62,9 +63,18 @@ class SpotifyFavSyncService:
         if not state.get("enabled", False):
             return SpotifyFavSyncResult((), synced_at)
 
-        tracking_since = _parse_timestamp(
-            state.get("tracking_since")
-        )
+        tracking_since = _parse_timestamp(state.get("tracking_since"))
+        # ``tracking_since`` is the initial baseline created when the feature
+        # is enabled.  Once a scan has completed, ``last_sync_at`` becomes the
+        # durable cursor used across app restarts.  Keep the fallback for
+        # state files written by older versions.
+        last_sync_at = _parse_timestamp(state.get("last_sync_at"))
+        sync_cursors = [
+            timestamp
+            for timestamp in (tracking_since, last_sync_at)
+            if timestamp is not None
+        ]
+        sync_cursor = max(sync_cursors) if sync_cursors else None
         seen_track_ids = {
             str(track_id)
             for track_id in state.get("seen_track_ids", [])
@@ -78,7 +88,7 @@ class SpotifyFavSyncService:
 
             added_at = _parse_timestamp(track.added_at)
             if added_at is None or (
-                tracking_since is not None and added_at <= tracking_since
+                sync_cursor is not None and added_at <= sync_cursor
             ):
                 continue
             if track.spotify_id in seen_track_ids:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 # A deliberately neutral "smoked glass" system: it stays legible on Windows
 # without borrowing Spotify's green or the usual blue desktop-app accents.
 DARK_THEME = """
@@ -98,10 +97,16 @@ QToolButton#librarySearchClear:hover {
 QDialog {
     background-color: #111416;
     border: 1px solid rgba(181, 251, 224, 42);
-    border-radius: 18px;
+    border-radius: 0;
 }
 QDialog QLabel {
     background: transparent;
+}
+QLabel#searchElapsedTime {
+    color: #899692;
+    font-size: 11px;
+    font-variant: small-caps;
+    padding-left: 12px;
 }
 QDialog QLineEdit {
     background-color: rgba(255, 255, 255, 10);
@@ -118,6 +123,22 @@ QDialog QListWidget {
     background-color: rgba(8, 11, 13, 165);
     border-color: rgba(181, 251, 224, 34);
     border-radius: 12px;
+}
+QProgressBar#searchProgressBar {
+    background-color: rgba(255, 255, 255, 12);
+    border: none;
+    border-radius: 3px;
+    min-height: 6px;
+    max-height: 6px;
+}
+QProgressBar#searchProgressBar::chunk {
+    background-color: #5DD8B7;
+    border-radius: 3px;
+}
+QLabel#searchElapsedTime {
+    color: #8F9A98;
+    font-size: 11px;
+    min-width: 42px;
 }
 QFrame#spotifySyncRow, QFrame#spotifySettingsSection {
     background-color: rgba(255, 255, 255, 8);
@@ -267,10 +288,51 @@ QToolButton#plainActionButton:hover {
     border-radius: 22px;
 }
 QToolButton#plainActionButton[topMenu="true"] {
+    background: transparent;
+    border: none;
+    border-radius: 16px;
+    color: #B5FBE0;
     min-width: 32px;
     min-height: 32px;
     max-width: 32px;
     max-height: 32px;
+    padding: 0;
+}
+/* Instant-popup buttons keep a separate menu subcontrol.  Collapse it so
+   the visible top-right action remains one consistently round surface. */
+QToolButton#plainActionButton[topMenu="true"]::menu-button {
+    width: 0px;
+    background: transparent;
+    border: none;
+}
+QToolButton#plainActionButton[topMenu="true"]:hover {
+    background: transparent;
+    border: none;
+    border-radius: 16px;
+}
+QToolButton#plainActionButton[topMenu="true"]:pressed {
+    background: transparent;
+    border: none;
+    border-radius: 16px;
+}
+QToolButton#auxiliaryMinimizedButton {
+    background: rgba(24, 57, 54, 210);
+    border: 1px solid rgba(181, 251, 224, 74);
+    border-radius: 13px;
+    color: #B5FBE0;
+    padding: 4px 10px;
+    min-height: 26px;
+    max-height: 30px;
+    font-size: 12px;
+}
+QToolButton#auxiliaryMinimizedButton:hover {
+    background: rgba(74, 141, 119, 220);
+    border-color: rgba(181, 251, 224, 145);
+    color: #F1FFF8;
+}
+QToolButton#auxiliaryMinimizedButton:pressed {
+    background: rgba(112, 197, 171, 230);
+    color: #07100F;
 }
 QToolButton#plainActionButton:pressed {
     background: rgba(112, 224, 190, 42);
@@ -279,7 +341,7 @@ QToolButton#plainActionButton:pressed {
 }
 QToolButton#playlistScrollButton {
     background: rgba(36, 53, 55, 205);
-    border: 1px solid rgba(181, 251, 224, 72);
+    border: none;
     border-radius: 13px;
     color: #B5FBE0;
     font-size: 30px;
@@ -288,11 +350,12 @@ QToolButton#playlistScrollButton {
 }
 QToolButton#playlistScrollButton:hover {
     background: rgba(82, 150, 132, 218);
-    border-color: rgba(181, 251, 224, 128);
+    border: none;
     color: #F1FFF8;
 }
 QToolButton#playlistScrollButton:pressed {
     background: rgba(112, 197, 171, 230);
+    border: none;
 }
 QToolButton::menu-indicator {
     image: none;
@@ -353,6 +416,9 @@ QTableWidget#libraryTable QHeaderView::section:hover {
 QTableWidget::item, QListWidget::item {
     padding: 5px 7px;
     border-radius: 0;
+}
+QTableWidget#libraryTable::item {
+    padding-left: 4px;
 }
 QTableWidget::item {
     border-top: 1px solid #080A0C;

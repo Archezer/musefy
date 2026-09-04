@@ -5,6 +5,7 @@ import socket
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
@@ -26,6 +27,7 @@ YOUTUBE_AUDIO_FORMAT = (
     "bestaudio[ext=m4a][vcodec=none]/"
     "bestaudio[acodec*=mp4a][vcodec=none]"
 )
+YOUTUBE_SEARCH_TIMEOUT_SECONDS = 20
 
 DEFAULT_COOKIES_FILE = DATA_DIR / "youtube_cookies.txt"
 SUPPORTED_YOUTUBE_HOSTS = {
@@ -85,6 +87,7 @@ class YouTubeSearchProvider:
                     "no_warnings": True,
                     "skip_download": True,
                     "extract_flat": True,
+                    "socket_timeout": YOUTUBE_SEARCH_TIMEOUT_SECONDS,
                 }
             )
 
@@ -186,6 +189,7 @@ class YouTubeSearchProvider:
                         "skip_download": True,
                         "extract_flat": "in_playlist",
                         "noplaylist": False,
+                        "socket_timeout": YOUTUBE_SEARCH_TIMEOUT_SECONDS,
                     }
                 )
 
@@ -472,72 +476,105 @@ class YouTubeSearchProvider:
         return downloaded_files[0]
 
 
+_DNS_FALLBACK_LOCK = RLock()
+_DNS_FALLBACK_ORIGINAL = None
+_DNS_FALLBACK_WRAPPER = None
+_DNS_FALLBACK_ACTIVE = 0
+
+
 @contextmanager
 def _dns_fallback():
-    original_getaddrinfo = socket.getaddrinfo
-    resolved_hosts: dict[str, str] = {}
+    """Install one shared, thread-safe DNS fallback for yt-dlp calls.
 
-    def getaddrinfo(
-        host,
-        port,
-        family=0,
-        type=0,
-        proto=0,
-        flags=0,
-    ):
-        try:
-            return original_getaddrinfo(
+    Search workers may enter this context concurrently.  The old
+    implementation replaced ``socket.getaddrinfo`` independently in each
+    worker, so one worker could restore the global function while another was
+    still using it.  A shared wrapper and reference count keep the fallback
+    installed until the last worker leaves.
+    """
+
+    global _DNS_FALLBACK_ACTIVE
+    global _DNS_FALLBACK_ORIGINAL
+    global _DNS_FALLBACK_WRAPPER
+
+    with _DNS_FALLBACK_LOCK:
+        if _DNS_FALLBACK_ACTIVE == 0:
+            original_getaddrinfo = socket.getaddrinfo
+            resolved_hosts: dict[str, str] = {}
+
+            def getaddrinfo(
                 host,
                 port,
-                family,
-                type,
-                proto,
-                flags,
-            )
-        except socket.gaierror:
-            if not host or host == "dns.google":
-                raise
+                family=0,
+                type=0,
+                proto=0,
+                flags=0,
+            ):
+                try:
+                    return original_getaddrinfo(
+                        host,
+                        port,
+                        family,
+                        type,
+                        proto,
+                        flags,
+                    )
+                except socket.gaierror:
+                    if not host or host == "dns.google":
+                        raise
 
-            ip_address = resolved_hosts.get(host)
+                    with _DNS_FALLBACK_LOCK:
+                        ip_address = resolved_hosts.get(host)
 
-            if ip_address is None:
-                with urlopen(
-                    "https://dns.google/resolve?"
-                    f"name={host}&type=A",
-                    timeout=5,
-                ) as response:
-                    dns_result = json.load(response)
+                    if ip_address is None:
+                        with urlopen(
+                            "https://dns.google/resolve?"
+                            f"name={host}&type=A",
+                            timeout=5,
+                        ) as response:
+                            dns_result = json.load(response)
 
-                answers = dns_result.get("Answer", [])
-                ip_address = next(
-                    (
-                        answer["data"]
-                        for answer in answers
-                        if answer.get("type") == 1
-                    ),
-                    None,
-                )
+                        answers = dns_result.get("Answer", [])
+                        ip_address = next(
+                            (
+                                answer["data"]
+                                for answer in answers
+                                if answer.get("type") == 1
+                            ),
+                            None,
+                        )
 
-                if ip_address is None:
-                    raise
+                        if ip_address is None:
+                            raise
 
-                resolved_hosts[host] = ip_address
+                        with _DNS_FALLBACK_LOCK:
+                            resolved_hosts[host] = ip_address
 
-            return original_getaddrinfo(
-                ip_address,
-                port,
-                family,
-                type,
-                proto,
-                flags,
-            )
+                    return original_getaddrinfo(
+                        ip_address,
+                        port,
+                        family,
+                        type,
+                        proto,
+                        flags,
+                    )
 
-    socket.getaddrinfo = getaddrinfo
+            _DNS_FALLBACK_ORIGINAL = original_getaddrinfo
+            _DNS_FALLBACK_WRAPPER = getaddrinfo
+            socket.getaddrinfo = getaddrinfo
+
+        _DNS_FALLBACK_ACTIVE += 1
 
     try:
         yield
     finally:
-        socket.getaddrinfo = original_getaddrinfo
+        with _DNS_FALLBACK_LOCK:
+            _DNS_FALLBACK_ACTIVE -= 1
+            if _DNS_FALLBACK_ACTIVE == 0:
+                if socket.getaddrinfo is _DNS_FALLBACK_WRAPPER:
+                    socket.getaddrinfo = _DNS_FALLBACK_ORIGINAL
+                _DNS_FALLBACK_ORIGINAL = None
+                _DNS_FALLBACK_WRAPPER = None
 
 
 def _youtube_options(

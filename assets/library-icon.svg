@@ -1,0 +1,13 @@
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="accent" x1="5" y1="4" x2="19" y2="17" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B5FBE0"/>
+      <stop offset=".52" stop-color="#5DD8B7"/>
+      <stop offset="1" stop-color="#32877C"/>
+    </linearGradient>
+  </defs>
+  <path d="M4.4 4.6h10.8l2 2.7-2 2.7H4.4c-1.4 0-2.5-1.2-2.5-2.7s1.1-2.7 2.5-2.7Z" stroke="url(#accent)" stroke-width="1.85" stroke-linejoin="round"/>
+  <path d="M3.5 9.2h10.8l2 2.7-2 2.7H3.5c-1.4 0-2.5-1.2-2.5-2.7s1.1-2.7 2.5-2.7Z" stroke="url(#accent)" stroke-width="1.85" stroke-linejoin="round"/>
+  <path d="M4.2 13.8h10.8l2 2.7-2 2.7H4.2c-1.4 0-2.5-1.2-2.5-2.7s1.1-2.7 2.5-2.7Z" stroke="url(#accent)" stroke-width="1.85" stroke-linejoin="round"/>
+  <path d="m15.2 3.8 3.5-.9c.8-.2 1.4.3 1.6 1.1l2.7 12.8c.2.8-.3 1.4-1.1 1.6l-3.5.9-3.2-15.5Z" transform="translate(2.4 0)" stroke="url(#accent)" stroke-width="1.85" stroke-linejoin="round"/>
+</svg>

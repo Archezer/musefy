@@ -21,8 +21,8 @@ rules when importing content.
 - Search YouTube, import a direct YouTube link, or load a YouTube playlist.
 - Import a Spotify track, album or playlist: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
-- Sync newly saved Spotify favorites in the background every five minutes, with
-  an explicit **Sync all** review flow for the complete saved-track library.
+- Sync newly saved Spotify favorites at startup and every five minutes, with
+  a playlist-style review flow for selecting the tracks to download.
 - Search SoundCloud, load a direct track URL, or load a SoundCloud set and
   choose which tracks to import through `yt-dlp`.
 - Search MP3Party, choose a result, or load a direct MP3Party track URL.
@@ -334,11 +334,14 @@ The **Spotify fav sync** row is available in the import dialog and opens the
 same Spotify settings screen when clicked. Enable it only after OAuth: Musefy
 stores the enable time and checks `user-library-read` every five minutes, so
 tracks already saved before enabling are ignored. If OAuth is missing, clicking
-the checkbox offers to open Spotify settings.
+the checkbox offers to open Spotify settings. The checkbox state and the set of
+already-seen Spotify track IDs are stored locally, so restarting Musefy resumes
+from the last synchronization point.
 
-Use **Sync all** in Spotify settings to read the complete saved-track library.
-Musefy searches YouTube for matches and then opens the normal playlist-style
-selection screen; only checked tracks are downloaded.
+Use **Sync All** in Spotify settings to read the complete saved-track library.
+Automatic sync checks only favorites added since the last saved sync cursor;
+new tracks are searched on YouTube and opened in the normal playlist-style
+selection screen. Only checked tracks are downloaded.
 
 ### SoundCloud search and downloads
 
