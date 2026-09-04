@@ -18,15 +18,15 @@ rules when importing content.
 ## Features
 
 - Import local audio files (`mp3`, `m4a`, `mp4`, `flac`, `wav`, `ogg`, `opus`).
-- Search YouTube, import a direct YouTube link, or load a YouTube playlist.
-- Import a Spotify track, album or playlist: Spotify supplies metadata, then
+- Search ***YouTube***, import a direct ***YouTube*** link, or load a ***YouTube playlist***.
+- Import a ***Spotify track***, ***album*** or ***playlist***: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
-- Sync newly saved Spotify favorites at startup and every five minutes, with
+- Sync newly saved ***Spotify favorites*** at startup and every five minutes, with
   a playlist-style review flow for selecting the tracks to download.
-- Search SoundCloud, load a direct track URL, or load a SoundCloud set and
+- Search ***SoundCloud***, load a ***direct track URL***, or load a ***SoundCloud set*** and
   choose which tracks to import through `yt-dlp`.
-- Search MP3Party, choose a result, or load a direct MP3Party track URL.
-- Use Firefox YouTube cookies automatically when a browser session is required.
+- Search ***MP3Party***, choose a result, or load a direct ***MP3Party track URL***.
+- ***Use Firefox YouTube cookies automatically when a browser session is required***.
 - Analyse new tracks in the background with CUDA when it is available.
 - Store genre hierarchy, mood profile and one reusable MAEST embedding per
   track in a local SQLite database.
