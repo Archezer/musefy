@@ -18,6 +18,9 @@ class MusicStore(Protocol):
     def get_user(self, user_id: str) -> User | None:
         ...
 
+    def list_users(self) -> Iterable[User]:
+        ...
+
     def add_track(self, track: Track) -> None:
         ...
 

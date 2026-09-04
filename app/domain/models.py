@@ -8,6 +8,7 @@ from app.domain.recommendations import RecommendationMode
 
 class InteractionType(str, Enum):
     PLAY = "play"
+    LISTEN = "listen"
     LIKE = "like"
     SAVE = "save"
     SKIP = "skip"
@@ -17,6 +18,7 @@ class InteractionType(str, Enum):
     def weight(self) -> float:
         weights = {
             InteractionType.PLAY: 1.0,
+            InteractionType.LISTEN: 1.0,
             InteractionType.LIKE: 4.0,
             InteractionType.SAVE: 5.0,
             InteractionType.SKIP: -2.0,

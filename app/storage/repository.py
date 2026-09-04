@@ -62,6 +62,14 @@ class SQLAlchemyMusicStore:
 
             return self._to_user(record)
 
+    def list_users(self) -> list[User]:
+        statement = select(UserRecord).order_by(UserRecord.created_at)
+
+        with self.session_factory() as session:
+            records = session.scalars(statement).all()
+
+        return [self._to_user(record) for record in records]
+
     def add_track(self, track: Track) -> None:
         record = TrackRecord(
             id=track.id,

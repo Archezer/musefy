@@ -1,11 +1,12 @@
 from pathlib import Path
 from typing import ClassVar
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QTimer, Qt, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -28,8 +29,11 @@ from PySide6.QtWidgets import (
 
 from app.domain.models import Track
 from app.ingestion.metadata import AudioMetadata
+from app.services.library_maintenance import LibraryHealthReport
 from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
+from app.services.statistics import ListeningStatistics
+from app.services.watch_folder import WatchFolderConfig, WatchFolderReport
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
 from app.ui.dialog_style import prepare_dialog
@@ -1332,6 +1336,701 @@ class PlaylistImportResultDialog(QDialog):
         self.accept()
 
 
+class ListeningBarChart(QWidget):
+    """Minimal native Qt bar chart with precise click targets."""
+
+    period_clicked = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._items: list[object] = []
+        self._selected_index = -1
+        self._hover_index = -1
+        self.setMinimumHeight(220)
+        self.setMouseTracking(True)
+
+    def set_items(self, items: tuple[object, ...] | list[object]) -> None:
+        self._items = list(items)
+        self._selected_index = len(self._items) - 1
+        self._hover_index = -1
+        self.update()
+
+    def set_selected_index(self, index: int) -> None:
+        if 0 <= index < len(self._items):
+            self._selected_index = index
+            self.update()
+
+    def mousePressEvent(self, event: object) -> None:
+        position = getattr(event, "position", lambda: None)()
+        if position is None:
+            return
+        left, _top, width, _height = self._plot_rect()
+        x = float(position.x())
+        if x < left or x >= left + width or not self._items:
+            return
+        slot_width = width / len(self._items)
+        index = int((x - left) / slot_width)
+        if 0 <= index < len(self._items):
+            self._selected_index = index
+            self.period_clicked.emit(index)
+            self.update()
+
+    def mouseMoveEvent(self, event: object) -> None:
+        position = getattr(event, "position", lambda: None)()
+        if position is None or not self._items:
+            return
+        left, _top, width, _height = self._plot_rect()
+        x = float(position.x())
+        if left <= x < left + width:
+            index = int((x - left) / (width / len(self._items)))
+        else:
+            index = -1
+        if index != self._hover_index:
+            self._hover_index = index
+            if index >= 0:
+                item = self._items[index]
+                self.setToolTip(
+                    f"{self._label(item)} · "
+                    f"{self._track_count(item)} tracks listened"
+                )
+            else:
+                self.setToolTip("")
+            self.update()
+
+    def leaveEvent(self, _event: object) -> None:
+        self._hover_index = -1
+        self.setToolTip("")
+        self.update()
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(255, 255, 255, 32), 1))
+        left, top, width, height = self._plot_rect()
+        baseline = top + height
+        painter.drawLine(
+            QRectF(left, baseline, width, 1).topLeft(),
+            QRectF(left + width, baseline, width, 1).topLeft(),
+        )
+        if not self._items:
+            painter.setPen(QColor(220, 225, 224, 150))
+            painter.drawText(
+                QRectF(left, top, width, height),
+                Qt.AlignmentFlag.AlignCenter,
+                "No listening data yet",
+            )
+            painter.end()
+            return
+
+        values = [self._track_count(item) for item in self._items]
+        maximum = max(values, default=0)
+        axis_maximum = max(maximum, 1)
+        ticks = self._axis_ticks(axis_maximum)
+        for tick in ticks:
+            level = tick / axis_maximum
+            y = baseline - height * level
+            painter.setPen(QPen(QColor(255, 255, 255, 18), 1))
+            painter.drawLine(
+                QRectF(left, y, width, 1).topLeft(),
+                QRectF(left + width, y, width, 1).topLeft(),
+            )
+            painter.setPen(QColor(220, 225, 224, 170))
+            painter.drawText(
+                QRectF(0, y - 9, left - 7, 18),
+                Qt.AlignmentFlag.AlignRight
+                | Qt.AlignmentFlag.AlignVCenter,
+                str(tick),
+            )
+
+        painter.save()
+        painter.setPen(QColor(220, 225, 224, 150))
+        painter.translate(9, top + height / 2)
+        painter.rotate(-90)
+        painter.drawText(
+            QRectF(-height / 2, -12, height, 20),
+            Qt.AlignmentFlag.AlignCenter,
+            "Tracks",
+        )
+        painter.restore()
+
+        slot_width = width / len(self._items)
+        bar_width = max(3.0, slot_width - 4.0)
+        for index, (item, track_count) in enumerate(
+            zip(self._items, values, strict=True)
+        ):
+            bar_height = height * track_count / axis_maximum
+            x = left + index * slot_width + (slot_width - bar_width) / 2
+            y = baseline - bar_height
+            color = QColor(
+                "#14B893"
+                if index == self._selected_index
+                else "#54A995"
+                if index == self._hover_index
+                else "#2A756B"
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(QRectF(x, y, bar_width, max(3.0, bar_height)), 4, 4)
+            if index == self._selected_index or index == self._hover_index:
+                painter.setPen(QPen(QColor("#B5FBE0"), 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(QRectF(x, y, bar_width, max(3.0, bar_height)), 4, 4)
+            if len(self._items) <= 12 or index % 5 == 0 or index == self._selected_index:
+                painter.setPen(QColor(220, 225, 224, 190))
+                painter.drawText(
+                    QRectF(x - slot_width, baseline + 7, slot_width * 3, 22),
+                    Qt.AlignmentFlag.AlignCenter,
+                    self._label(item),
+                )
+        painter.end()
+
+    def _plot_rect(self) -> tuple[float, float, float, float]:
+        return (
+            48.0,
+            12.0,
+            max(1.0, self.width() - 60.0),
+            max(1.0, self.height() - 48.0),
+        )
+
+    @staticmethod
+    def _track_count(item: object) -> int:
+        return max(0, int(getattr(item, "completed_listens", 0)))
+
+    @staticmethod
+    def _axis_ticks(axis_maximum: int) -> tuple[int, ...]:
+        """Return readable ticks whose upper bound follows the data maximum."""
+
+        if axis_maximum <= 1:
+            return (0, 1)
+
+        step = max(1, (axis_maximum + 3) // 4)
+        ticks = list(range(0, axis_maximum, step))
+        if ticks[-1] != axis_maximum:
+            ticks.append(axis_maximum)
+        return tuple(ticks)
+
+    @staticmethod
+    def _label(item: object) -> str:
+        day = getattr(item, "day", None)
+        if day is not None:
+            return str(day.day)
+        month = getattr(item, "month", None)
+        return month.strftime("%b") if month is not None else ""
+
+
+class ListeningStatisticsDialog(QDialog):
+    """A compact 30-day listening dashboard with a clickable heatmap."""
+
+    def __init__(
+        self,
+        statistics: ListeningStatistics,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+        self.setObjectName("listeningStatisticsDialog")
+        self.setWindowTitle("Listening habits")
+        self.resize(940, 700)
+        self._statistics = statistics
+        self._chart_mode = "day"
+        self._daily_by_day = {
+            item.day: item for item in statistics.daily
+        }
+        self._monthly_items = tuple(statistics.monthly)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 8, 20, 14)
+        layout.setSpacing(8)
+
+        period_text = (
+            f"Last 30 days · {statistics.period_start.strftime('%d %b')} — "
+            f"{statistics.period_end.strftime('%d %b %Y')}"
+        )
+
+        total_heading = QLabel("Total statistics")
+        total_heading.setObjectName("listeningTotalHeading")
+        layout.addWidget(total_heading)
+
+        total_frame = QFrame()
+        total_frame.setObjectName("listeningTotal")
+        total_layout = QVBoxLayout(total_frame)
+        total_layout.setContentsMargins(14, 6, 14, 7)
+        total_layout.setSpacing(4)
+
+        metric_row = QHBoxLayout()
+        metric_row.setContentsMargins(0, 0, 0, 0)
+        metric_row.setSpacing(8)
+        metrics = (
+            (self._format_minutes(statistics.listening_ms), "minutes listened"),
+            (str(statistics.completed_listens), "completed listens"),
+            (str(statistics.active_days), "active days"),
+            (str(len(statistics.new_finds)), "new finds"),
+            (str(statistics.skipped_count), "skips"),
+            (str(statistics.liked_tracks), "liked tracks"),
+        )
+        for index, (value, label) in enumerate(metrics):
+            self._add_metric(metric_row, value, label)
+            if index < len(metrics) - 1:
+                divider = QFrame()
+                divider.setObjectName("listeningTotalDivider")
+                divider.setFrameShape(QFrame.Shape.VLine)
+                divider.setFixedWidth(1)
+                metric_row.addWidget(divider)
+        total_layout.addLayout(metric_row)
+        layout.addWidget(total_frame)
+
+        # Keep the date range with the chart it describes instead of spending
+        # a separate row above the dashboard.
+        period_label = QLabel(period_text)
+        period_label.setObjectName("libraryMaintenanceDescription")
+
+        content_row = QHBoxLayout()
+        content_row.setSpacing(12)
+        chart_frame = QFrame()
+        chart_frame.setObjectName("libraryMaintenanceBackup")
+        chart_layout = QVBoxLayout(chart_frame)
+        chart_layout.setContentsMargins(12, 10, 12, 10)
+        chart_header = QHBoxLayout()
+        chart_header.addWidget(QLabel("Tracks listened"))
+        chart_header.addStretch()
+        self.chart_mode_combo = QComboBox()
+        self.chart_mode_combo.addItems(("Days", "Months"))
+        self.chart_mode_combo.currentIndexChanged.connect(
+            self._change_chart_mode
+        )
+        chart_header.addWidget(self.chart_mode_combo)
+        chart_layout.addLayout(chart_header)
+        self.bar_chart = ListeningBarChart()
+        self.bar_chart.period_clicked.connect(self._show_chart_period)
+        self.bar_chart.set_items(statistics.daily)
+        chart_layout.addWidget(self.bar_chart, 1)
+        chart_layout.addWidget(period_label)
+        content_row.addWidget(chart_frame, 1)
+
+        detail_frame = QFrame()
+        detail_frame.setObjectName("libraryMaintenanceBackup")
+        detail_layout = QVBoxLayout(detail_frame)
+        detail_layout.setContentsMargins(12, 10, 12, 10)
+        self.day_title = QLabel("Select a day")
+        self.day_title.setObjectName("libraryMaintenanceTitle")
+        detail_layout.addWidget(self.day_title)
+        self.day_summary = QLabel(
+            "Click a bar to inspect that period's pattern."
+        )
+        self.day_summary.setWordWrap(True)
+        detail_layout.addWidget(self.day_summary)
+        self.top_genre_label = QLabel("Top genre: —")
+        detail_layout.addWidget(self.top_genre_label)
+        self.track_count_label = QLabel("Tracks listened: 0")
+        detail_layout.addWidget(self.track_count_label)
+        self.day_table = QTableWidget(0, 4)
+        self.day_table.setHorizontalHeaderLabels(
+            ("#", "Track", "Artist", "Listens")
+        )
+        self.day_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.day_table.verticalHeader().setVisible(False)
+        self.day_table.setAlternatingRowColors(True)
+        self.day_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.day_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.day_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.day_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
+        )
+        detail_layout.addWidget(self.day_table, 1)
+        content_row.addWidget(detail_frame, 1)
+        layout.addLayout(content_row, 1)
+
+        insights = QFrame()
+        insights.setObjectName("listeningHighlights")
+        insights_layout = QVBoxLayout(insights)
+        insights_layout.setContentsMargins(12, 10, 12, 10)
+        insights_layout.setSpacing(7)
+        highlights_heading = QLabel("Highlights")
+        highlights_heading.setObjectName("listeningSectionHeading")
+        insights_layout.addWidget(highlights_heading)
+        self.highlights_table = QTableWidget(0, 3)
+        self.highlights_table.setObjectName("listeningHighlightsTable")
+        self.highlights_table.setHorizontalHeaderLabels(
+            ("Category", "Favorite", "Count")
+        )
+        self.highlights_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.highlights_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.highlights_table.setFocusPolicy(
+            Qt.FocusPolicy.NoFocus
+        )
+        self.highlights_table.setShowGrid(False)
+        self.highlights_table.setAlternatingRowColors(True)
+        self.highlights_table.verticalHeader().setVisible(False)
+        self.highlights_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.highlights_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.highlights_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.highlights_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.highlights_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        insights_layout.addWidget(self.highlights_table)
+        layout.addWidget(insights)
+        self._populate_highlights()
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
+
+        if statistics.daily:
+            self._show_chart_period(len(statistics.daily) - 1)
+
+    @staticmethod
+    def _add_metric(layout: QHBoxLayout, value: str, label: str) -> None:
+        metric = QWidget()
+        metric_layout = QVBoxLayout(metric)
+        metric_layout.setContentsMargins(0, 0, 0, 0)
+        metric_layout.setSpacing(2)
+        value_label = QLabel(value)
+        value_label.setObjectName("listeningTotalValue")
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        metric_layout.addWidget(value_label)
+        caption = QLabel(label)
+        caption.setObjectName("listeningTotalCaption")
+        caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        caption.setWordWrap(True)
+        metric_layout.addWidget(caption)
+        layout.addWidget(metric, 1)
+
+    @staticmethod
+    def _format_minutes(milliseconds: int) -> str:
+        minutes = max(0, round(milliseconds / 60_000))
+        hours, remainder = divmod(minutes, 60)
+        return f"{hours}h {remainder:02d}m" if hours else f"{remainder}m"
+
+    def _change_chart_mode(self, index: int) -> None:
+        self._chart_mode = "month" if index == 1 else "day"
+        items = (
+            self._monthly_items
+            if self._chart_mode == "month"
+            else tuple(self._statistics.daily)
+        )
+        self.bar_chart.set_items(items)
+        if items:
+            self._show_chart_period(len(items) - 1)
+
+    def _show_chart_period(self, index: int) -> None:
+        items = (
+            self._monthly_items
+            if self._chart_mode == "month"
+            else tuple(self._statistics.daily)
+        )
+        if not (0 <= index < len(items)):
+            return
+        item = items[index]
+        self.bar_chart.set_selected_index(index)
+        is_month = self._chart_mode == "month"
+        period_date = item.month if is_month else item.day
+        self.day_title.setText(
+            period_date.strftime("%B %Y" if is_month else "%A, %d %B")
+        )
+        self.day_summary.setText(
+            f"{self._format_minutes(item.listening_ms)} listened · "
+            f"{item.completed_listens} completed · {item.skipped} skipped"
+        )
+        top_genre = (
+            item.top_genre
+            if is_month
+            else (item.top_genres[0].label if item.top_genres else "")
+        )
+        self.top_genre_label.setText(f"Top genre: {top_genre or '—'}")
+        self.track_count_label.setText(
+            f"Tracks listened: {item.track_count} · "
+            f"{item.skipped} skipped"
+        )
+        self.day_table.setRowCount(0)
+        for rank, stat in enumerate(item.top_tracks, start=1):
+            row = self.day_table.rowCount()
+            self.day_table.insertRow(row)
+            self.day_table.setItem(row, 0, QTableWidgetItem(str(rank)))
+            self.day_table.setItem(row, 1, QTableWidgetItem(stat.label))
+            self.day_table.setItem(row, 2, QTableWidgetItem(stat.subtitle))
+            self.day_table.setItem(row, 3, QTableWidgetItem(str(stat.count)))
+
+    def _populate_highlights(self) -> None:
+        groups = (
+            ("Track", self._statistics.top_tracks),
+            ("Artist", self._statistics.favorite_artists),
+            ("Genre", self._statistics.favorite_genres),
+            ("New find", self._statistics.new_finds),
+            ("Skipped", self._statistics.skipped_tracks),
+        )
+        self.highlights_table.setRowCount(0)
+        for category, stats in groups:
+            if not stats:
+                continue
+            stat = stats[0]
+            row = self.highlights_table.rowCount()
+            self.highlights_table.insertRow(row)
+            self.highlights_table.setItem(row, 0, QTableWidgetItem(category))
+            self.highlights_table.setItem(row, 1, QTableWidgetItem(stat.label))
+            self.highlights_table.setItem(row, 2, QTableWidgetItem(str(stat.count)))
+
+        self.highlights_table.resizeRowsToContents()
+        header_height = self.highlights_table.horizontalHeader().sizeHint().height()
+        rows_height = sum(
+            self.highlights_table.rowHeight(row)
+            for row in range(self.highlights_table.rowCount())
+        )
+        self.highlights_table.setFixedHeight(
+            max(34, header_height + rows_height + 4)
+        )
+
+
+class LibraryMaintenanceDialog(QDialog):
+    """One place for non-destructive library checks and data portability."""
+
+    scan_requested = Signal()
+    zip_backup_requested = Signal()
+    json_export_requested = Signal()
+    restore_requested = Signal()
+    watch_folder_requested = Signal()
+    watch_sync_requested = Signal()
+    watch_disable_requested = Signal()
+    watch_update_metadata_toggled = Signal(bool)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        watch_config: WatchFolderConfig | None = None,
+    ) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+        self.setObjectName("libraryMaintenanceDialog")
+        self.setWindowTitle("Library health & backup")
+        self.resize(780, 540)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Library health & backup")
+        title.setObjectName("libraryMaintenanceTitle")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "Check missing or unreadable audio and review duplicates. "
+            "Acoustic matching compares decoded sound, so it can find the "
+            "same recording saved in different codecs."
+        )
+        description.setObjectName("libraryMaintenanceDescription")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        health_row = QHBoxLayout()
+        self.health_status = QLabel("No scan has been run yet.")
+        self.health_status.setObjectName("libraryMaintenanceStatus")
+        health_row.addWidget(self.health_status, 1)
+        self.scan_button = QPushButton("Check library")
+        self.scan_button.clicked.connect(self.scan_requested)
+        health_row.addWidget(self.scan_button)
+        layout.addLayout(health_row)
+
+        self.issues_table = QTableWidget(0, 3)
+        self.issues_table.setHorizontalHeaderLabels(
+            ("Check", "Track", "Details")
+        )
+        self.issues_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.issues_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.issues_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.issues_table.verticalHeader().setVisible(False)
+        self.issues_table.setAlternatingRowColors(True)
+        header = self.issues_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.issues_table, 1)
+
+        watch_frame = QFrame()
+        watch_frame.setObjectName("libraryMaintenanceBackup")
+        watch_layout = QVBoxLayout(watch_frame)
+        watch_layout.setContentsMargins(12, 9, 12, 9)
+        watch_layout.setSpacing(5)
+        watch_top_row = QHBoxLayout()
+        self.watch_status = QLabel()
+        self.watch_status.setObjectName("libraryMaintenanceStatus")
+        watch_top_row.addWidget(self.watch_status, 1)
+        self.watch_choose_button = QPushButton("Choose folder…")
+        self.watch_choose_button.clicked.connect(self.watch_folder_requested)
+        watch_top_row.addWidget(self.watch_choose_button)
+        self.watch_sync_button = QPushButton("Sync now")
+        self.watch_sync_button.clicked.connect(self.watch_sync_requested)
+        watch_top_row.addWidget(self.watch_sync_button)
+        self.watch_disable_button = QPushButton("Disable")
+        self.watch_disable_button.clicked.connect(self.watch_disable_requested)
+        watch_top_row.addWidget(self.watch_disable_button)
+        watch_layout.addLayout(watch_top_row)
+        self.watch_metadata_check = QCheckBox(
+            "Update title and artist when a changed file has new tags"
+        )
+        self.watch_metadata_check.toggled.connect(
+            self.watch_update_metadata_toggled
+        )
+        watch_layout.addWidget(self.watch_metadata_check)
+        layout.addWidget(watch_frame)
+        self.set_watch_config(watch_config or WatchFolderConfig())
+
+        backup_frame = QFrame()
+        backup_frame.setObjectName("libraryMaintenanceBackup")
+        backup_layout = QVBoxLayout(backup_frame)
+        backup_layout.setContentsMargins(12, 10, 12, 10)
+        backup_layout.setSpacing(6)
+        backup_label = QLabel(
+            "Full ZIP includes the database, audio, covers and analysis. "
+            "JSON is a portable catalog export without audio files."
+        )
+        backup_label.setWordWrap(True)
+        backup_layout.addWidget(backup_label)
+        backup_actions = QHBoxLayout()
+        self.zip_backup_button = QPushButton("Create ZIP backup")
+        self.zip_backup_button.clicked.connect(self.zip_backup_requested)
+        backup_actions.addWidget(self.zip_backup_button)
+        self.json_export_button = QPushButton("Export JSON")
+        self.json_export_button.clicked.connect(self.json_export_requested)
+        backup_actions.addWidget(self.json_export_button)
+        backup_actions.addStretch()
+        self.restore_button = QPushButton("Restore ZIP backup…")
+        self.restore_button.clicked.connect(self.restore_requested)
+        backup_actions.addWidget(self.restore_button)
+        backup_layout.addLayout(backup_actions)
+        layout.addWidget(backup_frame)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
+
+    def set_scanning(self, active: bool) -> None:
+        self.scan_button.setEnabled(not active)
+        self.zip_backup_button.setEnabled(not active)
+        self.json_export_button.setEnabled(not active)
+        self.restore_button.setEnabled(not active)
+        self.health_status.setText(
+            "Checking files and acoustic fingerprints…" if active
+            else self.health_status.text()
+        )
+
+    def show_report(self, report: LibraryHealthReport) -> None:
+        self.set_scanning(False)
+        rows: list[tuple[str, str, str]] = []
+        rows.extend(
+            ("Missing file", self._track_name(issue.track), issue.detail)
+            for issue in report.missing_files
+        )
+        rows.extend(
+            ("Unreadable audio", self._track_name(issue.track), issue.detail)
+            for issue in report.broken_audio
+        )
+        rows.extend(
+            (
+                "Identical files",
+                self._track_group_name(group.tracks),
+                "The files have the same SHA-256 hash.",
+            )
+            for group in report.exact_duplicates
+        )
+        rows.extend(
+            (
+                "Acoustic match",
+                self._track_group_name(group.tracks),
+                f"Fingerprint similarity: {group.similarity:.1%}",
+            )
+            for group in report.acoustic_duplicates
+        )
+        rows.extend(
+            ("Not fingerprinted", self._track_name(issue.track), issue.detail)
+            for issue in report.fingerprint_unavailable
+        )
+
+        self.issues_table.setRowCount(0)
+        for check, track_name, detail in rows:
+            row = self.issues_table.rowCount()
+            self.issues_table.insertRow(row)
+            self.issues_table.setItem(row, 0, QTableWidgetItem(check))
+            self.issues_table.setItem(row, 1, QTableWidgetItem(track_name))
+            self.issues_table.setItem(row, 2, QTableWidgetItem(detail))
+
+        found = len(rows)
+        self.health_status.setText(
+            f"Checked {report.checked_tracks} track(s): "
+            f"{found} item(s) need review."
+            if found
+            else f"Checked {report.checked_tracks} track(s): library looks healthy."
+        )
+
+    def set_watch_config(self, config: WatchFolderConfig) -> None:
+        if config.enabled and config.folder is not None:
+            self.watch_status.setText(f"Watching: {config.folder}")
+        elif config.folder is not None:
+            self.watch_status.setText(f"Paused: {config.folder}")
+        else:
+            self.watch_status.setText("No watch folder selected.")
+        self.watch_metadata_check.blockSignals(True)
+        self.watch_metadata_check.setChecked(config.update_metadata)
+        self.watch_metadata_check.blockSignals(False)
+
+    def show_watch_report(self, report: WatchFolderReport) -> None:
+        if report.folder is None:
+            return
+        parts = [
+            f"Imported: {len(report.imported)}",
+            f"Updated: {len(report.updated)}",
+            f"Skipped unchanged: {report.skipped}",
+            f"Removed from folder: {len(report.removed_files)}",
+        ]
+        if report.errors:
+            parts.append(f"Errors: {len(report.errors)}")
+        self.watch_status.setText(" · ".join(parts))
+
+    def show_scan_error(self, message: str) -> None:
+        self.set_scanning(False)
+        self.health_status.setText(f"Check failed: {message}")
+
+    @staticmethod
+    def _track_name(track: Track) -> str:
+        return f"{track.artist} — {track.title}"
+
+    @classmethod
+    def _track_group_name(cls, tracks: tuple[Track, ...]) -> str:
+        return "  •  ".join(cls._track_name(track) for track in tracks)
+
+
 class ImportLogDialog(QDialog):
     """Read-only history of tracks successfully added to the library."""
 
@@ -1344,6 +2043,7 @@ class ImportLogDialog(QDialog):
         "mp3party": "MP3Party",
         "spotify": "Spotify",
         "spotify_favorite": "Spotify favorite sync",
+        "watch_folder": "Watch folder",
     }
 
     def __init__(

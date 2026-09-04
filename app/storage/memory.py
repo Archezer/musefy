@@ -30,6 +30,9 @@ class InMemoryMusicStore:
     def get_user(self, user_id: str) -> User | None:
         return self.users.get(user_id)
 
+    def list_users(self) -> list[User]:
+        return list(self.users.values())
+
     def add_track(self, track: Track) -> None:
         if track.id in self.tracks:
             raise ValueError(f"Track with ID {track.id} already exists")

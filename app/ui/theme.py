@@ -102,6 +102,30 @@ QDialog {
 QDialog QLabel {
     background: transparent;
 }
+QFrame#listeningTotal {
+    background-color: rgba(255, 255, 255, 8);
+    border: 1px solid rgba(181, 251, 224, 42);
+    border-radius: 13px;
+}
+QLabel#listeningTotalHeading {
+    color: #B5FBE0;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#listeningTotalValue {
+    color: #F1F9F5;
+    font-size: 19px;
+    font-weight: 700;
+}
+QLabel#listeningTotalCaption {
+    color: #8F9A98;
+    font-size: 10px;
+}
+QFrame#listeningTotalDivider {
+    background-color: rgba(181, 251, 224, 34);
+    border: none;
+    max-width: 1px;
+}
 QLabel#searchElapsedTime {
     color: #899692;
     font-size: 11px;
@@ -435,6 +459,38 @@ QTableWidget::item:selected, QListWidget::item:selected {
     outline: none;
     border-left: none;
     border-right: none;
+}
+QFrame#listeningHighlights {
+    background-color: rgba(255, 255, 255, 6);
+    border: 1px solid rgba(181, 251, 224, 28);
+    border-radius: 13px;
+}
+QLabel#listeningSectionHeading {
+    color: #B5FBE0;
+    font-size: 11px;
+    font-weight: 700;
+}
+QTableWidget#listeningHighlightsTable {
+    background-color: rgba(8, 11, 13, 150);
+    border: 1px solid rgba(181, 251, 224, 22);
+    border-radius: 10px;
+    gridline-color: transparent;
+    padding: 0;
+    selection-background-color: rgba(181, 251, 224, 18);
+    selection-color: #F1F9F5;
+}
+QTableWidget#listeningHighlightsTable QHeaderView::section {
+    background-color: rgba(255, 255, 255, 8);
+    color: #9FADA8;
+    border-bottom: 1px solid rgba(181, 251, 224, 24);
+    padding: 6px 8px;
+}
+QTableWidget#listeningHighlightsTable::item {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 11);
+}
+QTableWidget#listeningHighlightsTable::item:alternate {
+    background-color: rgba(255, 255, 255, 4);
 }
 QHeaderView::section {
     background-color: #171A1D;

@@ -11,6 +11,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
     QObject,
+    QPoint,
     QPropertyAnimation,
     QRunnable,
     QSize,
@@ -22,6 +23,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QColor,
     QKeyEvent,
@@ -82,6 +84,11 @@ from app.ml.maest import (
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
 from app.services.interactions import InteractionService
+from app.services.library_maintenance import (
+    LibraryBackupService,
+    LibraryHealthReport,
+    LibraryHealthService,
+)
 from app.services.mp3party_import import (
     Mp3PartyCandidate,
     Mp3PartyImportService,
@@ -100,7 +107,12 @@ from app.services.spotify_fav_sync import (
     SpotifyFavSyncResult,
     SpotifyFavSyncService,
 )
+from app.services.statistics import ListeningStatisticsService
 from app.services.tracks import TrackManagementService
+from app.services.watch_folder import (
+    WatchFolderReport,
+    WatchFolderService,
+)
 from app.services.youtube_import import (
     DEFAULT_SEARCH_WORKERS,
     OperationCancelled,
@@ -111,7 +123,8 @@ from app.services.youtube_import import (
 )
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
-from app.storage.paths import PLAYLIST_EXPORTS_DIR
+from app.storage.database import create_database, engine
+from app.storage.paths import DATA_DIR, PLAYLIST_EXPORTS_DIR
 from app.storage.protocols import MusicStore
 from app.ui.components import (
     CLEAR_ICON,
@@ -161,6 +174,8 @@ from app.ui.components import (
 )
 from app.ui.dialogs import (
     ImportLogDialog,
+    LibraryMaintenanceDialog,
+    ListeningStatisticsDialog,
     PlaylistImportResultDialog,
     SpotifySettingsDialog,
     TrackMetadataDialog,
@@ -252,6 +267,48 @@ class YouTubeTaskThread(QThread):
                 self.result_ready.emit(result)
 
 
+class LibraryHealthTaskThread(QThread):
+    """Keep slow decoding and fingerprinting outside Qt's UI thread."""
+
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        service: LibraryHealthService,
+        parent: QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self.service = service
+
+    def run(self) -> None:
+        try:
+            result = self.service.scan()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.error_occurred.emit(str(error) or error.__class__.__name__)
+        else:
+            self.result_ready.emit(result)
+
+
+class WatchFolderTaskThread(QThread):
+    """Run a watch-folder pass without blocking playback controls."""
+
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(self, task: Callable[[], object], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.task = task
+
+    def run(self) -> None:
+        try:
+            result = self.task()
+        except (OSError, RuntimeError, ValueError) as error:
+            self.error_occurred.emit(str(error) or error.__class__.__name__)
+        else:
+            self.result_ready.emit(result)
+
+
 class GenreAnalysisSignals(QObject):
     result_ready = Signal(str, object)
     error_occurred = Signal(str, str)
@@ -341,6 +398,63 @@ class TrackBatchTask(QRunnable):
         self.signals.finished.emit(self.generation)
 
 
+class RecommendationSignals(QObject):
+    """Signals emitted while recommendations are calculated off the UI thread."""
+
+    batch_ready = Signal(int, object)
+    finished = Signal(int)
+    error_occurred = Signal(int, str)
+
+
+class RecommendationTask(QRunnable):
+    """Calculate recommendations in small batches so playback stays responsive."""
+
+    def __init__(
+        self,
+        fetcher: Callable[[], object],
+        generation: int,
+        *,
+        batch_size: int = 5,
+    ) -> None:
+        super().__init__()
+        self.fetcher = fetcher
+        self.generation = generation
+        self.batch_size = max(1, batch_size)
+        self.cancel_requested = Event()
+        self.signals = RecommendationSignals()
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+
+    def run(self) -> None:
+        if self.cancel_requested.is_set():
+            return
+
+        try:
+            recommendations = list(self.fetcher())
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self.signals.error_occurred.emit(
+                self.generation,
+                str(error) or error.__class__.__name__,
+            )
+            return
+
+        for start in range(0, len(recommendations), self.batch_size):
+            if self.cancel_requested.is_set():
+                return
+
+            self.signals.batch_ready.emit(
+                self.generation,
+                tuple(recommendations[start : start + self.batch_size]),
+            )
+            # Give the main thread a chance to paint each partial result.  The
+            # first batch is therefore visible while the rest is still being
+            # added to the sidebar/queue.
+            QThread.msleep(20)
+
+        self.signals.finished.emit(self.generation)
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -381,6 +495,7 @@ class MainWindow(QMainWindow):
         self.selected_mood_name: str | None = None
         self.session_mood_name: str | None = None
         self.current_track_id: str | None = None
+        self._current_track_listen_recorded = False
         self._library_tracks: list[Track] = []
         self._track_scope_tracks: list[Track] = []
         self._visible_tracks: list[Track] = []
@@ -398,6 +513,14 @@ class MainWindow(QMainWindow):
         self._youtube_thread: YouTubeTaskThread | None = None
         self._youtube_thread_dialog: QDialog | None = None
         self._youtube_threads: set[YouTubeTaskThread] = set()
+        self._library_health_thread: LibraryHealthTaskThread | None = None
+        self._recommendation_task: RecommendationTask | None = None
+        self._recommendation_generation = 0
+        self._radio_recommendation_task: RecommendationTask | None = None
+        self._radio_recommendation_generation = 0
+        self._radio_recommendation_inflight = False
+        self._radio_wait_attempts = 0
+        self._radio_wait_seed_track_id: str | None = None
         # Modeless dialogs use the native minimize button, but keeping their
         # minimized state in the app makes it possible to restore them without
         # hunting through the Windows taskbar.  Compact restore buttons are
@@ -432,10 +555,27 @@ class MainWindow(QMainWindow):
                 min_score=0.1,
             )
         )
+        self.library_health_service = LibraryHealthService(store)
+        self.library_backup_service = LibraryBackupService(store)
+        self.statistics_service = ListeningStatisticsService(store)
+        self.watch_folder_service = WatchFolderService(store)
+        self._watch_sync_thread: WatchFolderTaskThread | None = None
+        self._watch_sync_dialog: LibraryMaintenanceDialog | None = None
+        self._watch_folder_timer = QTimer(self)
+        self._watch_folder_timer.setInterval(20_000)
+        self._watch_folder_timer.timeout.connect(self._sync_watch_folder)
+        self._watch_folder_timer.start()
         self._genre_analysis_pool = QThreadPool(self)
         self._genre_analysis_pool.setMaxThreadCount(1)
         self._track_batch_pool = QThreadPool(self)
         self._track_batch_pool.setMaxThreadCount(1)
+        # Recommendation scoring can scan the whole library or lazily build
+        # the similarity index.  Keep it off the GUI thread and let radio and
+        # sidebar suggestions progress independently.
+        self._recommendation_pool = QThreadPool(self)
+        self._recommendation_pool.setMaxThreadCount(1)
+        self._radio_recommendation_pool = QThreadPool(self)
+        self._radio_recommendation_pool.setMaxThreadCount(1)
         self._model_idle_timer = QTimer(self)
         self._model_idle_timer.setInterval(60_000)
         self._model_idle_timer.timeout.connect(
@@ -609,30 +749,33 @@ class MainWindow(QMainWindow):
         library_button.setObjectName("railButton")
         library_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         library_menu = QMenu(library_button)
-        self.edit_button = library_menu.addAction(
-            "Edit selected",
-            self._edit_selected_track,
-        )
+        # Selection actions are kept as internal QAction objects because the
+        # table/context controls still update their enabled state.  They are
+        # intentionally not placed in this compact rail menu.
+        self.edit_button = QAction("Edit selected", self)
+        self.edit_button.triggered.connect(self._edit_selected_track)
         self.edit_button.setEnabled(False)
-        self.delete_button = library_menu.addAction(
-            "Delete selected",
-            self._delete_selected_track,
-        )
+        self.delete_button = QAction("Delete selected", self)
+        self.delete_button.triggered.connect(self._delete_selected_track)
         self.delete_button.setEnabled(False)
-        self.queue_selected_button = library_menu.addAction(
-            "Add selected to queue",
-            self._enqueue_selected_track,
-        )
+        self.queue_selected_button = QAction("Add selected to queue", self)
+        self.queue_selected_button.triggered.connect(self._enqueue_selected_track)
         self.queue_selected_button.setEnabled(False)
-        library_menu.addSeparator()
-        self.analyze_genres_button = library_menu.addAction(
-            "Analyze selected",
-            self._analyze_selected_track
-        )
+        self.analyze_genres_button = QAction("Analyze selected", self)
+        self.analyze_genres_button.triggered.connect(self._analyze_selected_track)
         self.analyze_genres_button.setEnabled(False)
         self.reanalyze_genres_button = library_menu.addAction(
             "Reanalyze library",
             self._reanalyze_all_genres
+        )
+        library_menu.addSeparator()
+        library_menu.addAction(
+            "Library health & backup…",
+            self._open_library_maintenance,
+        )
+        library_menu.addAction(
+            "Listening habits dashboard…",
+            self._show_statistics_dashboard,
         )
         library_menu.addSeparator()
         library_menu.addAction("Refresh", self._refresh_content)
@@ -901,9 +1044,9 @@ class MainWindow(QMainWindow):
             Qt.WidgetAttribute.WA_TranslucentBackground
         )
         self.playlist_carousel_layout = QHBoxLayout(self.playlist_carousel)
-        # Leave the whole carousel clear of the left rail while retaining the
-        # centered card group and its navigation controls.
-        self.playlist_carousel_layout.setContentsMargins(80, 0, 0, 0)
+        # Match the search row's visual center.  The smaller inset keeps the
+        # card group (and its optional navigation arrows) from drifting right.
+        self.playlist_carousel_layout.setContentsMargins(20, 0, 0, 0)
         # Keep the carousel compact while preserving a small breathing space
         # between the card surfaces.
         self.playlist_carousel_layout.setSpacing(-16)
@@ -917,6 +1060,13 @@ class MainWindow(QMainWindow):
         playlist_scroll_container_layout.setContentsMargins(0, 0, 0, 0)
         playlist_scroll_container_layout.setSpacing(0)
         playlist_scroll_container_layout.addWidget(self.playlist_scroll, 1)
+        self._playlist_scroll_container = playlist_scroll_container
+        # Navigation controls float above the scroll area.  They must not be
+        # children of the carousel layout, otherwise their appearance changes
+        # the available width and moves the centered card group.
+        self.playlist_scroll_left_button.setParent(playlist_scroll_container)
+        self.playlist_scroll_right_button.setParent(playlist_scroll_container)
+        self._position_playlist_navigation()
         playlist_strip_layout.addWidget(playlist_scroll_container)
 
         playlist_scroll_bar = self.playlist_scroll.horizontalScrollBar()
@@ -936,6 +1086,7 @@ class MainWindow(QMainWindow):
             lambda _minimum, _maximum: self._update_playlist_scroll_buttons()
         )
         self._update_playlist_scroll_buttons()
+        QTimer.singleShot(0, self._position_playlist_navigation)
         # Leave enough vertical room for the cover and its caption; the old
         # viewport was a few pixels shorter than the card itself.
         playlist_strip.setFixedHeight(140)
@@ -1242,6 +1393,7 @@ class MainWindow(QMainWindow):
                 RailIconButton.BUTTON_SIZE,
             )
         self._position_search_actions()
+        self._position_playlist_navigation()
 
     def _position_search_actions(self) -> None:
         """Pin top-row actions to the right without affecting search centering."""
@@ -1267,6 +1419,77 @@ class MainWindow(QMainWindow):
             row.height(),
         )
         container.raise_()
+
+    def _position_playlist_navigation(self) -> None:
+        """Keep optional carousel arrows close to the visible card group."""
+
+        container = getattr(self, "_playlist_scroll_container", None)
+        if container is None:
+            return
+
+        self.playlist_carousel_layout.activate()
+        button_width = self.playlist_scroll_left_button.width()
+        button_height = self.playlist_scroll_left_button.height()
+        top = max(0, (container.height() - button_height) // 2)
+
+        card_widgets = [
+            item.widget()
+            for index in range(self.playlist_carousel_layout.count())
+            if (item := self.playlist_carousel_layout.itemAt(index)) is not None
+            and item.widget() is not None
+        ]
+        if card_widgets:
+            visible_card_bounds = []
+            for card in card_widgets:
+                geometry = card.geometry()
+                mapped_left = self.playlist_carousel.mapTo(
+                    container,
+                    QPoint(geometry.left(), geometry.center().y()),
+                ).x()
+                mapped_right = self.playlist_carousel.mapTo(
+                    container,
+                    QPoint(geometry.right(), geometry.center().y()),
+                ).x()
+                if mapped_right > 0 and mapped_left < container.width():
+                    visible_card_bounds.append(
+                        (
+                            max(0, mapped_left),
+                            min(container.width(), mapped_right),
+                        )
+                    )
+
+            if visible_card_bounds:
+                first_left = min(
+                    bounds[0] for bounds in visible_card_bounds
+                )
+                last_right = max(
+                    bounds[1] for bounds in visible_card_bounds
+                )
+            else:
+                first_left = 0
+                last_right = container.width()
+            navigation_gap = 14
+            left_x = first_left - button_width - navigation_gap
+            right_x = last_right + navigation_gap
+        else:
+            left_x = 4
+            right_x = container.width() - button_width - 4
+
+        max_x = max(0, container.width() - button_width)
+        self.playlist_scroll_left_button.setGeometry(
+            max(0, min(max_x, left_x)),
+            top,
+            button_width,
+            button_height,
+        )
+        self.playlist_scroll_right_button.setGeometry(
+            max(0, min(max_x, right_x)),
+            top,
+            button_width,
+            button_height,
+        )
+        self.playlist_scroll_left_button.raise_()
+        self.playlist_scroll_right_button.raise_()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if (
@@ -2161,23 +2384,89 @@ class MainWindow(QMainWindow):
         else:
             context = RecommendationContext()
 
-        recommendations = self.recommendation_service.get_recommendations(
-            user_id=self.user_id,
-            limit=10,
-            context=context,
-        )
+        self._recommendation_generation += 1
+        generation = self._recommendation_generation
+        if self._recommendation_task is not None:
+            self._recommendation_task.cancel()
 
         self.recommendation_list.clear()
+        self.recommendation_list.addItem("Loading recommendations…")
 
-        for recommendation in recommendations:
+        task = RecommendationTask(
+            lambda: self.recommendation_service.get_recommendations(
+                user_id=self.user_id,
+                limit=10,
+                context=context,
+            ),
+            generation,
+            batch_size=5,
+        )
+        task.signals.batch_ready.connect(
+            self._handle_recommendation_batch
+        )
+        task.signals.finished.connect(
+            self._finish_recommendation_loading
+        )
+        task.signals.error_occurred.connect(
+            self._handle_recommendation_error
+        )
+        self._recommendation_task = task
+        self._recommendation_pool.start(task)
+
+    def _handle_recommendation_batch(
+        self,
+        generation: int,
+        batch: object,
+    ) -> None:
+        if generation != self._recommendation_generation:
+            return
+
+        if (
+            self.recommendation_list.count() == 1
+            and self.recommendation_list.item(0) is not None
+            and self.recommendation_list.item(0).text()
+            == "Loading recommendations…"
+        ):
+            self.recommendation_list.clear()
+
+        for recommendation in batch:
+            if not isinstance(recommendation, Recommendation):
+                continue
+
             track = recommendation.track
-
             text = (
                 f"{track.artist} — {track.title} "
                 f"(match: {recommendation.match_score:.2f})"
             )
-
             self.recommendation_list.addItem(text)
+
+    def _finish_recommendation_loading(self, generation: int) -> None:
+        if generation != self._recommendation_generation:
+            return
+
+        self._recommendation_task = None
+        if (
+            self.recommendation_list.count() == 1
+            and self.recommendation_list.item(0) is not None
+            and self.recommendation_list.item(0).text()
+            == "Loading recommendations…"
+        ):
+            self.recommendation_list.clear()
+            self.recommendation_list.addItem("No recommendations yet")
+
+    def _handle_recommendation_error(
+        self,
+        generation: int,
+        message: str,
+    ) -> None:
+        if generation != self._recommendation_generation:
+            return
+
+        self._recommendation_task = None
+        self.recommendation_list.clear()
+        self.recommendation_list.addItem(
+            f"Recommendations unavailable: {message}"
+        )
 
     def _start_mood_session(self) -> None:
         if self.selected_mood_name is None:
@@ -2367,6 +2656,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._cancel_radio_recommendations()
         if self.selected_playlist_id is not None:
             self._start_playlist_queue(
                 shuffle=self._playback_mode == QueueMode.SHUFFLE,
@@ -2499,18 +2789,21 @@ class MainWindow(QMainWindow):
         self.session_mood_name = None
         self._track_radio_enabled = True
         self._update_playback_mode_controls()
+        self._cancel_radio_recommendations()
         self.playback_queue_service.start(
             (track.id,),
             mode=QueueMode.RECOMMENDATIONS,
         )
         self._restore_manual_queue(manual_track_ids)
-        self._replenish_recommendation_queue(force=True)
         self._load_queue()
         if restart:
             self._play_current_queue_track()
+        # Start playback first.  Filling the radio queue happens in the
+        # background and appends tracks in visible batches as they arrive.
+        self._replenish_recommendation_queue(force=True)
 
     def _replenish_recommendation_queue(self, *, force: bool = False) -> None:
-        """Keep roughly thirty automatic tracks behind the current one."""
+        """Schedule automatic tracks without blocking the current playback."""
 
         queue = self.playback_queue_service.queue
         if queue is None or queue.mode != QueueMode.RECOMMENDATIONS:
@@ -2520,8 +2813,58 @@ class MainWindow(QMainWindow):
         if not force and remaining_count >= RECOMMENDATION_REFILL_THRESHOLD:
             return
 
+        if self._radio_recommendation_inflight:
+            return
+
         tracks_needed = RECOMMENDATION_QUEUE_SIZE - remaining_count
         if tracks_needed <= 0 or queue.current_track_id is None:
+            return
+
+        seed_track_id = queue.current_track_id
+        self._radio_recommendation_generation += 1
+        generation = self._radio_recommendation_generation
+        task = RecommendationTask(
+            lambda: self._get_radio_recommendations(
+                seed_track_id,
+                limit=max(RECOMMENDATION_QUEUE_SIZE, tracks_needed),
+            ),
+            generation,
+            batch_size=5,
+        )
+        task.signals.batch_ready.connect(
+            lambda task_generation, batch, seed=seed_track_id: (
+                self._handle_radio_recommendation_batch(
+                    task_generation,
+                    seed,
+                    batch,
+                )
+            )
+        )
+        task.signals.finished.connect(
+            self._finish_radio_recommendation_loading
+        )
+        task.signals.error_occurred.connect(
+            self._handle_radio_recommendation_error
+        )
+        self._radio_recommendation_task = task
+        self._radio_recommendation_inflight = True
+        self._radio_recommendation_pool.start(task)
+
+    def _handle_radio_recommendation_batch(
+        self,
+        generation: int,
+        seed_track_id: str,
+        batch: object,
+    ) -> None:
+        if generation != self._radio_recommendation_generation:
+            return
+
+        queue = self.playback_queue_service.queue
+        if (
+            queue is None
+            or queue.mode != QueueMode.RECOMMENDATIONS
+            or queue.current_track_id != seed_track_id
+        ):
             return
 
         occupied_ids = {
@@ -2529,12 +2872,11 @@ class MainWindow(QMainWindow):
             *queue.remaining_track_ids,
             *queue.queued_track_ids,
         }
-        recommendations = self._get_radio_recommendations(
-            queue.current_track_id,
-            limit=max(RECOMMENDATION_QUEUE_SIZE, tracks_needed),
-        )
         additions: list[str] = []
-        for recommendation in recommendations:
+        for recommendation in batch:
+            if not isinstance(recommendation, Recommendation):
+                continue
+
             track = recommendation.track
             if track.id in occupied_ids:
                 continue
@@ -2543,11 +2885,44 @@ class MainWindow(QMainWindow):
 
             additions.append(track.id)
             occupied_ids.add(track.id)
-            if len(additions) == tracks_needed:
+            if len(queue.remaining_track_ids) + len(additions) >= (
+                RECOMMENDATION_QUEUE_SIZE
+            ):
                 break
 
         if additions:
             self.playback_queue_service.append_remaining(additions)
+            self._load_queue()
+
+    def _finish_radio_recommendation_loading(self, generation: int) -> None:
+        if generation != self._radio_recommendation_generation:
+            return
+
+        self._radio_recommendation_task = None
+        self._radio_recommendation_inflight = False
+
+    def _handle_radio_recommendation_error(
+        self,
+        generation: int,
+        message: str,
+    ) -> None:
+        if generation != self._radio_recommendation_generation:
+            return
+
+        self._radio_recommendation_task = None
+        self._radio_recommendation_inflight = False
+        self.statusBar().showMessage(
+            f"Recommendations unavailable: {message}"
+        )
+
+    def _cancel_radio_recommendations(self) -> None:
+        self._radio_recommendation_generation += 1
+        if self._radio_recommendation_task is not None:
+            self._radio_recommendation_task.cancel()
+        self._radio_recommendation_task = None
+        self._radio_recommendation_inflight = False
+        self._radio_wait_attempts = 0
+        self._radio_wait_seed_track_id = None
 
     def _get_radio_recommendations(
         self,
@@ -2940,7 +3315,7 @@ class MainWindow(QMainWindow):
             return
 
         if self._playlist_page_count > 1:
-            # Buttons are laid out next to the cards.  Hide the control when
+            # The arrows float above the carousel.  Hide the control when
             # there is no page in that direction instead of leaving a dead
             # arrow at the edge of the window.
             self.playlist_scroll_left_button.setVisible(
@@ -3026,13 +3401,7 @@ class MainWindow(QMainWindow):
             item = self.playlist_carousel_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                if widget in (
-                    self.playlist_scroll_left_button,
-                    self.playlist_scroll_right_button,
-                ):
-                    widget.hide()
-                else:
-                    widget.deleteLater()
+                widget.deleteLater()
 
         self.playlist_carousel_layout.addStretch(1)
 
@@ -3041,18 +3410,6 @@ class MainWindow(QMainWindow):
             self._playlist_page_count > 1
             and self._playlist_page_index < self._playlist_page_count - 1
         )
-
-        if show_left:
-            self.playlist_scroll_left_button.setEnabled(True)
-            self.playlist_scroll_left_button.show()
-            self.playlist_carousel_layout.addWidget(
-                self.playlist_scroll_left_button,
-                0,
-                Qt.AlignmentFlag.AlignVCenter,
-            )
-            # The row uses a -16px card overlap; compensate here so the
-            # arrow still has a small, visible gap before the first card.
-            self.playlist_carousel_layout.addSpacing(22)
 
         if show_main_library:
             main_library_card = MainLibraryCard()
@@ -3083,17 +3440,12 @@ class MainWindow(QMainWindow):
             )
             self.playlist_carousel_layout.addWidget(card)
 
-        if show_right:
-            self.playlist_carousel_layout.addSpacing(22)
-            self.playlist_scroll_right_button.setEnabled(True)
-            self.playlist_scroll_right_button.show()
-            self.playlist_carousel_layout.addWidget(
-                self.playlist_scroll_right_button,
-                0,
-                Qt.AlignmentFlag.AlignVCenter,
-            )
         self.playlist_carousel_layout.addStretch(1)
+        self.playlist_scroll_left_button.setVisible(show_left)
+        self.playlist_scroll_right_button.setVisible(show_right)
+        self._position_playlist_navigation()
         QTimer.singleShot(0, self._update_playlist_scroll_buttons)
+        QTimer.singleShot(0, self._position_playlist_navigation)
 
     @staticmethod
     def _build_playlist_page_specs(
@@ -3668,6 +4020,7 @@ class MainWindow(QMainWindow):
         self.player_position_label.setText(
             self._format_duration(max(position_ms, 0))
         )
+        self._record_completed_listen(position_ms)
         if (
             self._player_duration_ms <= 0
             or self.player_progress_slider.isSliderDown()
@@ -3677,6 +4030,30 @@ class MainWindow(QMainWindow):
         self.player_progress_slider.setValue(
             round(position_ms * 1000 / self._player_duration_ms)
         )
+
+    def _record_completed_listen(self, position_ms: int) -> None:
+        """Count a listening session once playback reaches 85%."""
+
+        if self._current_track_listen_recorded or self.current_track_id is None:
+            return
+        duration_ms = self._player_duration_ms
+        if duration_ms <= 0:
+            track = self.store.get_track(self.current_track_id)
+            duration_ms = track.duration_ms if track is not None else 0
+        if duration_ms <= 0 or position_ms * 100 < duration_ms * 85:
+            return
+
+        self._current_track_listen_recorded = True
+        try:
+            self.interaction_service.record(
+                user_id=self.user_id,
+                track_id=self.current_track_id,
+                interaction_type=InteractionType.LISTEN,
+                mood_context=self._get_active_mood_context(),
+            )
+        except ValueError as error:
+            # Playback should never be interrupted by a statistics write.
+            self.statusBar().showMessage(f"Listening stat failed: {error}")
 
     def _seek_player(self) -> None:
         if self._player_duration_ms <= 0:
@@ -3834,6 +4211,332 @@ class MainWindow(QMainWindow):
             return
 
         self._show_auxiliary_dialog(ImportLogDialog(tracks, self))
+
+    def _open_library_maintenance(self) -> None:
+        """Open the library-health, backup and restore center."""
+
+        dialog = LibraryMaintenanceDialog(
+            self,
+            watch_config=self.watch_folder_service.config,
+        )
+        dialog.scan_requested.connect(
+            lambda: self._scan_library_health(dialog)
+        )
+        dialog.zip_backup_requested.connect(
+            lambda: self._create_library_zip_backup(dialog)
+        )
+        dialog.json_export_requested.connect(
+            lambda: self._export_library_json(dialog)
+        )
+        dialog.restore_requested.connect(
+            lambda: self._restore_library_zip_backup(dialog)
+        )
+        dialog.watch_folder_requested.connect(
+            lambda: self._choose_watch_folder(dialog)
+        )
+        dialog.watch_sync_requested.connect(
+            lambda: self._sync_watch_folder(dialog)
+        )
+        dialog.watch_disable_requested.connect(
+            lambda: self._disable_watch_folder(dialog)
+        )
+        dialog.watch_update_metadata_toggled.connect(
+            self._set_watch_folder_metadata_updates
+        )
+        self._show_auxiliary_dialog(dialog)
+
+    def _choose_watch_folder(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        current = self.watch_folder_service.config.folder
+        folder_path = QFileDialog.getExistingDirectory(
+            dialog,
+            "Choose watch folder",
+            str(current or DATA_DIR.parent),
+        )
+        if not folder_path:
+            return
+        try:
+            config = self.watch_folder_service.configure(
+                Path(folder_path),
+                update_metadata=dialog.watch_metadata_check.isChecked(),
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(dialog, "Watch folder failed", str(error))
+            return
+        dialog.set_watch_config(config)
+        self.statusBar().showMessage(
+            f"Watch folder enabled: {config.folder}"
+        )
+        self._sync_watch_folder(dialog)
+
+    def _set_watch_folder_metadata_updates(self, enabled: bool) -> None:
+        try:
+            self.watch_folder_service.set_update_metadata(enabled)
+        except OSError as error:
+            self.statusBar().showMessage(
+                f"Could not save watch-folder setting: {error}"
+            )
+
+    def _disable_watch_folder(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        config = self.watch_folder_service.disable()
+        dialog.set_watch_config(config)
+        self.statusBar().showMessage("Watch folder disabled")
+
+    def _sync_watch_folder(
+        self,
+        dialog: LibraryMaintenanceDialog | None = None,
+    ) -> None:
+        if not self.watch_folder_service.config.enabled:
+            if dialog is not None:
+                dialog.set_watch_config(self.watch_folder_service.config)
+            return
+        if self._watch_sync_thread is not None:
+            return
+
+        thread = WatchFolderTaskThread(
+            lambda: self.watch_folder_service.sync(
+                self.ingestion_service,
+                self.track_management_service,
+            ),
+            self,
+        )
+        self._watch_sync_thread = thread
+        self._watch_sync_dialog = dialog
+        thread.result_ready.connect(self._handle_watch_folder_report)
+        thread.error_occurred.connect(
+            lambda message: self._handle_watch_folder_error(dialog, message)
+        )
+        thread.finished.connect(self._finish_watch_folder_sync)
+        thread.start()
+
+    def _handle_watch_folder_report(self, result: object) -> None:
+        if not isinstance(result, WatchFolderReport):
+            return
+        dialog = self._watch_sync_dialog
+        if dialog is not None and dialog.isVisible():
+            dialog.show_watch_report(result)
+        if result.changed:
+            for track in result.imported:
+                self._append_library_track(track)
+                self._enqueue_genre_analysis(track)
+            self._load_library()
+            self.statusBar().showMessage(
+                "Watch folder: "
+                f"{len(result.imported)} imported, "
+                f"{len(result.updated)} updated, "
+                f"{len(result.removed_files)} removed from source"
+            )
+        elif result.errors:
+            self.statusBar().showMessage(
+                f"Watch folder: {len(result.errors)} file(s) need attention"
+            )
+
+    def _handle_watch_folder_error(
+        self,
+        dialog: LibraryMaintenanceDialog | None,
+        message: str,
+    ) -> None:
+        if dialog is not None and dialog.isVisible():
+            dialog.watch_status.setText(f"Sync failed: {message}")
+        self.statusBar().showMessage(f"Watch folder sync failed: {message}")
+
+    def _finish_watch_folder_sync(self) -> None:
+        thread = self._watch_sync_thread
+        self._watch_sync_thread = None
+        self._watch_sync_dialog = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _show_statistics_dashboard(self) -> None:
+        """Show the rolling listening-habits heatmap for the active user."""
+
+        try:
+            statistics = self.statistics_service.build(self.user_id)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Statistics unavailable",
+                str(error),
+            )
+            return
+
+        self._show_auxiliary_dialog(
+            ListeningStatisticsDialog(statistics, self)
+        )
+
+    def _scan_library_health(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        if self._library_health_thread is not None:
+            return
+
+        dialog.set_scanning(True)
+        thread = LibraryHealthTaskThread(
+            self.library_health_service,
+            self,
+        )
+        self._library_health_thread = thread
+        thread.result_ready.connect(
+            lambda report: self._handle_library_health_report(dialog, report)
+        )
+        thread.error_occurred.connect(dialog.show_scan_error)
+        thread.finished.connect(self._finish_library_health_scan)
+        thread.start()
+
+    def _handle_library_health_report(
+        self,
+        dialog: LibraryMaintenanceDialog,
+        report: object,
+    ) -> None:
+        if not isinstance(report, LibraryHealthReport):
+            dialog.show_scan_error("The check returned an invalid result.")
+            return
+        if dialog.isVisible():
+            dialog.show_report(report)
+
+    def _finish_library_health_scan(self) -> None:
+        thread = self._library_health_thread
+        self._library_health_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _create_library_zip_backup(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        default_path = DATA_DIR.parent / "Musefy library backup.zip"
+        filename, _ = QFileDialog.getSaveFileName(
+            dialog,
+            "Save full Musefy backup",
+            str(default_path),
+            "Musefy backups (*.zip)",
+        )
+        if not filename:
+            return
+
+        try:
+            summary = self.library_backup_service.create_zip_backup(
+                Path(filename),
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(dialog, "Backup failed", str(error))
+            return
+
+        QMessageBox.information(
+            dialog,
+            "Backup created",
+            (
+                f"Full backup saved to:\n{summary.path}\n\n"
+                f"{summary.track_count} track(s), "
+                f"{summary.playlist_count} playlist(s), and "
+                f"{summary.interaction_count} interaction(s) included."
+            ),
+        )
+
+    def _export_library_json(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        default_path = DATA_DIR.parent / "Musefy library export.json"
+        filename, _ = QFileDialog.getSaveFileName(
+            dialog,
+            "Export Musefy catalog as JSON",
+            str(default_path),
+            "Musefy JSON export (*.json)",
+        )
+        if not filename:
+            return
+
+        try:
+            summary = self.library_backup_service.export_json(
+                Path(filename),
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(dialog, "Export failed", str(error))
+            return
+
+        QMessageBox.information(
+            dialog,
+            "JSON export created",
+            (
+                f"Catalog export saved to:\n{summary.path}\n\n"
+                "It contains playlists, history, likes and analysis, but not "
+                "the audio files. Use a full ZIP backup to restore a library."
+            ),
+        )
+
+    def _restore_library_zip_backup(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            dialog,
+            "Choose Musefy backup to restore",
+            str(DATA_DIR.parent),
+            "Musefy backups (*.zip)",
+        )
+        if not filename:
+            return
+
+        confirmation = QMessageBox.question(
+            dialog,
+            "Restore library backup",
+            (
+                "This replaces the current local library database, audio "
+                "files and covers with the selected backup.\n\n"
+                "Create a backup first if you need to keep current changes. "
+                "Continue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        self.media_player.stop()
+        engine.dispose()
+        try:
+            self.library_backup_service.restore_zip_backup(Path(filename))
+            create_database()
+            self._ensure_restored_current_user()
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(dialog, "Restore failed", str(error))
+            return
+
+        self.selected_track_id = None
+        self.selected_playlist_id = None
+        self.current_track_id = None
+        self.playback_queue_service.clear()
+        self.recommendation_service.refresh()
+        self._load_playlists()
+        self._load_library()
+        self._load_recommendations()
+        QMessageBox.information(
+            dialog,
+            "Backup restored",
+            "The local library has been restored from the selected backup.",
+        )
+
+    def _ensure_restored_current_user(self) -> None:
+        """Keep the active desktop profile usable after restoring another PC."""
+
+        if self.store.get_user(self.user_id) is not None:
+            return
+
+        from app.domain.models import User
+
+        self.store.add_user(
+            User(
+                id=self.user_id,
+                display_name="Desktop User",
+            )
+        )
 
     def _import_from_youtube(self) -> None:
         spotify_provider = self.youtube_import_service.spotify_provider
@@ -4704,6 +5407,7 @@ class MainWindow(QMainWindow):
         """Stop loader work before the main process is allowed to exit."""
 
         self._spotify_sync_timer.stop()
+        self._watch_folder_timer.stop()
         for dialog in tuple(self._auxiliary_dialog_buttons):
             dialog.close()
 
@@ -4719,8 +5423,36 @@ class MainWindow(QMainWindow):
                 thread.terminate()
                 thread.wait(1_000)
 
+        health_thread = self._library_health_thread
+        # Fingerprinting is local CPU work and has no unsafe external side
+        # effect, so it can be stopped as a last resort rather than letting
+        # Qt destroy a live worker while the app exits.
+        if (
+            health_thread is not None
+            and health_thread.isRunning()
+            and not health_thread.wait(3_000)
+        ):
+            health_thread.terminate()
+            health_thread.wait(1_000)
+
+        watch_thread = self._watch_sync_thread
+        if (
+            watch_thread is not None
+            and watch_thread.isRunning()
+            and not watch_thread.wait(3_000)
+        ):
+            watch_thread.terminate()
+            watch_thread.wait(1_000)
+
+        if self._recommendation_task is not None:
+            self._recommendation_task.cancel()
+        self._cancel_radio_recommendations()
         self._genre_analysis_pool.clear()
         self._track_batch_pool.clear()
+        self._recommendation_pool.clear()
+        self._radio_recommendation_pool.clear()
+        self._recommendation_pool.waitForDone(3_000)
+        self._radio_recommendation_pool.waitForDone(3_000)
         self.media_player.stop()
         super().closeEvent(event)
 
@@ -6611,6 +7343,21 @@ class MainWindow(QMainWindow):
         self._play_track(queue.current_track_id)
 
     def _play_next_from_queue(self) -> None:
+        queue = self.playback_queue_service.queue
+        if (
+            queue is not None
+            and queue.mode == QueueMode.RECOMMENDATIONS
+            and not self.playback_queue_service.upcoming_track_ids()
+        ):
+            # A radio queue is intentionally filled lazily.  If a listener
+            # reaches the end before the worker has produced its first batch,
+            # briefly wait for that batch instead of declaring the queue done.
+            self._radio_wait_seed_track_id = queue.current_track_id
+            self._wait_for_radio_track()
+            return
+
+        self._radio_wait_attempts = 0
+        self._radio_wait_seed_track_id = None
         while True:
             queue = self.playback_queue_service.advance()
 
@@ -6632,6 +7379,36 @@ class MainWindow(QMainWindow):
                 # backend needs a moment after changing the media source.
                 self.media_player.play()
                 return
+
+    def _wait_for_radio_track(self) -> None:
+        queue = self.playback_queue_service.queue
+        if (
+            queue is None
+            or queue.mode != QueueMode.RECOMMENDATIONS
+            or queue.current_track_id != self._radio_wait_seed_track_id
+        ):
+            self._radio_wait_attempts = 0
+            self._radio_wait_seed_track_id = None
+            return
+
+        if self.playback_queue_service.upcoming_track_ids():
+            self._radio_wait_attempts = 0
+            self._radio_wait_seed_track_id = None
+            self._play_next_from_queue()
+            return
+
+        if self._radio_wait_attempts >= 20:
+            self._radio_wait_attempts = 0
+            self._radio_wait_seed_track_id = None
+            self.statusBar().showMessage(
+                "No more recommendations available"
+            )
+            return
+
+        self._radio_wait_attempts += 1
+        self._replenish_recommendation_queue(force=True)
+        self.statusBar().showMessage("Finding the next recommendation…")
+        QTimer.singleShot(250, self._wait_for_radio_track)
 
     def _play_track(self, track_id: str) -> bool:
         track = self.store.get_track(track_id)
@@ -6658,6 +7435,9 @@ class MainWindow(QMainWindow):
         self.media_player.setSource(source_url)
         self.media_player.play()
         self.current_track_id = track.id
+        self._radio_wait_attempts = 0
+        self._radio_wait_seed_track_id = None
+        self._current_track_listen_recorded = False
         self.player_title_label.setText(track.title)
         self.player_title_label.setToolTip(track.title)
         self.player_artist_label.setText(track.artist)
@@ -6777,6 +7557,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             if self._repeat_mode == RepeatMode.TRACK:
+                self._current_track_listen_recorded = False
                 self.media_player.setPosition(0)
                 self.media_player.play()
                 return
