@@ -83,6 +83,39 @@ class PlaybackQueueService:
 
         return self._queue
 
+    def jump_to(self, track_id: str) -> PlaybackQueue | None:
+        """Make an upcoming track current and discard items before it.
+
+        The queue panel displays the flattened playback order (manual items
+        first, followed by the regular remaining sequence).  Selecting a row
+        should move the playback cursor within that order, not rebuild a new
+        library queue around the selected track.
+        """
+
+        normalized_track_id = track_id.strip()
+        if not normalized_track_id or self._queue is None:
+            return None
+
+        if self._queue.current_track_id == normalized_track_id:
+            return self._queue
+
+        upcoming = self.upcoming_track_ids()
+        try:
+            selected_index = upcoming.index(normalized_track_id)
+        except ValueError:
+            return None
+
+        if self._queue.current_track_id is not None:
+            self._history.append(self._queue.current_track_id)
+
+        self._queue = replace(
+            self._queue,
+            current_track_id=normalized_track_id,
+            remaining_track_ids=upcoming[selected_index + 1 :],
+            queued_track_ids=(),
+        )
+        return self._queue
+
     def append_remaining(
         self,
         track_ids: Iterable[str],

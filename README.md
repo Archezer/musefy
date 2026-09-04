@@ -33,8 +33,8 @@ rules when importing content.
 - Browse the library, create playlists, delete tracks, and manage a separate
   playback queue.
 - Play normally, shuffle, smart shuffle, or start a mood session.
-- Get three recommendation styles: global recommendations, track radio, and
-  mood-first recommendations.
+- Get four recommendation styles: global recommendations, track radio,
+  mood-first recommendations, and the personalized **My Wave** session.
 
 ## How the recommendation system works
 
@@ -49,7 +49,7 @@ audio file
                          ↓
                   local SQLite database
                          ↓
-playback / likes / skips / playlists / selected mood
+playback / likes / skips / playlists / selected mood / My Wave
                          ↓
                      ranked queue
 ```
@@ -72,6 +72,12 @@ Mood sessions prioritise mood features rather than the global library score.
 Feedback inside a mood session is stored separately, so liking a calm study
 track does not make it dominate the general library feed. The available profiles
 include melancholic, calm, happy, energetic, dark, romantic, focus and party.
+
+The **My Wave** entry in the Mood card builds a local profile from positive
+listening signals, combining the user's mood centroid with audio similarity and
+artist/genre affinity. Its recommendation impressions and subsequent playback
+events are stored locally, and the Listening statistics window reports
+completion rate, skip rate, Recall@10, NDCG@10 and artist diversity.
 
 ### Queue and smart shuffle
 

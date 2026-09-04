@@ -12,7 +12,14 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QGuiApplication,
+    QPainter,
+    QPen,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -42,6 +49,7 @@ from app.domain.models import Track
 from app.ingestion.metadata import AudioMetadata
 from app.services.library_maintenance import LibraryHealthReport
 from app.services.mp3party_import import Mp3PartyCandidate
+from app.services.recommendation_analytics import RecommendationMetrics
 from app.services.soundcloud_import import SoundCloudCandidate
 from app.services.statistics import ListeningStatistics
 from app.services.watch_folder import WatchFolderConfig, WatchFolderReport
@@ -1088,6 +1096,28 @@ class YouTubeSearchDialog(QDialog):
         self.progress_bar.show()
         self.status_label.setText(message)
 
+    def resume_progress(
+        self,
+        message: str,
+        *,
+        total: int | None = None,
+    ) -> None:
+        """Continue the elapsed clock when an operation changes phase."""
+
+        if not self._progress_clock.isValid():
+            self._progress_clock.start()
+            self.elapsed_label.setText("00:00")
+        self._progress_timer.start()
+        self._refresh_elapsed_time()
+        self.elapsed_label.show()
+        if total is None or total <= 0:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.status_label.setText(message)
+
     def update_search_progress(
         self,
         completed: int,
@@ -1530,16 +1560,23 @@ class ListeningBarChart(QWidget):
 
 
 class ListeningGraph(QWidget):
-    """Perspective track network inspired by the main music map."""
+    """Interactive listening network built from real track similarities."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._tracks: tuple[
-            tuple[str, str, int, tuple[float, ...] | None],
+            tuple[
+                str,
+                str,
+                int,
+                tuple[float, ...] | None,
+                tuple[str, ...],
+            ],
             ...,
         ] = ()
         self._sphere_points: tuple[tuple[float, float, float], ...] = ()
-        self._edge_pairs: tuple[tuple[int, int], ...] = ()
+        self._edge_pairs: tuple[tuple[int, int, float], ...] = ()
+        self._cluster_groups: tuple[tuple[int, ...], ...] = ()
         self._hovered_index = -1
         self._rotation_x = -0.18
         self._rotation_y = 0.32
@@ -1551,25 +1588,49 @@ class ListeningGraph(QWidget):
 
     def set_tracks(
         self,
-        tracks: tuple[tuple[str, str, int, tuple[float, ...] | None], ...]
+        tracks: tuple[
+            tuple[str, str, int, tuple[float, ...] | None, tuple[str, ...]],
+            ...,
+        ]
+        | list[tuple[str, str, int, tuple[float, ...] | None, tuple[str, ...]]]
+        | tuple[tuple[str, str, int, tuple[float, ...] | None], ...]
         | list[tuple[str, str, int, tuple[float, ...] | None]]
         | tuple[tuple[str, str, int], ...]
         | list[tuple[str, str, int]],
     ) -> None:
         normalized_tracks = []
-        for track in tracks[:8]:
+        for track in tracks:
             title, artist, count = track[:3]
             embedding = track[3] if len(track) > 3 else None
-            normalized_tracks.append((title, artist, count, embedding))
+            genres = track[4] if len(track) > 4 else ()
+            normalized_tracks.append(
+                (
+                    str(title),
+                    str(artist),
+                    max(0, int(count)),
+                    embedding,
+                    tuple(
+                        str(genre).strip().casefold()
+                        for genre in genres
+                        if str(genre).strip()
+                    ),
+                )
+            )
         self._tracks = tuple(normalized_tracks)
         self._hovered_index = -1
         self._rotation_x = -0.18
         self._rotation_y = 0.32
         self._zoom = 1.0
-        self._sphere_points = self._build_sphere_points(len(self._tracks))
         self._edge_pairs = self._build_edge_pairs(
-            self._sphere_points,
-            tuple(track[3] for track in self._tracks),
+            self._tracks,
+        )
+        self._cluster_groups = self._build_cluster_groups(
+            self._tracks,
+            self._edge_pairs,
+        )
+        self._sphere_points = self._build_layout_points(
+            self._tracks,
+            self._cluster_groups,
         )
         self.update()
 
@@ -1588,29 +1649,45 @@ class ListeningGraph(QWidget):
 
         projected = self._projected_positions()
         maximum = max(
-            (count for _title, _artist, count, _embedding in self._tracks),
+            (
+                count
+                for _title, _artist, count, _embedding, _genres in self._tracks
+            ),
             default=1,
         )
-        center = QPointF(self.width() / 2, self.height() / 2 - 2)
-        orbit_x = max(34.0, min(self.width() * 0.37, 155.0)) * self._zoom
-        orbit_y = max(30.0, min(self.height() * 0.31, 72.0)) * self._zoom
-        sphere_rect = QRectF(
-            center.x() - orbit_x,
-            center.y() - orbit_y,
-            orbit_x * 2,
-            orbit_y * 2,
-        )
-        painter.setPen(QPen(QColor(181, 251, 224, 18), 1))
-        painter.setBrush(QColor(20, 184, 147, 7))
-        painter.drawEllipse(sphere_rect)
-        # Back nodes are painted first, which makes the network feel spatial
-        # even though it stays lightweight and entirely native Qt.
-        for left_index, right_index in self._edge_pairs:
+        # Paint the cluster atmosphere first.  It is deliberately very faint:
+        # the links and nodes remain the primary signal, while the soft islands
+        # make related tracks readable as groups even when their names are
+        # hidden until hover.
+        for group in self._cluster_groups:
+            if len(group) < 2:
+                continue
+            group_positions = [projected[index][0] for index in group]
+            center = QPointF(
+                sum(position.x() for position in group_positions) / len(group),
+                sum(position.y() for position in group_positions) / len(group),
+            )
+            radius_x = max(
+                30.0,
+                max(abs(position.x() - center.x()) for position in group_positions)
+                + 22.0,
+            )
+            radius_y = max(
+                22.0,
+                max(abs(position.y() - center.y()) for position in group_positions)
+                + 18.0,
+            )
+            painter.setPen(QPen(QColor(20, 184, 147, 20), 1.0))
+            painter.setBrush(QColor(20, 184, 147, 7))
+            painter.drawEllipse(center, radius_x, radius_y)
+
+        for left_index, right_index, strength in self._edge_pairs:
             source = projected[left_index]
             target = projected[right_index]
             depth = (source[2] + target[2]) / 2
-            alpha = int(10 + 42 * ((depth + 1) / 2))
-            painter.setPen(QPen(QColor(181, 251, 224, alpha), 0.9))
+            alpha = int(24 + 82 * strength + 18 * ((depth + 1) / 2))
+            width = 0.7 + 1.1 * strength
+            painter.setPen(QPen(QColor(181, 251, 224, alpha), width))
             painter.drawLine(source[0], target[0])
 
         draw_order = sorted(
@@ -1618,25 +1695,37 @@ class ListeningGraph(QWidget):
             key=lambda index: projected[index][2],
         )
         for index in draw_order:
-            title, artist, count, _embedding = self._tracks[index]
+            title, artist, count, _embedding, _genres = self._tracks[index]
             position, depth, _scale = projected[index]
             front = (depth + 1) / 2
             strength = count / maximum if maximum else 0.0
-            node_radius = (7.0 + 8.0 * strength) * (0.72 + 0.42 * front)
+            node_radius = (7.0 + 8.0 * strength) * (0.64 + 0.70 * front)
             if index == self._hovered_index:
                 node_radius += 2.0
+            # A small offset shadow and radial highlight give the node a clear
+            # near/far reading without changing the dark, minimal visual style.
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(20, 184, 147, int(14 + 34 * front)))
+            painter.setBrush(QColor(0, 0, 0, int(45 + 34 * front)))
             painter.drawEllipse(
-                position,
-                node_radius * 1.9,
-                node_radius * 1.9,
+                position + QPointF(1.5, 2.2),
+                node_radius * 1.22,
+                node_radius * 1.22,
             )
-            painter.setBrush(
-                QColor("#14B893")
-                if index == 0
-                else QColor(42, 117, 107, int(130 + 105 * front))
+            painter.setBrush(QColor(20, 184, 147, int(12 + 44 * front)))
+            painter.drawEllipse(position, node_radius * 1.9, node_radius * 1.9)
+            base_color = self._node_color(index, front, index == 0)
+            highlight = QColor(base_color)
+            highlight.setAlpha(min(255, base_color.alpha() + 35))
+            shade = QColor(base_color.darker(175))
+            shade.setAlpha(base_color.alpha())
+            gradient = QRadialGradient(
+                position - QPointF(node_radius * 0.32, node_radius * 0.36),
+                node_radius * 1.22,
             )
+            gradient.setColorAt(0.0, highlight)
+            gradient.setColorAt(0.56, base_color)
+            gradient.setColorAt(1.0, shade)
+            painter.setBrush(gradient)
             painter.drawEllipse(position, node_radius, node_radius)
             painter.setPen(QColor("#07100F"))
             painter.drawText(
@@ -1723,8 +1812,8 @@ class ListeningGraph(QWidget):
     ) -> list[tuple[QPointF, float, float]]:
         center = QPointF(self.width() / 2, self.height() / 2 - 2)
         positions: list[tuple[QPointF, float, float]] = []
-        orbit_x = max(34.0, min(self.width() * 0.37, 155.0)) * self._zoom
-        orbit_y = max(30.0, min(self.height() * 0.31, 72.0)) * self._zoom
+        orbit_x = max(42.0, min(self.width() * 0.41, 182.0)) * self._zoom
+        orbit_y = max(34.0, min(self.height() * 0.36, 90.0)) * self._zoom
         cos_x = cos(self._rotation_x)
         sin_x = sin(self._rotation_x)
         cos_y = cos(self._rotation_y)
@@ -1734,80 +1823,272 @@ class ListeningGraph(QWidget):
             rotated_z = -sin_y * x3 + cos_y * z3
             rotated_y = cos_x * y3 - sin_x * rotated_z
             rotated_z = sin_x * y3 + cos_x * rotated_z
-            perspective = 1.0 / max(0.58, 1.0 - rotated_z * 0.24)
+            perspective = 1.0 / max(0.46, 1.0 - rotated_z * 0.42)
             position = QPointF(
                 center.x() + rotated_x * orbit_x * perspective,
-                center.y() + rotated_y * orbit_y * perspective - rotated_z * 14.0,
+                center.y() + rotated_y * orbit_y * perspective - rotated_z * 20.0,
             )
             positions.append((position, rotated_z, perspective))
         return positions
 
     @staticmethod
-    def _build_sphere_points(
-        count: int,
-    ) -> tuple[tuple[float, float, float], ...]:
-        if count <= 0:
-            return ()
-        if count == 1:
-            return ((0.0, 0.0, 1.0),)
-        points: list[tuple[float, float, float]] = []
+    def _build_cluster_groups(
+        tracks: tuple[
+            tuple[
+                str,
+                str,
+                int,
+                tuple[float, ...] | None,
+                tuple[str, ...],
+            ],
+            ...,
+        ],
+        edges: tuple[tuple[int, int, float], ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """Return connected similarity communities for the visual layout."""
+
+        count = len(tracks)
+        if count <= 1:
+            return tuple((index,) for index in range(count))
+
+        parents = list(range(count))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        # Use the links shown on screen as the primary community definition.
+        # Same-artist tracks are joined even when an embedding is unavailable.
+        for left, right, strength in edges:
+            if strength >= 0.48:
+                union(left, right)
+        for left_index, left in enumerate(tracks):
+            for right_index in range(left_index + 1, count):
+                right = tracks[right_index]
+                left_artist = left[1].strip().casefold()
+                right_artist = right[1].strip().casefold()
+                same_artist = bool(left_artist and left_artist == right_artist)
+                if same_artist:
+                    union(left_index, right_index)
+
+        groups: dict[int, list[int]] = {}
         for index in range(count):
-            y = 1.0 - (2.0 * index / (count - 1))
-            radius = sqrt(max(0.0, 1.0 - y * y))
-            angle = (pi * (3.0 - sqrt(5.0))) * index
-            points.append((cos(angle) * radius, y, sin(angle) * radius))
-        return tuple(points)
+            groups.setdefault(find(index), []).append(index)
+        return tuple(
+            tuple(members)
+            for members in sorted(groups.values(), key=lambda values: values[0])
+        )
 
     @staticmethod
     def _build_edge_pairs(
-        points: tuple[tuple[float, float, float], ...],
-        embeddings: tuple[tuple[float, ...] | None, ...],
-    ) -> tuple[tuple[int, int], ...]:
-        pairs: set[tuple[int, int]] = set()
-        for left_index, source in enumerate(points):
+        tracks: tuple[
+            tuple[
+                str,
+                str,
+                int,
+                tuple[float, ...] | None,
+                tuple[str, ...],
+            ],
+            ...,
+        ],
+    ) -> tuple[tuple[int, int, float], ...]:
+        """Connect only pairs with measurable genre/audio similarity."""
+
+        pairs: set[tuple[int, int, float]] = set()
+        for left_index, left_track in enumerate(tracks):
             neighbors = sorted(
                 (
-                    ListeningGraph._node_distance(
-                        source,
-                        points[right_index],
-                        embeddings[left_index],
-                        embeddings[right_index],
-                    ),
+                    ListeningGraph._track_similarity(left_track, right_track),
                     right_index,
                 )
-                for right_index in range(len(points))
+                for right_index, right_track in enumerate(tracks)
                 if right_index != left_index
             )
-            for _distance, right_index in neighbors[:2]:
-                pairs.add(tuple(sorted((left_index, right_index))))
-        return tuple(sorted(pairs))
+            for strength, right_index in neighbors[-3:]:
+                if strength < 0.40:
+                    continue
+                first, second = sorted((left_index, right_index))
+                pairs = {
+                    pair
+                    for pair in pairs
+                    if pair[:2] != (first, second)
+                }
+                pairs.add((first, second, strength))
+        return tuple(
+            sorted(pairs, key=lambda pair: (pair[0], pair[1]))
+        )
 
     @staticmethod
-    def _node_distance(
-        left_point: tuple[float, float, float],
-        right_point: tuple[float, float, float],
-        left_embedding: tuple[float, ...] | None,
-        right_embedding: tuple[float, ...] | None,
+    def _track_similarity(
+        left: tuple[
+            str,
+            str,
+            int,
+            tuple[float, ...] | None,
+            tuple[str, ...],
+        ],
+        right: tuple[
+            str,
+            str,
+            int,
+            tuple[float, ...] | None,
+            tuple[str, ...],
+        ],
     ) -> float:
-        if left_embedding and right_embedding:
-            length = min(len(left_embedding), len(right_embedding))
-            if length:
-                dot = sum(
-                    left_embedding[index] * right_embedding[index]
-                    for index in range(length)
-                )
-                left_norm = sqrt(
-                    sum(value * value for value in left_embedding[:length])
-                )
-                right_norm = sqrt(
-                    sum(value * value for value in right_embedding[:length])
-                )
-                if left_norm > 0 and right_norm > 0:
-                    return 1.0 - dot / (left_norm * right_norm)
-        return sum(
-            (left_point[axis] - right_point[axis]) ** 2
-            for axis in range(3)
+        embedding_score = ListeningGraph._cosine_similarity(
+            left[3],
+            right[3],
         )
+        left_genres = set(left[4])
+        right_genres = set(right[4])
+        genre_score = (
+            len(left_genres & right_genres) / len(left_genres | right_genres)
+            if left_genres and right_genres
+            else None
+        )
+        same_artist = left[1].strip().casefold() == right[1].strip().casefold()
+
+        evidence = [score for score in (embedding_score, genre_score) if score is not None]
+        if not evidence:
+            return 0.78 if same_artist else 0.0
+        if embedding_score is not None and genre_score is not None:
+            score = embedding_score * 0.72 + genre_score * 0.28
+        else:
+            score = evidence[0]
+        return max(score, 0.78) if same_artist else score
+
+    @staticmethod
+    def _cosine_similarity(
+        left: tuple[float, ...] | None,
+        right: tuple[float, ...] | None,
+    ) -> float | None:
+        if not left or not right:
+            return None
+        length = min(len(left), len(right))
+        if not length:
+            return None
+        dot = sum(left[index] * right[index] for index in range(length))
+        left_norm = sqrt(sum(value * value for value in left[:length]))
+        right_norm = sqrt(sum(value * value for value in right[:length]))
+        if left_norm <= 0 or right_norm <= 0:
+            return None
+        return max(0.0, min(1.0, dot / (left_norm * right_norm)))
+
+    @classmethod
+    def _build_layout_points(
+        cls,
+        tracks: tuple[
+            tuple[
+                str,
+                str,
+                int,
+                tuple[float, ...] | None,
+                tuple[str, ...],
+            ],
+            ...,
+        ],
+        cluster_groups: tuple[tuple[int, ...], ...] | None = None,
+    ) -> tuple[tuple[float, float, float], ...]:
+        """Place related tracks into readable, deterministic 3D communities.
+
+        A pure force layout tends to collapse a small selected period into a
+        line.  We therefore build a shallow spherical shell for every
+        similarity community first.  The shell keeps the depth visible while
+        the community anchors keep related tracks together.
+        """
+
+        count = len(tracks)
+        if count <= 0:
+            return ()
+        if count == 1:
+            return ((0.0, 0.0, 0.0),)
+
+        groups = cluster_groups
+        if not groups:
+            groups = cls._build_cluster_groups(
+                tracks,
+                cls._build_edge_pairs(tracks),
+            )
+
+        group_count = len(groups)
+        group_centers: dict[int, tuple[float, float, float]] = {}
+        for group_index, members in enumerate(groups):
+            if group_count == 1:
+                center = (0.0, 0.0, 0.0)
+            else:
+                angle = (
+                    2.0 * pi * group_index / group_count + 0.28
+                    if group_count <= 4
+                    else group_index * 2.399963 + 0.28
+                )
+                radius_x = min(0.68, 0.42 + 0.055 * sqrt(group_count))
+                radius_y = min(0.50, 0.30 + 0.045 * sqrt(group_count))
+                center = (
+                    cos(angle) * radius_x,
+                    sin(angle) * radius_y,
+                    0.16 * sin(angle * 1.71),
+                )
+            for member in members:
+                group_centers[member] = center
+
+        points: list[tuple[float, float, float]] = [
+            (0.0, 0.0, 0.0)
+            for _ in tracks
+        ]
+        for group_index, members in enumerate(groups):
+            center = group_centers[members[0]]
+            member_count = len(members)
+            local_scale = min(0.34, 0.145 + 0.046 * sqrt(member_count))
+            phase = group_index * 1.17 + 0.4
+            for local_index, member in enumerate(members):
+                if member_count == 1:
+                    local_x = local_y = local_z = 0.0
+                else:
+                    # Fibonacci-style points avoid a flat row when only a few
+                    # tracks are selected and remain evenly spaced as a group
+                    # grows.
+                    latitude = 1.0 - 2.0 * (local_index + 0.5) / member_count
+                    radial = sqrt(max(0.0, 1.0 - latitude * latitude))
+                    angle = phase + local_index * 2.399963
+                    local_x = cos(angle) * radial * local_scale
+                    local_y = sin(angle) * radial * local_scale * 0.86
+                    local_z = latitude * local_scale * 1.35
+                points[member] = (
+                    center[0] + local_x,
+                    center[1] + local_y,
+                    center[2] + local_z,
+                )
+
+        # A tiny deterministic jitter prevents exact projected overlaps after
+        # a rotation, while keeping every community recognisably compact.
+        return tuple(
+            (
+                max(-1.1, min(1.1, point[0] + 0.012 * cos(index * 2.41))),
+                max(-1.0, min(1.0, point[1] + 0.012 * sin(index * 1.73))),
+                max(-0.95, min(0.95, point[2] + 0.012 * sin(index * 2.07))),
+            )
+            for index, point in enumerate(points)
+        )
+
+    def _node_color(
+        self,
+        index: int,
+        front: float,
+        active: bool,
+    ) -> QColor:
+        palette = ("#14B893", "#8E7BC5", "#D08B55", "#4C9AA0", "#B36B8C")
+        genres = self._tracks[index][4]
+        key = genres[0] if genres else "unknown"
+        color = QColor(palette[sum(ord(char) for char in key) % len(palette)])
+        color.setAlpha(255 if active else int(130 + 105 * front))
+        return color
 
     def _paint_hover_label(
         self,
@@ -1816,10 +2097,50 @@ class ListeningGraph(QWidget):
         title: str,
         artist: str,
     ) -> None:
-        title_text = title if len(title) <= 34 else f"{title[:33]}…"
-        artist_text = artist if len(artist) <= 28 else f"{artist[:27]}…"
-        bubble_width = min(250.0, max(150.0, len(title_text) * 6.8))
-        bubble_height = 42.0 if artist_text else 25.0
+        metrics = QFontMetrics(painter.font())
+        available_width = max(170.0, self.width() - 12.0)
+        bubble_width = min(
+            available_width,
+            max(
+                170.0,
+                float(
+                    max(
+                        metrics.horizontalAdvance(title),
+                        metrics.horizontalAdvance(artist),
+                    )
+                    + 18
+                ),
+            ),
+        )
+        text_width = max(1, int(bubble_width - 18))
+
+        def wrap(value: str) -> list[str]:
+            if not value:
+                return []
+            words = value.split()
+            lines: list[str] = []
+            current = ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if (
+                    not current
+                    or metrics.horizontalAdvance(candidate) <= text_width
+                ):
+                    current = candidate
+                    continue
+                lines.append(current)
+                current = word
+            if current:
+                lines.append(current)
+            return lines or [value]
+
+        title_lines = wrap(title)
+        artist_lines = wrap(artist)
+        bubble_height = (
+            10.0
+            + max(1, len(title_lines)) * 17.0
+            + (4.0 + len(artist_lines) * 15.0 if artist_lines else 0.0)
+        )
         x = min(
             max(6.0, position.x() - bubble_width / 2),
             max(6.0, self.width() - bubble_width - 6.0),
@@ -1832,18 +2153,24 @@ class ListeningGraph(QWidget):
         painter.setBrush(QColor(7, 10, 12, 235))
         painter.drawRoundedRect(bubble, 7, 7)
         painter.setPen(QColor("#F1F9F5"))
-        painter.drawText(
-            QRectF(bubble.left() + 9, bubble.top() + 4, bubble.width() - 18, 18),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            title_text,
-        )
-        if artist_text:
-            painter.setPen(QColor("#91A49E"))
+        title_y = bubble.top() + 5.0
+        for line in title_lines:
             painter.drawText(
-                QRectF(bubble.left() + 9, bubble.top() + 22, bubble.width() - 18, 16),
+                QRectF(bubble.left() + 9, title_y, bubble.width() - 18, 17),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                artist_text,
+                line,
             )
+            title_y += 17.0
+        if artist_lines:
+            title_y += 4.0
+            painter.setPen(QColor("#91A49E"))
+            for line in artist_lines:
+                painter.drawText(
+                    QRectF(bubble.left() + 9, title_y, bubble.width() - 18, 15),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    line,
+                )
+                title_y += 15.0
 
 
 class ListeningStatisticsDialog(QDialog):
@@ -1855,6 +2182,7 @@ class ListeningStatisticsDialog(QDialog):
         parent: QWidget | None = None,
         *,
         track_catalog: tuple[Track, ...] | list[Track] = (),
+        recommendation_metrics: RecommendationMetrics | None = None,
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
@@ -1862,6 +2190,7 @@ class ListeningStatisticsDialog(QDialog):
         self.setWindowTitle("Listening habits")
         self.resize(940, 700)
         self._statistics = statistics
+        self._recommendation_metrics = recommendation_metrics
         self._track_catalog = {
             (track.title.casefold(), track.artist.casefold()): track
             for track in track_catalog
@@ -1870,6 +2199,7 @@ class ListeningStatisticsDialog(QDialog):
         # whichever day or month is selected in that diagram.
         self._chart_mode = "day"
         self._chart_items = tuple(statistics.daily)
+        self._selected_period_index: int | None = None
         self._daily_by_day = {
             item.day: item for item in statistics.daily
         }
@@ -1915,6 +2245,53 @@ class ListeningStatisticsDialog(QDialog):
                 metric_row.addWidget(divider)
         total_layout.addLayout(metric_row)
         layout.addWidget(total_frame)
+
+        if recommendation_metrics is not None:
+            recommendation_heading = QLabel("Recommendation quality")
+            recommendation_heading.setObjectName("listeningTotalHeading")
+            layout.addWidget(recommendation_heading)
+
+            recommendation_frame = QFrame()
+            recommendation_frame.setObjectName("listeningTotal")
+            recommendation_layout = QHBoxLayout(recommendation_frame)
+            recommendation_layout.setContentsMargins(14, 6, 14, 7)
+            recommendation_layout.setSpacing(8)
+            recommendation_values = (
+                (str(recommendation_metrics.impressions), "impressions"),
+                (
+                    self._format_percent(
+                        recommendation_metrics.completion_rate
+                    ),
+                    "completion rate",
+                ),
+                (
+                    self._format_percent(recommendation_metrics.skip_rate),
+                    "skip rate",
+                ),
+                (
+                    self._format_percent(recommendation_metrics.recall_at_10),
+                    "Recall@10",
+                ),
+                (
+                    self._format_percent(recommendation_metrics.ndcg_at_10),
+                    "NDCG@10",
+                ),
+                (
+                    self._format_percent(
+                        recommendation_metrics.artist_diversity
+                    ),
+                    "artist diversity",
+                ),
+            )
+            for index, (value, label) in enumerate(recommendation_values):
+                self._add_metric(recommendation_layout, value, label)
+                if index < len(recommendation_values) - 1:
+                    divider = QFrame()
+                    divider.setObjectName("listeningTotalDivider")
+                    divider.setFrameShape(QFrame.Shape.VLine)
+                    divider.setFixedWidth(1)
+                    recommendation_layout.addWidget(divider)
+            layout.addWidget(recommendation_frame)
 
         # Keep the date range with the chart it describes instead of spending
         # a separate row above the dashboard.
@@ -1969,39 +2346,65 @@ class ListeningStatisticsDialog(QDialog):
         detail_frame = QFrame()
         detail_frame.setObjectName("listeningDetailPanel")
         detail_layout = QVBoxLayout(detail_frame)
-        detail_layout.setContentsMargins(12, 10, 12, 10)
+        # Keep the metadata inset, while letting the table span the full
+        # content width like the Highlights table below.
+        # Let the table continue all the way to the panel's bottom edge.
+        detail_layout.setContentsMargins(0, 10, 0, 0)
+        detail_header = QWidget()
+        detail_header_layout = QVBoxLayout(detail_header)
+        detail_header_layout.setContentsMargins(12, 0, 12, 0)
+        detail_header_layout.setSpacing(6)
+        self.day_insight = QLabel("A quick read on this period.")
+        self.day_insight.setObjectName("listeningDetailInsight")
+        self.day_insight.setWordWrap(True)
+        detail_header_layout.addWidget(self.day_insight)
         self.day_title = QLabel("Select a period")
         self.day_title.setObjectName("libraryMaintenanceTitle")
-        detail_layout.addWidget(self.day_title)
+        detail_header_layout.addWidget(self.day_title)
         self.day_summary = QLabel(
             "Click a bar to inspect that period's pattern."
         )
         self.day_summary.setWordWrap(True)
-        detail_layout.addWidget(self.day_summary)
+        detail_header_layout.addWidget(self.day_summary)
         self.top_genre_label = QLabel("Top genre: —")
-        detail_layout.addWidget(self.top_genre_label)
-        self.track_count_label = QLabel("Tracks listened: 0")
-        detail_layout.addWidget(self.track_count_label)
-        self.day_table = QTableWidget(0, 4)
+        detail_header_layout.addWidget(self.top_genre_label)
+        detail_header_layout.addSpacing(3)
+        self.top_tracks_heading = QLabel("Top tracks")
+        self.top_tracks_heading.setObjectName("listeningPanelHeading")
+        detail_header_layout.addWidget(self.top_tracks_heading)
+        detail_layout.addWidget(detail_header)
+        self.day_table = QTableWidget(0, 3)
+        self.day_table.setObjectName("listeningPeriodTable")
         self.day_table.setHorizontalHeaderLabels(
-            ("#", "Track", "Artist", "Listens")
+            ("Track", "Artist", "Listens")
         )
         self.day_table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self.day_table.verticalHeader().setVisible(False)
+        self.day_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.day_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.day_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.day_table.setShowGrid(False)
         self.day_table.setAlternatingRowColors(True)
-        self.day_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+        self.day_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.day_table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.day_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self.day_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
         )
         self.day_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.day_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.ResizeToContents
         )
         detail_layout.addWidget(self.day_table, 1)
         content_grid.addWidget(detail_frame, 0, 1)
@@ -2068,6 +2471,17 @@ class ListeningStatisticsDialog(QDialog):
         if self._chart_items:
             self._show_chart_period(len(self._chart_items) - 1)
 
+    def showEvent(self, event: object) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        # Rebuild after the dialog receives its final size.  This also makes
+        # reopening the modeless statistics window refresh the graph instead
+        # of showing the previous paint pass.
+        if self._chart_items:
+            index = self._selected_period_index
+            if index is None or index >= len(self._chart_items):
+                index = len(self._chart_items) - 1
+            QTimer.singleShot(0, lambda: self._show_chart_period(index))
+
     @staticmethod
     def _add_metric(layout: QHBoxLayout, value: str, label: str) -> None:
         metric = QWidget()
@@ -2091,6 +2505,10 @@ class ListeningStatisticsDialog(QDialog):
         hours, remainder = divmod(minutes, 60)
         return f"{hours}h {remainder:02d}m" if hours else f"{remainder}m"
 
+    @staticmethod
+    def _format_percent(value: float) -> str:
+        return f"{max(0.0, min(1.0, value)) * 100:.0f}%"
+
     def _change_chart_mode(self, index: int) -> None:
         self._chart_mode = "month" if index == 1 else "day"
         self._chart_items = (
@@ -2111,6 +2529,7 @@ class ListeningStatisticsDialog(QDialog):
         if not (0 <= index < len(items)):
             return
         item = items[index]
+        self._selected_period_index = index
         self.bar_chart.set_selected_index(index)
         is_month = self._chart_mode == "month"
         period_date = item.month if is_month else item.day
@@ -2127,22 +2546,59 @@ class ListeningStatisticsDialog(QDialog):
             else (item.top_genres[0].label if item.top_genres else "")
         )
         self.top_genre_label.setText(f"Top genre: {top_genre or '—'}")
-        self.track_count_label.setText(
-            f"Tracks listened: {item.track_count} · "
-            f"{item.skipped} skipped"
+        # Keep this detail table intentionally compact.  The complete period
+        # history is still fed to Graph below, while the table is a quick
+        # top-five summary for the selected day/month.
+        period_tracks = tuple(getattr(item, "top_tracks", ()))[:5]
+        self.day_insight.setText(
+            self._period_insight(item, period_tracks)
         )
+        self.top_tracks_heading.setText("Top tracks")
         self.day_table.setRowCount(0)
-        for rank, stat in enumerate(item.top_tracks, start=1):
+        for stat in period_tracks:
             row = self.day_table.rowCount()
             self.day_table.insertRow(row)
-            self.day_table.setItem(row, 0, QTableWidgetItem(str(rank)))
-            self.day_table.setItem(row, 1, QTableWidgetItem(stat.label))
-            self.day_table.setItem(row, 2, QTableWidgetItem(stat.subtitle))
-            self.day_table.setItem(row, 3, QTableWidgetItem(str(stat.count)))
+            track_item = QTableWidgetItem(stat.label)
+            track_item.setToolTip(stat.label)
+            artist_item = QTableWidgetItem(stat.subtitle)
+            artist_item.setToolTip(stat.subtitle)
+            self.day_table.setItem(row, 0, track_item)
+            self.day_table.setItem(row, 1, artist_item)
+            self.day_table.setItem(row, 2, QTableWidgetItem(str(stat.count)))
         self.listening_graph.set_tracks(self._build_graph_tracks((item,)))
         self.graph_period_label.setText(
             f"Selected {period_date.strftime('%b %Y' if is_month else '%d %b')}"
         )
+
+    @staticmethod
+    def _period_insight(
+        item: object,
+        period_tracks: tuple[object, ...],
+    ) -> str:
+        """Return one compact, human-readable observation for the period."""
+
+        completed = max(0, int(getattr(item, "completed_listens", 0)))
+        skipped = max(0, int(getattr(item, "skipped", 0)))
+        track_count = max(0, int(getattr(item, "track_count", 0)))
+        if period_tracks and completed:
+            leader = period_tracks[0]
+            leader_title = str(getattr(leader, "label", "A track"))
+            leader_count = max(0, int(getattr(leader, "count", 0)))
+            share = round(leader_count / completed * 100)
+            if track_count:
+                return (
+                    f"{leader_title} led this period with {leader_count} "
+                    f"of {completed} listens · {track_count} unique tracks"
+                )
+            return (
+                f"{leader_title} led this period with {share}% of your listens"
+            )
+        if skipped:
+            return (
+                f"A quieter period: {skipped} skipped track(s) and no "
+                "completed listens yet"
+            )
+        return "No completed listens for this period yet"
 
     def _update_chart_period_label(self) -> None:
         if not self._chart_items:
@@ -2163,10 +2619,16 @@ class ListeningStatisticsDialog(QDialog):
     def _build_graph_tracks(
         self,
         items: tuple[object, ...] | list[object],
-    ) -> tuple[tuple[str, str, int, tuple[float, ...] | None], ...]:
+    ) -> tuple[
+        tuple[str, str, int, tuple[float, ...] | None, tuple[str, ...]],
+        ...,
+    ]:
         counts: Counter[tuple[str, str]] = Counter()
         for item in items:
-            for stat in getattr(item, "top_tracks", ()):
+            period_tracks = getattr(item, "all_tracks", ())
+            if not period_tracks:
+                period_tracks = getattr(item, "top_tracks", ())
+            for stat in period_tracks:
                 title = str(getattr(stat, "label", "")).strip()
                 artist = str(getattr(stat, "subtitle", "")).strip()
                 if title:
@@ -2175,7 +2637,7 @@ class ListeningStatisticsDialog(QDialog):
                         int(getattr(stat, "count", 0)),
                     )
         rows = []
-        for (title, artist), count in counts.most_common(8):
+        for (title, artist), count in counts.most_common():
             if count <= 0:
                 continue
             track = self._track_catalog.get(
@@ -2186,7 +2648,15 @@ class ListeningStatisticsDialog(QDialog):
                 if track is not None and track.track_embedding
                 else None
             )
-            rows.append((title, artist, count, embedding))
+            genres = ()
+            if track is not None:
+                detected_genres = tuple(
+                    genre.parent_genre
+                    for genre in track.detected_genres
+                    if genre.parent_genre.strip()
+                )
+                genres = tuple(track.genres) + detected_genres
+            rows.append((title, artist, count, embedding, genres))
         return tuple(rows)
 
     def _populate_highlights(self) -> None:
@@ -2205,7 +2675,9 @@ class ListeningStatisticsDialog(QDialog):
             row = self.highlights_table.rowCount()
             self.highlights_table.insertRow(row)
             self.highlights_table.setItem(row, 0, QTableWidgetItem(category))
-            self.highlights_table.setItem(row, 1, QTableWidgetItem(stat.label))
+            favorite_item = QTableWidgetItem(stat.label)
+            favorite_item.setToolTip(stat.label)
+            self.highlights_table.setItem(row, 1, favorite_item)
             self.highlights_table.setItem(row, 2, QTableWidgetItem(str(stat.count)))
 
         self.highlights_table.resizeRowsToContents()

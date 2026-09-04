@@ -325,3 +325,61 @@ def test_selected_mood_ignores_large_interaction_score():
     )
 
     assert recommendations[0].track.id == "dark-track"
+
+
+def test_my_wave_uses_positive_user_history() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="favorite",
+            title="Favorite",
+            artist="Favorite Artist",
+            mood=MOOD_PRESETS["dark"],
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="similar",
+            title="Similar",
+            artist="Other Artist",
+            mood=MOOD_PRESETS["dark"],
+            track_embedding=(0.9, 0.1),
+        )
+    )
+    store.add_track(
+        Track(
+            id="different",
+            title="Different",
+            artist="Other Artist",
+            mood=MOOD_PRESETS["happy"],
+            track_embedding=(-1.0, 0.0),
+        )
+    )
+    InteractionService(store).record(
+        user_id="user-1",
+        track_id="favorite",
+        interaction_type=InteractionType.LIKE,
+    )
+
+    service = RecommendationService(
+        MostPopularRecommender(store, exploration_pool_size=1),
+        mood_recommender=MoodRecommender(
+            store,
+            replay_cooldown=0,
+            exploration_pool_size=1,
+        ),
+    )
+    recommendations = service.get_recommendations(
+        user_id="user-1",
+        limit=2,
+        context=RecommendationContext.my_wave(),
+    )
+
+    assert [item.track.id for item in recommendations] == [
+        "similar",
+        "different",
+    ]
+    assert recommendations[0].mode.value == "my_wave"
+    assert recommendations[0].reason == "Based on your listening history"

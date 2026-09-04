@@ -1625,6 +1625,7 @@ class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
     """The first, calm entry point for an ad-hoc mood session."""
 
     mood_selected = Signal(str)
+    my_wave_selected = Signal()
 
     def __init__(
         self,
@@ -1664,7 +1665,12 @@ class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
     def mouseReleaseEvent(self, event: object) -> None:
         super().mouseReleaseEvent(event)
         menu = QMenu(self)
-        menu.setTitle("Choose a mood")
+        menu.setTitle("Mood & My Wave")
+        my_wave_action = menu.addAction("My Wave")
+        my_wave_action.triggered.connect(
+            lambda checked=False: self.my_wave_selected.emit()
+        )
+        menu.addSeparator()
         for mood_name in self._mood_names:
             action = menu.addAction(mood_name.title())
             action.triggered.connect(
@@ -1940,6 +1946,8 @@ def track_cover_pixmap(
 class QueueDialog(QDialog):
     """A lightweight non-modal playback queue window."""
 
+    track_play_requested = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         prepare_dialog(self)
@@ -1967,16 +1975,28 @@ class QueueDialog(QDialog):
         if total_count <= 0:
             self.track_list.addItem("Nothing queued")
 
-    def append_tracks(self, tracks: list[tuple[str, str]]) -> None:
+    def append_tracks(
+        self,
+        tracks: list[tuple[str, str]],
+        track_ids: list[str] | tuple[str, ...] = (),
+    ) -> None:
         """Append only the next rendered queue slice."""
 
-        for title, artist in tracks:
+        for index, (title, artist) in enumerate(tracks):
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, 46))
             self.track_list.addItem(item)
+            identity = TrackIdentityWidget(title, artist, compact=True)
+            if index < len(track_ids):
+                track_id = track_ids[index]
+                identity.play_requested.connect(
+                    lambda track_id=track_id: self.track_play_requested.emit(
+                        track_id
+                    )
+                )
             self.track_list.setItemWidget(
                 item,
-                TrackIdentityWidget(title, artist, compact=True),
+                identity,
             )
 
 

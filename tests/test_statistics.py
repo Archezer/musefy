@@ -109,3 +109,35 @@ def test_statistics_counts_new_completion_and_short_skip_events() -> None:
     assert result.skipped_count == 1
     assert result.daily[-1].completed_listens == 1
     assert result.daily[-1].skipped == 1
+
+
+def test_statistics_keeps_full_period_track_lists_for_dashboard() -> None:
+    now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Alex"))
+
+    for index in range(7):
+        track = Track(
+            id=f"track-{index}",
+            title=f"Track {index}",
+            artist="Artist",
+            duration_ms=120_000,
+        )
+        store.add_track(track)
+        store.add_interaction(
+            Interaction(
+                "user-1",
+                track.id,
+                InteractionType.COMPLETED_80,
+                now,
+            )
+        )
+
+    result = ListeningStatisticsService(store).build("user-1", now=now)
+
+    assert len(result.daily[-1].all_tracks) == 7
+    assert len(result.daily[-1].top_tracks) == 5
+    assert len(result.monthly[-1].all_tracks) == 7
+    assert [stat.label for stat in result.daily[-1].all_tracks] == [
+        f"Track {index}" for index in range(7)
+    ]

@@ -25,10 +25,37 @@ from app.sources.youtube import (
 )
 
 DEFAULT_SEARCH_WORKERS = 6
+# Video uploads often contain a short intro/outro, so allow a modest but
+# bounded difference while rejecting an obviously wrong long-form result.
+YOUTUBE_DURATION_TOLERANCE_MS = 12_000
+YOUTUBE_DURATION_TOLERANCE_RATIO = 0.08
 
 
 class OperationCancelled(RuntimeError):
     """Raised when a background import/search is cancelled by the user."""
+
+
+def _durations_match(
+    expected_ms: int | None,
+    actual_ms: int | None,
+) -> bool:
+    """Return whether a YouTube result is plausibly the Spotify track."""
+
+    if expected_ms is None or actual_ms is None:
+        return True
+    tolerance = max(
+        YOUTUBE_DURATION_TOLERANCE_MS,
+        round(expected_ms * YOUTUBE_DURATION_TOLERANCE_RATIO),
+    )
+    return abs(expected_ms - actual_ms) <= tolerance
+
+
+def _format_duration(duration_ms: int | None) -> str:
+    if duration_ms is None:
+        return "unknown"
+    total_seconds = max(0, duration_ms // 1000)
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}:{seconds:02d}"
 
 
 @dataclass(frozen=True)
@@ -126,6 +153,14 @@ class YouTubeImportService:
             spotify_track.search_query,
             max_results=5,
         )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if _durations_match(
+                spotify_track.duration_ms,
+                candidate.duration_ms,
+            )
+        ]
         if should_cancel is not None and should_cancel():
             raise OperationCancelled()
         if on_progress is not None:
@@ -333,15 +368,29 @@ class YouTubeImportService:
                     "No YouTube match found.",
                 )
 
+            candidate = replace(
+                matches[0],
+                requested_title=spotify_track.title,
+                requested_artist=spotify_track.artist,
+                playlist_position=position,
+            )
+            if not _durations_match(
+                spotify_track.duration_ms,
+                candidate.duration_ms,
+            ):
+                return (
+                    index,
+                    spotify_track,
+                    None,
+                    "Duration mismatch: Spotify "
+                    f"{_format_duration(spotify_track.duration_ms)} vs "
+                    f"YouTube {_format_duration(candidate.duration_ms)}.",
+                )
+
             return (
                 index,
                 spotify_track,
-                replace(
-                    matches[0],
-                    requested_title=spotify_track.title,
-                    requested_artist=spotify_track.artist,
-                    playlist_position=position,
-                ),
+                candidate,
                 None,
             )
 

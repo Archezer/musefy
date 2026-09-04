@@ -559,6 +559,60 @@ def test_spotify_playlist_search_reports_failed_positions() -> None:
     assert result.failed[0][0] == SpotifyTrack("Missing", "Artist")
 
 
+def test_spotify_playlist_search_rejects_large_duration_mismatch() -> None:
+    class DurationSpotifyProvider(FakeSpotifyProvider):
+        def get_playlist(self, url: str) -> SpotifyPlaylist:
+            return SpotifyPlaylist(
+                name="Duration playlist",
+                tracks=(
+                    SpotifyTrack(
+                        "Matched",
+                        "Artist",
+                        duration_ms=180_000,
+                    ),
+                    SpotifyTrack(
+                        "Mismatch",
+                        "Artist",
+                        duration_ms=180_000,
+                    ),
+                ),
+            )
+
+    class DurationYoutubeProvider(FakeSpotifyYoutubeProvider):
+        def search(
+            self,
+            query: str,
+            *,
+            max_results: int,
+        ) -> list[YouTubeCandidate]:
+            duration_ms = 181_000 if query.startswith("Artist - Matched") else 420_000
+            return [
+                YouTubeCandidate(
+                    video_id=query,
+                    title=query,
+                    channel_title="Artist",
+                    duration_ms=duration_ms,
+                    view_count=None,
+                    url=f"https://youtube.test/{query}",
+                )
+            ]
+
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        DurationYoutubeProvider(),
+        DurationSpotifyProvider(),
+    )
+
+    result = service.search_from_spotify("spotify-playlist")
+
+    assert isinstance(result, SpotifyPlaylistSearchResult)
+    assert [candidate.requested_title for candidate in result.candidates] == [
+        "Matched",
+    ]
+    assert result.failed_positions == (1,)
+    assert "Duration mismatch" in result.failed[0][1]
+
+
 def test_spotify_playlist_search_reports_live_progress() -> None:
     service = YouTubeImportService(
         FakeIngestionService(),

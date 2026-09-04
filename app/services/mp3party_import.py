@@ -34,6 +34,10 @@ class Mp3PartyCandidate:
     url: str
     audio_url: str
     cover_url: str | None = None
+    # MP3Party exposes a dedicated download endpoint in addition to the
+    # player stream URL.  Prefer it when present because it is the URL used
+    # by the site's own download button.
+    download_url: str | None = None
     # Position in the source playlist, when the candidate was found as part
     # of a playlist retry search.  Direct searches leave it unset.
     playlist_position: int | None = None
@@ -70,8 +74,30 @@ class _Mp3PartyHTMLParser(HTMLParser):
                 "artist": attributes.get("data-js-artist-name"),
                 "audio_url": attributes.get("data-js-url"),
                 "cover_url": attributes.get("data-js-image"),
+                "download_url": None,
             }
             self._info_values = []
+            return
+
+        if "js-download" in classes or "js-dw-btn" in classes:
+            download_url = attributes.get("data-download-url")
+            if not download_url and "js-dw-btn" in classes:
+                download_url = attributes.get("href")
+            if not download_url:
+                return
+
+            if self._current is not None:
+                self._current["download_url"] = download_url
+                return
+
+            track_id = attributes.get("data-track-id")
+            if not track_id:
+                return
+
+            for entry in reversed(self.entries):
+                if str(entry.get("track_id") or "") == track_id:
+                    entry["download_url"] = download_url
+                    break
 
     def handle_data(self, data: str) -> None:
         if self._current is None:
@@ -139,10 +165,17 @@ class Mp3PartyImportService:
 
         entries = self._read_entries(normalized_url)
         candidates = self._build_candidates(entries)
+        requested_track_id = urlparse(normalized_url).path.rstrip("/").split("/")[-1]
+        for candidate in candidates:
+            if candidate.track_id == requested_track_id:
+                return candidate
+
         if not candidates:
             raise RuntimeError("MP3Party page did not expose track metadata.")
 
-        return candidates[0]
+        raise RuntimeError(
+            "MP3Party page did not expose metadata for the requested track."
+        )
 
     def download(self, source: str | Mp3PartyCandidate) -> Track:
         """Download one MP3Party MP3 and import it into the local library."""
@@ -155,7 +188,10 @@ class Mp3PartyImportService:
 
         with TemporaryDirectory(prefix="music-recommendation-mp3party-") as directory:
             output_path = Path(directory) / f"{candidate.track_id}.mp3"
-            self._download_audio(candidate.audio_url, output_path)
+            self._download_audio(
+                candidate.download_url or candidate.audio_url,
+                output_path,
+            )
             return self.ingestion_service.ingest(
                 output_path,
                 title=candidate.title,
@@ -248,6 +284,7 @@ class Mp3PartyImportService:
             title = str(entry.get("title") or "").strip()
             artist = str(entry.get("artist") or "").strip()
             audio_url = str(entry.get("audio_url") or "").strip()
+            download_url = str(entry.get("download_url") or "").strip()
             if (
                 not track_id.isdigit()
                 or track_id in seen_ids
@@ -274,6 +311,11 @@ class Mp3PartyImportService:
                     cover_url=(
                         urljoin(MP3PARTY_BASE_URL, cover_url_value)
                         if cover_url_value
+                        else None
+                    ),
+                    download_url=(
+                        urljoin(MP3PARTY_BASE_URL, download_url)
+                        if download_url
                         else None
                     ),
                 )

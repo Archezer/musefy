@@ -48,6 +48,33 @@ def test_appended_recommendations_stay_behind_manual_queue() -> None:
     assert service.advance().current_track_id == "recommendation-2"
 
 
+def test_jump_to_queue_track_discards_items_before_selected() -> None:
+    service = PlaybackQueueService()
+    service.start(
+        ("current", "playlist-1", "playlist-2"),
+        mode=QueueMode.NORMAL,
+    )
+    service.enqueue("manual-1")
+
+    queue = service.jump_to("playlist-1")
+
+    assert queue is not None
+    assert queue.current_track_id == "playlist-1"
+    assert queue.queued_track_ids == ()
+    assert queue.remaining_track_ids == ("playlist-2",)
+    assert service.upcoming_track_ids() == ("playlist-2",)
+
+
+def test_jump_to_unknown_queue_track_is_a_noop() -> None:
+    service = PlaybackQueueService()
+    service.start(("current", "next"))
+
+    assert service.jump_to("missing") is None
+    assert service.queue is not None
+    assert service.queue.current_track_id == "current"
+    assert service.upcoming_track_ids() == ("next",)
+
+
 def test_repeat_cycle_restores_the_started_sequence() -> None:
     service = PlaybackQueueService()
     service.start(

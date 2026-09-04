@@ -12,8 +12,10 @@ from app.domain.mood import MoodVector
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.feedback import (
     PLAYBACK_SESSION_TYPES,
+    effective_weight,
     suppressed_track_ids,
 )
+from app.recommenders.similarity import cosine_similarity
 from app.storage.protocols import MusicStore
 
 DEFAULT_REPLAY_COOLDOWN = 30
@@ -22,6 +24,16 @@ DEFAULT_EXPLORATION_POOL_SIZE = 8
 MOOD_EXPLORATION_TEMPERATURE = 0.05
 MOOD_RANDOM_SCORE_GAP = 0.12
 MOOD_FEEDBACK_FACTOR = 0.05
+MY_WAVE_POSITIVE_TYPES = frozenset(
+    {
+        InteractionType.LIKE,
+        InteractionType.SAVE,
+        InteractionType.PLAYED_30S,
+        InteractionType.COMPLETED_80,
+        InteractionType.LISTEN,
+        InteractionType.REPEAT,
+    }
+)
 
 
 class MoodRecommender:
@@ -151,6 +163,218 @@ class MoodRecommender:
                 ),
             )
             for track, similarity in selected_tracks
+        ]
+
+    def recommend_my_wave(
+        self,
+        user_id: str,
+        limit: int = 10,
+        *,
+        now: datetime | None = None,
+    ) -> list[Recommendation]:
+        """Return a personalized mood/content wave for one user.
+
+        The profile is intentionally local and explainable: positive listening
+        signals form a weighted mood centroid and a small content profile from
+        the user's liked/saved/completed tracks.  A user with no history gets
+        a neutral cold-start wave and can immediately start teaching it.
+        """
+
+        if limit <= 0:
+            raise ValueError("Recommendation limit must be positive")
+
+        current_time = now or datetime.now(UTC)
+        all_interactions = list(self.store.list_interactions())
+        user_interactions = [
+            interaction
+            for interaction in all_interactions
+            if interaction.user_id == user_id
+        ]
+        tracks = list(self.store.list_tracks())
+        permanent_track_ids, temporary_track_ids = suppressed_track_ids(
+            user_id,
+            all_interactions,
+            now=current_time,
+        )
+        cooldown_track_ids = self._get_cooldown_track_ids(
+            user_id,
+            user_interactions,
+        )
+        excluded_track_ids = (
+            permanent_track_ids
+            | temporary_track_ids
+            | cooldown_track_ids
+        )
+        positive_track_ids = {
+            interaction.track_id
+            for interaction in user_interactions
+            if interaction.interaction_type in MY_WAVE_POSITIVE_TYPES
+        }
+        candidates = [
+            track
+            for track in tracks
+            if (
+                track.id not in excluded_track_ids
+                and track.id not in positive_track_ids
+            )
+        ]
+        if not candidates:
+            candidates = [
+                track
+                for track in tracks
+                if track.id not in permanent_track_ids
+            ]
+
+        tracks_by_id = {track.id: track for track in tracks}
+        profile_mood_valence = 0.0
+        profile_mood_arousal = 0.0
+        profile_weight = 0.0
+        profile_embeddings: list[tuple[tuple[float, ...], float]] = []
+        artist_weights: dict[str, float] = {}
+        genre_weights: dict[str, float] = {}
+
+        for interaction in user_interactions:
+            if interaction.interaction_type not in MY_WAVE_POSITIVE_TYPES:
+                continue
+            weight = max(
+                0.0,
+                effective_weight(
+                    interaction,
+                    now=current_time,
+                ),
+            )
+            if weight <= 0.0:
+                continue
+            track = tracks_by_id.get(interaction.track_id)
+            if track is None:
+                continue
+
+            if track.mood is not None:
+                profile_mood_valence += track.mood.valence * weight
+                profile_mood_arousal += track.mood.arousal * weight
+                profile_weight += weight
+            if track.track_embedding:
+                profile_embeddings.append((track.track_embedding, weight))
+
+            artist_key = track.artist.strip().casefold()
+            if artist_key:
+                artist_weights[artist_key] = (
+                    artist_weights.get(artist_key, 0.0) + weight
+                )
+            for genre in track.genres:
+                genre_key = genre.strip().casefold()
+                if genre_key:
+                    genre_weights[genre_key] = (
+                        genre_weights.get(genre_key, 0.0) + weight
+                    )
+
+        profile_mood = (
+            MoodVector(
+                valence=max(
+                    -1.0,
+                    min(1.0, profile_mood_valence / profile_weight),
+                ),
+                arousal=max(
+                    -1.0,
+                    min(1.0, profile_mood_arousal / profile_weight),
+                ),
+            )
+            if profile_weight > 0.0
+            else None
+        )
+        max_artist_weight = max(artist_weights.values(), default=0.0)
+        max_genre_weight = max(genre_weights.values(), default=0.0)
+
+        scored_tracks: list[tuple[Track, float, float, float]] = []
+        for track in candidates:
+            mood_similarity = (
+                self._similarity(track.mood, profile_mood)
+                if profile_mood is not None
+                else 0.0
+            )
+            embedding_similarity = 0.0
+            if track.track_embedding and profile_embeddings:
+                embedding_similarity = max(
+                    0.0,
+                    max(
+                        (
+                            cosine_similarity(
+                                embedding,
+                                track.track_embedding,
+                            )
+                            + 1.0
+                        )
+                        / 2.0
+                        for embedding, _ in profile_embeddings
+                    ),
+                )
+
+            artist_affinity = (
+                artist_weights.get(track.artist.strip().casefold(), 0.0)
+                / max_artist_weight
+                if max_artist_weight > 0.0
+                else 0.0
+            )
+            genre_affinity = 0.0
+            if max_genre_weight > 0.0:
+                genre_affinity = max(
+                    (
+                        genre_weights.get(genre.strip().casefold(), 0.0)
+                        / max_genre_weight
+                    )
+                    for genre in track.genres
+                    if genre.strip()
+                ) if any(genre.strip() for genre in track.genres) else 0.0
+
+            affinity = max(artist_affinity, genre_affinity)
+            score = (
+                0.45 * mood_similarity
+                + 0.40 * embedding_similarity
+                + 0.15 * affinity
+            )
+            scored_tracks.append(
+                (
+                    track,
+                    min(1.0, max(0.0, score)),
+                    mood_similarity,
+                    embedding_similarity,
+                )
+            )
+
+        scored_tracks.sort(
+            key=lambda item: (
+                -item[1],
+                item[0].artist.casefold(),
+                item[0].title.casefold(),
+            )
+        )
+        selected = self._select_with_exploration(
+            [(track, score) for track, score, _, _ in scored_tracks],
+            limit,
+        )
+        selected_ids = {track.id for track, _ in selected}
+        components = {
+            track.id: (mood_similarity, embedding_similarity)
+            for track, _, mood_similarity, embedding_similarity
+            in scored_tracks
+        }
+
+        reason = (
+            "Based on your listening history"
+            if profile_weight > 0.0 or profile_embeddings
+            else "Start listening to personalize your wave"
+        )
+        return [
+            Recommendation(
+                track=track,
+                score=score,
+                reason=reason,
+                mode=RecommendationMode.MY_WAVE,
+                mood_similarity=components[track.id][0],
+                embedding_similarity=components[track.id][1],
+            )
+            for track, score in selected
+            if track.id in selected_ids
         ]
 
     def _get_context_interactions(

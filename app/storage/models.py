@@ -37,6 +37,12 @@ class UserRecord(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    recommendation_impressions: Mapped[
+        list["RecommendationImpressionRecord"]
+    ] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class TrackRecord(Base):
@@ -108,6 +114,12 @@ class TrackRecord(Base):
         back_populates="track",
         cascade="all, delete-orphan",
     )
+    recommendation_impressions: Mapped[
+        list["RecommendationImpressionRecord"]
+    ] = relationship(
+        back_populates="track",
+        cascade="all, delete-orphan",
+    )
 
     playlist_entries: Mapped[list["PlaylistEntryRecord"]] = relationship(
         back_populates="track",
@@ -149,6 +161,57 @@ class InteractionRecord(Base):
     )
     user: Mapped[UserRecord] = relationship(
         back_populates="interactions"
+    )
+
+
+class RecommendationImpressionRecord(Base):
+    __tablename__ = "recommendation_impressions"
+
+    __table_args__ = (
+        Index(
+            "ix_recommendation_impressions_user_shown",
+            "user_id",
+            "shown_at",
+        ),
+        Index(
+            "ix_recommendation_impressions_session_position",
+            "session_id",
+            "position",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        )
+    )
+    track_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "tracks.id",
+            ondelete="CASCADE",
+        )
+    )
+    mode: Mapped[str] = mapped_column(String(30))
+    position: Mapped[int] = mapped_column(Integer)
+    score: Mapped[float] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    shown_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    session_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    track: Mapped[TrackRecord] = relationship(
+        back_populates="recommendation_impressions"
+    )
+    user: Mapped[UserRecord] = relationship(
+        back_populates="recommendation_impressions"
     )
 
 

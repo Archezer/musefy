@@ -145,16 +145,27 @@ class PlaylistManagementService:
         entries = list(
             self.store.list_playlist_entries(playlist_id)
         )
-        entries.append(
+        # Older databases (or a track deleted with database-level cascade)
+        # can contain a gap in positions.  Reindex the existing entries before
+        # appending so one stale position cannot block every future add.
+        normalized_entries = [
+            PlaylistEntry(
+                playlist_id=playlist_id,
+                track_id=entry.track_id,
+                position=position,
+            )
+            for position, entry in enumerate(entries)
+        ]
+        normalized_entries.append(
             PlaylistEntry(
                 playlist_id=playlist_id,
                 track_id=track_id,
-                position=len(entries),
+                position=len(normalized_entries),
             )
         )
         self.store.replace_playlist_entries(
             playlist_id,
-            entries,
+            normalized_entries,
         )
 
         return self.get_playlist_tracks(playlist_id)
@@ -219,6 +230,28 @@ class PlaylistManagementService:
         )
 
         return self.get_playlist_tracks(playlist_id)
+
+    def remove_track(
+        self,
+        playlist_id: str,
+        track_id: str,
+    ) -> list[Track]:
+        """Remove the first occurrence of a track from a playlist."""
+
+        self._get_playlist_or_raise(playlist_id)
+        normalized_track_id = track_id.strip()
+        entries = list(self.store.list_playlist_entries(playlist_id))
+        position = next(
+            (
+                index
+                for index, entry in enumerate(entries)
+                if entry.track_id == normalized_track_id
+            ),
+            None,
+        )
+        if position is None:
+            raise ValueError("Track is not in this playlist")
+        return self.remove_track_at(playlist_id, position)
 
     def _get_playlist_or_raise(
         self,

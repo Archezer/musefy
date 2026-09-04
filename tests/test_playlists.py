@@ -2,7 +2,7 @@ from pathlib import Path
 
 import app.services.playlists as playlist_service_module
 
-from app.domain.models import Track
+from app.domain.models import PlaylistEntry, Track
 from app.services.playlists import PlaylistManagementService
 from app.storage.memory import InMemoryMusicStore
 
@@ -48,6 +48,40 @@ def test_removing_one_duplicate_keeps_the_other() -> None:
     service.add_track(playlist.id, "track-2")
     service.add_track(playlist.id, "track-1")
     service.remove_track_at(playlist.id, 0)
+
+    assert [
+        track.id
+        for track in service.get_playlist_tracks(playlist.id)
+    ] == ["track-2", "track-1"]
+
+
+def test_adding_track_repairs_non_consecutive_playlist_positions() -> None:
+    service = make_service()
+    playlist = service.create_playlist("Repair positions")
+
+    service.replace_tracks(playlist.id, ("track-1", "track-2"))
+    # Simulate a legacy database row left with a gap after a track cascade.
+    service.store.playlist_entries[playlist.id][1] = PlaylistEntry(
+        playlist_id=playlist.id,
+        track_id="track-2",
+        position=2,
+    )
+
+    service.add_track(playlist.id, "track-1")
+
+    entries = service.store.list_playlist_entries(playlist.id)
+    assert [entry.position for entry in entries] == [0, 1, 2]
+
+
+def test_remove_track_removes_the_first_matching_occurrence() -> None:
+    service = make_service()
+    playlist = service.create_playlist("Remove track")
+    service.replace_tracks(
+        playlist.id,
+        ("track-1", "track-2", "track-1"),
+    )
+
+    service.remove_track(playlist.id, "track-1")
 
     assert [
         track.id

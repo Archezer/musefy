@@ -5,6 +5,7 @@ from app.domain.models import (
     Interaction,
     Playlist,
     PlaylistEntry,
+    RecommendationImpression,
     Track,
     User,
 )
@@ -90,4 +91,15 @@ class MusicStore(Protocol):
         ...
 
     def list_interactions(self) -> Iterable[Interaction]:
+        ...
+
+    def add_recommendation_impression(
+        self,
+        impression: RecommendationImpression,
+    ) -> None:
+        ...
+
+    def list_recommendation_impressions(
+        self,
+    ) -> Iterable[RecommendationImpression]:
         ...

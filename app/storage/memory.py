@@ -4,6 +4,7 @@ from app.domain.models import (
     Interaction,
     Playlist,
     PlaylistEntry,
+    RecommendationImpression,
     Track,
     User,
 )
@@ -13,6 +14,9 @@ from app.domain.models import (
 class InMemoryMusicStore:
     tracks: dict[str, Track] = field(default_factory=dict)
     interactions: list[Interaction] = field(default_factory=list)
+    recommendation_impressions: list[RecommendationImpression] = field(
+        default_factory=list
+    )
     users: dict[str, User] = field(default_factory=dict)
     playlists: dict[str, Playlist] = field(default_factory=dict)
     playlist_entries: dict[str, list[PlaylistEntry]] = field(
@@ -76,6 +80,11 @@ class InMemoryMusicStore:
             for interaction in self.interactions
             if interaction.track_id != track_id
         ]
+        self.recommendation_impressions = [
+            impression
+            for impression in self.recommendation_impressions
+            if impression.track_id != track_id
+        ]
         for playlist_id, entries in self.playlist_entries.items():
             remaining_entries = [
                 entry
@@ -119,6 +128,15 @@ class InMemoryMusicStore:
             if interaction.track_id == duplicate_track_id
             else interaction
             for interaction in self.interactions
+        ]
+        self.recommendation_impressions = [
+            replace(
+                impression,
+                track_id=survivor_track_id,
+            )
+            if impression.track_id == duplicate_track_id
+            else impression
+            for impression in self.recommendation_impressions
         ]
 
         for playlist_id, entries in self.playlist_entries.items():
@@ -235,3 +253,22 @@ class InMemoryMusicStore:
 
     def list_interactions(self) -> list[Interaction]:
         return list(self.interactions)
+
+    def add_recommendation_impression(
+        self,
+        impression: RecommendationImpression,
+    ) -> None:
+        if impression.user_id not in self.users:
+            raise ValueError(
+                f"User does not exist: {impression.user_id}"
+            )
+        if impression.track_id not in self.tracks:
+            raise ValueError(
+                f"Track does not exist: {impression.track_id}"
+            )
+        self.recommendation_impressions.append(impression)
+
+    def list_recommendation_impressions(
+        self,
+    ) -> list[RecommendationImpression]:
+        return list(self.recommendation_impressions)

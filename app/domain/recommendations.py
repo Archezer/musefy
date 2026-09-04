@@ -7,6 +7,7 @@ from app.domain.mood import MoodVector
 class RecommendationMode(str, Enum):
     POPULARITY = "popularity"
     MOOD = "mood"
+    MY_WAVE = "my_wave"
     TRACK_RADIO = "track_radio"
 
 
@@ -44,6 +45,15 @@ class RecommendationContext:
                     "Mood context name must not be empty."
                 )
 
+        if self.mode == RecommendationMode.MY_WAVE and (
+            self.seed_track_id is not None
+            or self.target_mood is not None
+            or self.mood_name is not None
+        ):
+            raise ValueError(
+                "My Wave context must not contain extra filters."
+            )
+
         if (
             self.mode == RecommendationMode.TRACK_RADIO
             and (
@@ -74,3 +84,9 @@ class RecommendationContext:
             mode=RecommendationMode.TRACK_RADIO,
             seed_track_id=seed_track_id,
         )
+
+    @classmethod
+    def my_wave(cls) -> "RecommendationContext":
+        """Build a personalized mood/profile recommendation context."""
+
+        return cls(mode=RecommendationMode.MY_WAVE)

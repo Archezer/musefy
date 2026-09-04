@@ -13,12 +13,15 @@ from app.domain.models import (
     InteractionType,
     Playlist,
     PlaylistEntry,
+    RecommendationImpression,
     Track,
     User,
 )
 from app.domain.mood import MoodVector
+from app.domain.recommendations import RecommendationMode
 from app.storage.models import (
     InteractionRecord,
+    RecommendationImpressionRecord,
     PlaylistEntryRecord,
     PlaylistRecord,
     TrackRecord,
@@ -240,6 +243,14 @@ class SQLAlchemyMusicStore:
                 update(PlaylistEntryRecord)
                 .where(
                     PlaylistEntryRecord.track_id
+                    == duplicate_track_id
+                )
+                .values(track_id=survivor_track_id)
+            )
+            session.execute(
+                update(RecommendationImpressionRecord)
+                .where(
+                    RecommendationImpressionRecord.track_id
                     == duplicate_track_id
                 )
                 .values(track_id=survivor_track_id)
@@ -467,6 +478,51 @@ class SQLAlchemyMusicStore:
             for record in records
         ]
 
+    def add_recommendation_impression(
+        self,
+        impression: RecommendationImpression,
+    ) -> None:
+        with self.session_factory() as session:
+            user = session.get(UserRecord, impression.user_id)
+            track = session.get(TrackRecord, impression.track_id)
+            if user is None:
+                raise ValueError(
+                    f"User does not exist: {impression.user_id}"
+                )
+            if track is None:
+                raise ValueError(
+                    f"Track does not exist: {impression.track_id}"
+                )
+
+            session.add(
+                RecommendationImpressionRecord(
+                    user_id=impression.user_id,
+                    track_id=impression.track_id,
+                    mode=impression.mode.value,
+                    position=impression.position,
+                    score=impression.score,
+                    reason=impression.reason,
+                    shown_at=impression.shown_at,
+                    session_id=impression.session_id,
+                )
+            )
+            session.commit()
+
+    def list_recommendation_impressions(
+        self,
+    ) -> list[RecommendationImpression]:
+        statement = select(RecommendationImpressionRecord).order_by(
+            RecommendationImpressionRecord.shown_at,
+            RecommendationImpressionRecord.position,
+        )
+        with self.session_factory() as session:
+            records = session.scalars(statement).all()
+
+        return [
+            self._to_recommendation_impression(record)
+            for record in records
+        ]
+
     @staticmethod
     def _to_track(record: TrackRecord) -> Track:
         detected_genres = tuple(
@@ -549,6 +605,25 @@ class SQLAlchemyMusicStore:
             ),
             created_at=created_at,
             mood_context=record.mood_context,
+        )
+
+    @staticmethod
+    def _to_recommendation_impression(
+        record: RecommendationImpressionRecord,
+    ) -> RecommendationImpression:
+        shown_at = record.shown_at
+        if shown_at.tzinfo is None:
+            shown_at = shown_at.replace(tzinfo=UTC)
+
+        return RecommendationImpression(
+            user_id=record.user_id,
+            track_id=record.track_id,
+            mode=RecommendationMode(record.mode),
+            position=record.position,
+            score=record.score,
+            reason=record.reason,
+            shown_at=shown_at,
+            session_id=record.session_id,
         )
 
     @staticmethod

@@ -67,6 +67,14 @@ class RecommendationService:
                 mood_name=context.mood_name,
             )
 
+        if context.mode == RecommendationMode.MY_WAVE:
+            if self.mood_recommender is None:
+                raise RuntimeError("Mood recommender is not configured.")
+            return self.mood_recommender.recommend_my_wave(
+                user_id=normalized_user_id,
+                limit=limit,
+            )
+
         if context.mode == RecommendationMode.TRACK_RADIO:
             if self.track_radio is None:
                 raise RuntimeError("Track radio is not configured.")

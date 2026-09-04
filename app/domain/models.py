@@ -38,6 +38,8 @@ class InteractionType(str, Enum):
             InteractionType.SEEK: 0.0,
             InteractionType.LIKE: 4.0,
             InteractionType.SAVE: 5.0,
+            # These are written only for explicit feedback from the playback
+            # menu.  Normal next/previous navigation is intentionally neutral.
             InteractionType.SKIP: -2.0,
             InteractionType.SKIP_UNDER_30S: -1.0,
             InteractionType.SNOOZE: -0.5,
@@ -114,6 +116,20 @@ class Recommendation:
     @property
     def match_score(self) -> float:
         return self.score
+
+
+@dataclass(frozen=True)
+class RecommendationImpression:
+    """A recommendation that was actually presented or queued."""
+
+    user_id: str
+    track_id: str
+    mode: RecommendationMode
+    position: int
+    score: float
+    reason: str = ""
+    shown_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -98,6 +98,7 @@ from app.services.mp3party_import import (
 )
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlists import PlaylistManagementService
+from app.services.recommendation_analytics import RecommendationAnalyticsService
 from app.services.recommendations import RecommendationService
 from app.services.soundcloud_import import (
     SoundCloudCandidate,
@@ -212,6 +213,7 @@ LIBRARY_PLAYBACK_MODES = (
     QueueMode.SMART_SHUFFLE,
 )
 MAP_MODES = ("background", "focus", "hidden")
+MY_WAVE_SESSION_NAME = "my_wave"
 
 
 @dataclass(frozen=True)
@@ -579,6 +581,9 @@ class MainWindow(QMainWindow):
         self.library_health_service = LibraryHealthService(store)
         self.library_backup_service = LibraryBackupService(store)
         self.statistics_service = ListeningStatisticsService(store)
+        self.recommendation_analytics_service = RecommendationAnalyticsService(
+            store
+        )
         self.watch_folder_service = WatchFolderService(store)
         self._watch_sync_thread: WatchFolderTaskThread | None = None
         self._watch_sync_dialog: LibraryMaintenanceDialog | None = None
@@ -1204,6 +1209,9 @@ class MainWindow(QMainWindow):
         )
         self.map_exit_button.hide()
         self.queue_dialog = QueueDialog(self)
+        self.queue_dialog.track_play_requested.connect(
+            self._play_queued_track
+        )
         self.setCentralWidget(app_root)
         self.statusBar().showMessage("Ready")
         self.statusBar().hide()
@@ -1967,6 +1975,14 @@ class MainWindow(QMainWindow):
         """Render either the main library or a playlist in the shared table."""
 
         self._track_scope_tracks = list(tracks)
+        if hasattr(self, "track_table"):
+            # Column 5 is reserved for the playlist-only remove action.  It is
+            # hidden in the library so the normal table keeps its original
+            # proportions.
+            self.track_table.setColumnHidden(
+                5,
+                self.selected_playlist_id is None,
+            )
         self._render_visible_tracks(title)
 
     def _render_visible_tracks(self, title: str) -> None:
@@ -2275,6 +2291,24 @@ class MainWindow(QMainWindow):
         self.track_table.setItem(row_index, 1, QTableWidgetItem())
         self.track_table.setCellWidget(row_index, 1, track_identity)
         self.track_table.register_row_widget(track_identity, row_index)
+        remove_button: QToolButton | None = None
+        if self.selected_playlist_id is not None:
+            remove_button = QToolButton()
+            remove_button.setObjectName("playlistRemoveButton")
+            remove_button.setText("×")
+            remove_button.setToolTip("Remove from playlist")
+            remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            remove_button.setAutoRaise(True)
+            remove_button.clicked.connect(
+                lambda _checked=False, track_id=track.id: (
+                    self._remove_playlist_track(track_id)
+                )
+            )
+        if remove_button is None:
+            self.track_table.removeCellWidget(row_index, 5)
+        else:
+            self.track_table.setCellWidget(row_index, 5, remove_button)
+            self.track_table.register_row_widget(remove_button, row_index)
         self.track_table.setItem(
             row_index,
             2,
@@ -2441,7 +2475,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "recommendation_list"):
             return
 
-        if self.selected_mood_name is not None:
+        if self.session_mood_name == MY_WAVE_SESSION_NAME:
+            context = RecommendationContext.my_wave()
+        elif self.selected_mood_name is not None:
             context = RecommendationContext.mood(
                 MOOD_PRESETS[self.selected_mood_name],
                 mood_name=self.selected_mood_name,
@@ -2498,6 +2534,7 @@ class MainWindow(QMainWindow):
         ):
             self.recommendation_list.clear()
 
+        shown_recommendations: list[Recommendation] = []
         for recommendation in batch:
             if not isinstance(recommendation, Recommendation):
                 continue
@@ -2508,6 +2545,25 @@ class MainWindow(QMainWindow):
                 f"(match: {recommendation.match_score:.2f})"
             )
             self.recommendation_list.addItem(text)
+            shown_recommendations.append(recommendation)
+
+        self._record_recommendation_impressions(shown_recommendations)
+
+    def _record_recommendation_impressions(
+        self,
+        recommendations: list[Recommendation] | tuple[Recommendation, ...],
+    ) -> None:
+        if not recommendations:
+            return
+        try:
+            self.recommendation_analytics_service.record_impressions(
+                self.user_id,
+                recommendations,
+            )
+        except (OSError, RuntimeError, ValueError):
+            # Telemetry must never interrupt playback or a UI refresh if a
+            # track disappears during a background operation.
+            return
 
     def _finish_recommendation_loading(self, generation: int) -> None:
         if generation != self._recommendation_generation:
@@ -2574,6 +2630,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._record_recommendation_impressions(
+            tuple(
+                recommendation
+                for recommendation in recommendations
+                if recommendation.track.id in track_ids
+            )
+        )
         self.session_mood_name = self.selected_mood_name
         self.playback_queue_service.start(
             track_ids,
@@ -2585,8 +2648,60 @@ class MainWindow(QMainWindow):
         )
 
     def _start_mood_session_from_card(self, mood_name: str) -> None:
+        if mood_name == MY_WAVE_SESSION_NAME:
+            self._start_my_wave_session()
+            return
         self.selected_mood_name = mood_name
         self._start_mood_session()
+
+    def _start_my_wave_session(self) -> None:
+        """Start a personalized mood session based on listening history."""
+
+        try:
+            recommendations = self.recommendation_service.get_recommendations(
+                user_id=self.user_id,
+                limit=30,
+                context=RecommendationContext.my_wave(),
+            )
+        except (RuntimeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "My Wave unavailable",
+                str(error),
+            )
+            return
+
+        track_ids = [
+            recommendation.track.id
+            for recommendation in recommendations
+            if (
+                recommendation.track.local_path
+                and Path(recommendation.track.local_path).exists()
+            )
+        ]
+        if not track_ids:
+            QMessageBox.information(
+                self,
+                "My Wave unavailable",
+                "Analyze or add a few local tracks to build your wave.",
+            )
+            return
+
+        self._record_recommendation_impressions(
+            tuple(
+                recommendation
+                for recommendation in recommendations
+                if recommendation.track.id in track_ids
+            )
+        )
+        self.selected_mood_name = None
+        self.session_mood_name = MY_WAVE_SESSION_NAME
+        self.playback_queue_service.start(
+            track_ids,
+            mode=QueueMode.SESSION,
+        )
+        self._play_current_queue_track()
+        self.statusBar().showMessage("My Wave session started")
 
     def _cycle_playback_mode(self) -> None:
         """Cycle sequential, shuffle and smart-shuffle library playback."""
@@ -2944,6 +3059,7 @@ class MainWindow(QMainWindow):
             *queue.queued_track_ids,
         }
         additions: list[str] = []
+        shown_recommendations: list[Recommendation] = []
         for recommendation in batch:
             if not isinstance(recommendation, Recommendation):
                 continue
@@ -2955,6 +3071,7 @@ class MainWindow(QMainWindow):
                 continue
 
             additions.append(track.id)
+            shown_recommendations.append(recommendation)
             occupied_ids.add(track.id)
             if len(queue.remaining_track_ids) + len(additions) >= (
                 RECOMMENDATION_QUEUE_SIZE
@@ -2962,6 +3079,7 @@ class MainWindow(QMainWindow):
                 break
 
         if additions:
+            self._record_recommendation_impressions(shown_recommendations)
             self.playback_queue_service.append_remaining(additions)
             self._load_queue()
 
@@ -3070,31 +3188,37 @@ class MainWindow(QMainWindow):
         if upcoming_count > 5:
             return
 
-        target_mood = MOOD_PRESETS[self.session_mood_name]
+        if self.session_mood_name == MY_WAVE_SESSION_NAME:
+            context = RecommendationContext.my_wave()
+        else:
+            target_mood = MOOD_PRESETS[self.session_mood_name]
+            context = RecommendationContext.mood(
+                target_mood,
+                mood_name=self.session_mood_name,
+            )
         recommendations = self.recommendation_service.get_recommendations(
             user_id=self.user_id,
             limit=10,
-            context=RecommendationContext.mood(
-                target_mood,
-                mood_name=self.session_mood_name,
-            ),
+            context=context,
         )
         existing_ids = {
             queue.current_track_id,
             *self.playback_queue_service.upcoming_track_ids(),
         }
 
+        shown_recommendations: list[Recommendation] = []
         for recommendation in recommendations:
             track = recommendation.track
             if track.id in existing_ids:
-                continue
-            if track.mood is None:
                 continue
             if not track.local_path or not Path(track.local_path).exists():
                 continue
 
             self.playback_queue_service.enqueue(track.id)
             existing_ids.add(track.id)
+            shown_recommendations.append(recommendation)
+
+        self._record_recommendation_impressions(shown_recommendations)
 
     def _load_queue(self) -> None:
         queue = self.playback_queue_service.queue
@@ -3175,13 +3299,14 @@ class MainWindow(QMainWindow):
                     compact=True,
                 )
                 identity.play_requested.connect(
-                    lambda track_id=track.id: self._play_track_now(track_id)
+                    lambda track_id=track.id: self._play_queued_track(track_id)
                 )
                 self.queue_list.setItemWidget(item, identity)
 
         if self.queue_dialog.isVisible():
             self.queue_dialog.append_tracks(
-                [(track.title, track.artist) for track in tracks]
+                [(track.title, track.artist) for track in tracks],
+                [track.id for track in tracks],
             )
 
         if self._queue_render_index < len(track_ids):
@@ -3193,7 +3318,19 @@ class MainWindow(QMainWindow):
     def _play_queued_item(self, item: QListWidgetItem) -> None:
         track_id = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(track_id, str):
-            self._play_track_now(track_id)
+            self._play_queued_track(track_id)
+
+    def _play_queued_track(self, track_id: str) -> None:
+        """Play a queue item without rebuilding the library/playlist queue."""
+
+        if self.store.get_track(track_id) is None:
+            return
+
+        queue = self.playback_queue_service.jump_to(track_id)
+        if queue is None or queue.current_track_id is None:
+            return
+
+        self._play_current_queue_track()
 
     def _clear_upcoming_queue(self) -> None:
         self.playback_queue_service.clear_upcoming()
@@ -3564,6 +3701,7 @@ class MainWindow(QMainWindow):
         if show_mood:
             mood_card = MoodPlaylistCard(tuple(MOOD_PRESETS))
             mood_card.mood_selected.connect(self._start_mood_session_from_card)
+            mood_card.my_wave_selected.connect(self._start_my_wave_session)
             self.playlist_carousel_layout.addWidget(mood_card)
 
         if show_create:
@@ -3635,11 +3773,35 @@ class MainWindow(QMainWindow):
         return specs
 
     def _select_playlist_from_carousel(self, playlist_id: str) -> None:
+        """Open a playlist card, including when it is already selected.
+
+        The hidden list is the source of the selection signal.  Qt does not
+        emit ``itemSelectionChanged`` when the user clicks the already-current
+        item, which made a newly created/selected playlist card look inert.
+        Refresh that scope explicitly in this case while keeping the list and
+        carousel selection in sync.
+        """
+
         for index in range(self.playlist_list.count()):
             item = self.playlist_list.item(index)
             if item.data(Qt.ItemDataRole.UserRole) == playlist_id:
+                if (
+                    self.selected_playlist_id == playlist_id
+                    and self.playlist_list.currentRow() == index
+                ):
+                    self._load_selected_playlist_tracks()
+                    self._populate_playlist_carousel(
+                        self.playlist_management_service.list_playlists()
+                    )
+                    return
                 self.playlist_list.setCurrentItem(item)
                 return
+
+        # A card can outlive a library refresh by one event loop turn.  Do not
+        # silently swallow its click if the playlist is still in the store.
+        if self.store.get_playlist(playlist_id) is not None:
+            self.selected_playlist_id = playlist_id
+            self._load_selected_playlist_tracks()
 
     def _show_playlist_context_menu(
         self,
@@ -3902,14 +4064,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        item = self.playlist_track_list.currentItem()
-        position = (
-            item.data(Qt.ItemDataRole.UserRole)
-            if item is not None
-            else self.track_table.currentRow()
+        row = self.track_table.currentRow()
+        title_item = self.track_table.item(row, 0)
+        track_id = (
+            title_item.data(Qt.ItemDataRole.UserRole)
+            if title_item is not None
+            else None
         )
-
-        if not isinstance(position, int) or position < 0:
+        if not isinstance(track_id, str):
             QMessageBox.warning(
                 self,
                 "No playlist track selected",
@@ -3917,11 +4079,25 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.playlist_management_service.remove_track_at(
-            self.selected_playlist_id,
-            position,
-        )
+        self._remove_playlist_track(track_id)
+
+    def _remove_playlist_track(self, track_id: str) -> None:
+        """Remove one track from the open playlist and refresh its table."""
+
+        if self.selected_playlist_id is None:
+            return
+
+        try:
+            self.playlist_management_service.remove_track(
+                self.selected_playlist_id,
+                track_id,
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Playlist failed", str(error))
+            return
+
         self._load_selected_playlist_tracks()
+        self.statusBar().showMessage("Track removed from playlist")
 
     def _play_playlist(self) -> None:
         self._start_playlist_queue(shuffle=False)
@@ -4545,6 +4721,9 @@ class MainWindow(QMainWindow):
 
         try:
             statistics = self.statistics_service.build(self.user_id)
+            recommendation_metrics = self.recommendation_analytics_service.build(
+                self.user_id
+            )
         except (OSError, RuntimeError, ValueError) as error:
             QMessageBox.warning(
                 self,
@@ -4561,6 +4740,7 @@ class MainWindow(QMainWindow):
                 statistics,
                 self,
                 track_catalog=track_catalog,
+                recommendation_metrics=recommendation_metrics,
             )
         )
 
@@ -4811,6 +4991,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Downloading from SoundCloud...")
+        dialog.resume_progress("Downloading from SoundCloud...")
 
         thread = YouTubeTaskThread(
             lambda: self.soundcloud_import_service.download(source),
@@ -4944,6 +5125,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Downloading from MP3Party...")
+        dialog.resume_progress("Downloading from MP3Party...")
 
         thread = YouTubeTaskThread(
             lambda: self.mp3party_import_service.download(source),
@@ -5170,6 +5352,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog.set_busy(True, "Downloading and importing...")
+        dialog.resume_progress("Downloading and importing...")
 
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.download_and_import(
@@ -5305,6 +5488,11 @@ class MainWindow(QMainWindow):
                 f"0/{len(selected_candidates)}..."
             ),
         )
+        dialog.resume_progress(
+            "Downloading SoundCloud playlist: 0/"
+            f"{len(selected_candidates)}...",
+            total=len(selected_candidates),
+        )
 
         def import_playlist() -> SoundCloudPlaylistImportResult:
             return self.soundcloud_import_service.download_and_import_playlist(
@@ -5372,6 +5560,11 @@ class MainWindow(QMainWindow):
                 "Downloading MP3Party playlist: "
                 f"0/{len(selected_candidates)}..."
             ),
+        )
+        dialog.resume_progress(
+            "Downloading MP3Party playlist: 0/"
+            f"{len(selected_candidates)}...",
+            total=len(selected_candidates),
         )
 
         def import_playlist() -> Mp3PartyPlaylistImportResult:
@@ -6001,6 +6194,11 @@ class MainWindow(QMainWindow):
                 "Downloading playlist: "
                 f"0/{len(selected_candidates)}..."
             ),
+        )
+        dialog.resume_progress(
+            "Downloading playlist: 0/"
+            f"{len(selected_candidates)}...",
+            total=len(selected_candidates),
         )
         import_source = dialog.import_source
 
@@ -7621,10 +7819,6 @@ class MainWindow(QMainWindow):
                 f"Skipped missing file: {audio_path}"
             )
             return False
-
-        # Moving away from a short session is useful negative feedback even
-        # when the user clicked another track instead of the skip button.
-        self._record_early_exit_if_needed()
 
         source_url = QUrl.fromLocalFile(str(audio_path.resolve()))
         self._player_duration_ms = 0

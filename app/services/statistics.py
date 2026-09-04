@@ -45,6 +45,9 @@ class DailyListeningStatistics:
     skipped: int = 0
     track_count: int = 0
     top_tracks: tuple[ListeningStat, ...] = ()
+    # Full per-period list used by the detailed table and listening graph.
+    # ``top_tracks`` stays intentionally small for compact highlights.
+    all_tracks: tuple[ListeningStat, ...] = ()
     top_artists: tuple[ListeningStat, ...] = ()
     top_genres: tuple[ListeningStat, ...] = ()
 
@@ -58,6 +61,7 @@ class MonthlyListeningStatistics:
     track_count: int = 0
     top_genre: str = ""
     top_tracks: tuple[ListeningStat, ...] = ()
+    all_tracks: tuple[ListeningStat, ...] = ()
 
 
 class ListeningStatisticsService:
@@ -184,14 +188,14 @@ class ListeningStatisticsService:
         for offset in range(max(1, days)):
             day = first_day + timedelta(days=offset)
             counts = daily_listens.get(day, Counter())
-            daily_track_stats = tuple(
+            all_daily_track_stats = tuple(
                 ListeningStat(
                     label=tracks[track_id].title,
                     subtitle=tracks[track_id].artist,
                     count=count,
                     duration_ms=daily_durations[day][track_id],
                 )
-                for track_id, count in counts.most_common(5)
+                for track_id, count in counts.most_common()
                 if track_id in tracks
             )
             artist_counts_for_day: Counter[str] = Counter()
@@ -205,7 +209,8 @@ class ListeningStatisticsService:
                     completed_listens=sum(counts.values()),
                     skipped=daily_skips.get(day, 0),
                     track_count=len(counts),
-                    top_tracks=daily_track_stats,
+                    top_tracks=all_daily_track_stats[:5],
+                    all_tracks=all_daily_track_stats,
                     top_artists=tuple(
                         ListeningStat(label=artist, count=count)
                         for artist, count in artist_counts_for_day.most_common(5)
@@ -288,6 +293,15 @@ class ListeningStatisticsService:
         results: list[MonthlyListeningStatistics] = []
         for month in months:
             counts = listen_counts[month]
+            all_monthly_track_stats = tuple(
+                ListeningStat(
+                    label=tracks[track_id].title,
+                    subtitle=tracks[track_id].artist,
+                    count=count,
+                    duration_ms=durations[month][track_id],
+                )
+                for track_id, count in counts.most_common()
+            )
             results.append(
                 MonthlyListeningStatistics(
                     month=month,
@@ -300,15 +314,8 @@ class ListeningStatisticsService:
                         if genre_counts[month]
                         else ""
                     ),
-                    top_tracks=tuple(
-                        ListeningStat(
-                            label=tracks[track_id].title,
-                            subtitle=tracks[track_id].artist,
-                            count=count,
-                            duration_ms=durations[month][track_id],
-                        )
-                        for track_id, count in counts.most_common(5)
-                    ),
+                    top_tracks=all_monthly_track_stats[:5],
+                    all_tracks=all_monthly_track_stats,
                 )
             )
         return tuple(results)

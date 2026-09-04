@@ -137,6 +137,11 @@ QLabel#listeningPanelHeading {
     font-size: 11px;
     font-weight: 700;
 }
+QLabel#listeningDetailInsight {
+    color: #A9D8C9;
+    font-size: 10px;
+    font-weight: 600;
+}
 QLabel#searchElapsedTime {
     color: #899692;
     font-size: 11px;
@@ -282,6 +287,28 @@ QWidget#trackRowCell[rowState="hover"] {
 }
 QWidget#trackRowCell[rowState="selected"] {
     background-color: #303334;
+}
+QToolButton#playlistRemoveButton {
+    background: transparent;
+    border: none;
+    color: #9AA8A3;
+    font-size: 18px;
+    font-weight: 500;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0;
+}
+QToolButton#playlistRemoveButton:hover {
+    background: rgba(224, 112, 128, 32);
+    color: #FFB0B8;
+    border-radius: 15px;
+}
+QToolButton#playlistRemoveButton:pressed {
+    background: rgba(224, 112, 128, 52);
+    color: #FFD5D9;
+    border-radius: 15px;
 }
 QPushButton, QComboBox {
     background-color: rgba(255, 255, 255, 10);
@@ -496,6 +523,28 @@ QTableWidget#listeningHighlightsTable::item {
     border-bottom: 1px solid rgba(255, 255, 255, 11);
 }
 QTableWidget#listeningHighlightsTable::item:alternate {
+    background-color: rgba(255, 255, 255, 4);
+}
+QTableWidget#listeningPeriodTable {
+    background-color: rgba(8, 11, 13, 150);
+    border: none;
+    border-radius: 0;
+    gridline-color: transparent;
+    padding: 0;
+    selection-background-color: rgba(181, 251, 224, 18);
+    selection-color: #F1F9F5;
+}
+QTableWidget#listeningPeriodTable QHeaderView::section {
+    background-color: rgba(255, 255, 255, 8);
+    color: #9FADA8;
+    border-bottom: 1px solid rgba(181, 251, 224, 24);
+    padding: 5px 7px;
+}
+QTableWidget#listeningPeriodTable::item {
+    padding: 4px 7px;
+    border-bottom: 1px solid rgba(255, 255, 255, 11);
+}
+QTableWidget#listeningPeriodTable::item:alternate {
     background-color: rgba(255, 255, 255, 4);
 }
 QHeaderView::section {
