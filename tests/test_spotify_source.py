@@ -273,3 +273,40 @@ def test_authenticated_spotify_playlist_is_paginated() -> None:
     ]
     assert oauth_client.requests[1][1]["offset"] == "0"
     assert oauth_client.requests[2][1]["offset"] == "1"
+
+
+def test_saved_spotify_tracks_keep_identity_and_added_at() -> None:
+    oauth_client = FakeSpotifyOAuthClient(
+        [
+            {
+                "items": [
+                    {
+                        "added_at": "2026-09-04T10:00:00Z",
+                        "track": {
+                            "id": "track-1",
+                            "type": "track",
+                            "name": "Antarctica",
+                            "artists": [{"name": "$uicideboy$"}],
+                            "album": {"name": "I Want to Die in New Orleans"},
+                            "duration_ms": 123000,
+                            "external_ids": {"isrc": "US-AAA-1"},
+                        },
+                    }
+                ],
+                "next": None,
+            }
+        ]
+    )
+
+    tracks = SpotifyMetadataProvider(
+        oauth_client=oauth_client,
+    ).get_saved_tracks()
+
+    assert len(tracks) == 1
+    assert tracks[0].spotify_id == "track-1"
+    assert tracks[0].added_at == "2026-09-04T10:00:00Z"
+    assert tracks[0].album == "I Want to Die in New Orleans"
+    assert tracks[0].duration_ms == 123000
+    assert tracks[0].isrc == "US-AAA-1"
+    assert oauth_client.requests[0][0] == "/v1/me/tracks"
+    assert oauth_client.requests[0][1]["limit"] == "50"

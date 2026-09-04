@@ -144,6 +144,12 @@ class YouTubeImportService:
         self.spotify_provider.authenticate()
         return "Spotify authorization completed."
 
+    def reauthorize_spotify(self) -> str:
+        """Request Spotify OAuth again with the currently configured scopes."""
+
+        self.spotify_provider.reauthorize()
+        return "Spotify OAuth completed."
+
     @staticmethod
     def _get_url_source(url: str) -> str:
         parsed_url = urlparse(url)

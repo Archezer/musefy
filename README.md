@@ -21,6 +21,8 @@ rules when importing content.
 - Search YouTube, import a direct YouTube link, or load a YouTube playlist.
 - Import a Spotify track, album or playlist: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
+- Sync newly saved Spotify favorites in the background every five minutes, with
+  an explicit **Sync all** review flow for the complete saved-track library.
 - Search SoundCloud, load a direct track URL, or load a SoundCloud set and
   choose which tracks to import through `yt-dlp`.
 - Search MP3Party, choose a result, or load a direct MP3Party track URL.
@@ -220,6 +222,7 @@ data/music.db                 SQLite library, playlists and interactions
 data/library/                 imported audio files
 data/youtube_cookies.txt      optional exported YouTube cookies
 data/spotify_token.json       optional Spotify OAuth token
+data/spotify_fav_sync.json    local Spotify favorite-sync state
 ```
 
 None of these files are meant to be committed or shared.
@@ -313,14 +316,29 @@ or collaborative playlists that your account can access.
    SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
    ```
 
-4. In the import dialog, use **Authenticate** with a Spotify URL. The app opens
-   the default browser, uses OAuth with PKCE, and waits for the local callback.
+4. In the import dialog, click **Spotify OAuth**, or open **Spotify settings**
+   from the three-dot menu. The app opens the default browser, uses OAuth with
+   PKCE, and waits for the local callback.
 5. Approve access. The token is stored locally in `data/spotify_token.json` and
-   used automatically by later Spotify imports.
+   used automatically by later Spotify imports. The consent screen includes
+   Spotify's `user-library-read` permission for favorite sync.
 
 No Spotify client secret is required. If the Spotify application is still in
 Development Mode, add the Spotify account as a test user in the Developer
-Dashboard. Never commit `.env` or `data/spotify_token.json`.
+Dashboard. Never commit `.env` or `data/spotify_token.json`. The sync
+checkpoint is also local runtime data and should not be shared.
+
+#### Spotify favorite sync
+
+The **Spotify fav sync** row is available in the import dialog and opens the
+same Spotify settings screen when clicked. Enable it only after OAuth: Musefy
+stores the enable time and checks `user-library-read` every five minutes, so
+tracks already saved before enabling are ignored. If OAuth is missing, clicking
+the checkbox offers to open Spotify settings.
+
+Use **Sync all** in Spotify settings to read the complete saved-track library.
+Musefy searches YouTube for matches and then opens the normal playlist-style
+selection screen; only checked tracks are downloaded.
 
 ### SoundCloud search and downloads
 

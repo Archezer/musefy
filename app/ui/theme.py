@@ -21,7 +21,7 @@ QFrame#playlistStrip, QFrame#graphStage {
     border-radius: 15px;
 }
 QFrame#sidebar {
-    background-color: transparent;
+    background: transparent;
     border: none;
     border-radius: 0;
 }
@@ -95,6 +95,74 @@ QToolButton#librarySearchClear {
 QToolButton#librarySearchClear:hover {
     background-color: rgba(255, 255, 255, 22);
 }
+QFrame#spotifySyncRow, QFrame#spotifySettingsSection {
+    background-color: rgba(255, 255, 255, 8);
+    border: 1px solid rgba(255, 255, 255, 22);
+    border-radius: 11px;
+}
+QDialog#spotifySettingsDialog {
+    background-color: #111416;
+}
+QFrame#spotifySyncRow:hover, QFrame#spotifySettingsSection:hover {
+    background-color: rgba(112, 224, 190, 10);
+    border-color: rgba(181, 251, 224, 62);
+}
+QLabel#spotifySyncTitle, QLabel#spotifySettingsTitle {
+    color: #F1F5F3;
+    font-weight: 700;
+}
+QLabel#spotifySyncSubtitle, QLabel#spotifySettingsDescription {
+    color: #999FA1;
+    font-size: 11px;
+}
+QLabel#spotifyAuthStatus[connected="true"],
+QLabel#spotifySettingsAuthStatus[connected="true"] {
+    color: #B5FBE0;
+    font-weight: 700;
+}
+QLabel#spotifyAuthStatus[connected="false"],
+QLabel#spotifySettingsAuthStatus[connected="false"] {
+    color: #9EA5A4;
+}
+QLabel#spotifySyncArrow {
+    color: #8ACAB5;
+    font-size: 22px;
+    font-weight: 600;
+}
+QLabel#spotifySettingsStatus {
+    color: #AEB8B4;
+    font-size: 11px;
+}
+QCheckBox#spotifyFavSyncCheck {
+    spacing: 7px;
+    color: #E9EFEC;
+    font-weight: 650;
+}
+QCheckBox#spotifyFavSyncCheck::indicator {
+    width: 17px;
+    height: 17px;
+    border: 1px solid rgba(181, 251, 224, 92);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 12);
+}
+QCheckBox#spotifyFavSyncCheck::indicator:hover {
+    border-color: #B5FBE0;
+    background: rgba(112, 224, 190, 20);
+}
+QCheckBox#spotifyFavSyncCheck::indicator:checked {
+    border-color: #B5FBE0;
+    background: #4D9F8A;
+}
+QPushButton#spotifyOAuthButton, QPushButton#spotifySyncAllButton {
+    background-color: rgba(112, 224, 190, 18);
+    border-color: rgba(181, 251, 224, 66);
+    color: #C9FBE9;
+    font-weight: 650;
+}
+QPushButton#spotifyOAuthButton:hover, QPushButton#spotifySyncAllButton:hover {
+    background-color: rgba(112, 224, 190, 32);
+    border-color: #B5FBE0;
+}
 QLabel#appTitle {
     font-size: 18px;
     font-weight: 650;
@@ -156,6 +224,12 @@ QToolButton#railButton, QToolButton#mapCycleButton {
        bottom padding lifts the visible arrow to the optical center. */
     padding: 0 0 5px 0;
 }
+QFrame#sidebar QToolButton#railButton:hover,
+QFrame#sidebar QToolButton#mapCycleButton:hover {
+    background: rgba(112, 224, 190, 12);
+    border: none;
+    border-radius: 21px;
+}
 QToolButton#plainActionButton {
     background: transparent;
     border: none;
@@ -167,6 +241,12 @@ QToolButton#plainActionButton:hover {
     background: rgba(112, 224, 190, 25);
     border: none;
     border-radius: 22px;
+}
+QToolButton#plainActionButton[topMenu="true"] {
+    min-width: 32px;
+    min-height: 32px;
+    max-width: 32px;
+    max-height: 32px;
 }
 QToolButton#plainActionButton:pressed {
     background: rgba(112, 224, 190, 42);
@@ -240,6 +320,11 @@ QTableCornerButton::section {
 }
 QTableWidget#libraryTable QHeaderView::section {
     background: transparent;
+}
+QTableWidget#libraryTable QHeaderView::section:hover {
+    background: transparent;
+    color: #F3F5F4;
+    font-weight: 700;
 }
 QTableWidget::item, QListWidget::item {
     padding: 5px 7px;

@@ -5,7 +5,7 @@ import os
 import secrets
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -26,6 +26,7 @@ DEFAULT_SPOTIFY_TOKEN_PATH = DATA_DIR / "spotify_token.json"
 SPOTIFY_OAUTH_SCOPES = (
     "playlist-read-private",
     "playlist-read-collaborative",
+    "user-library-read",
 )
 SPOTIFY_ANONYMOUS_TOKEN_ENDPOINT = (
     "https://open.spotify.com/get_access_token?"
@@ -54,6 +55,11 @@ SPOTIFY_PARTNER_PAGE_SIZE = 100
 class SpotifyTrack:
     title: str
     artist: str | None
+    spotify_id: str | None = None
+    album: str | None = None
+    duration_ms: int | None = None
+    added_at: str | None = None
+    isrc: str | None = None
 
     @property
     def search_query(self) -> str:
@@ -120,6 +126,11 @@ class SpotifyOAuthClient:
                     }
                 )
                 return self._save_token(payload, refresh_token)
+
+        return self._authorize()
+
+    def reauthorize(self) -> str:
+        """Run OAuth again so newly requested scopes are granted."""
 
         return self._authorize()
 
@@ -404,8 +415,37 @@ class SpotifyMetadataProvider:
     def authenticate(self) -> None:
         self.oauth_client.get_access_token()
 
+    def reauthorize(self) -> None:
+        self.oauth_client.reauthorize()
+
     def has_saved_credentials(self) -> bool:
         return self.oauth_client.has_saved_credentials()
+
+    def get_saved_tracks(self) -> tuple[SpotifyTrack, ...]:
+        """Return the current user's saved tracks through the Web API."""
+
+        tracks: list[SpotifyTrack] = []
+        offset = 0
+
+        while True:
+            payload = self.oauth_client.get_json(
+                "/v1/me/tracks",
+                {
+                    "limit": "50",
+                    "offset": str(offset),
+                },
+            )
+            items = payload.get("items") or []
+            for item in items:
+                track = _parse_saved_track(item)
+                if track is not None:
+                    tracks.append(track)
+
+            if not items or not payload.get("next"):
+                break
+            offset += len(items)
+
+        return tuple(tracks)
 
     def get_track(self, url: str) -> SpotifyTrack:
         normalized_url = url.strip()
@@ -1034,6 +1074,50 @@ def _parse_playlist_track(payload: object) -> SpotifyTrack | None:
     return SpotifyTrack(
         title=title,
         artist=", ".join(artist_names) or None,
+    )
+
+
+def _parse_saved_track(payload: object) -> SpotifyTrack | None:
+    """Parse a saved-track item while retaining its Spotify identity."""
+
+    if not isinstance(payload, dict):
+        return None
+
+    track_payload = payload.get("track")
+    track = _parse_playlist_track(payload)
+    if track is None or not isinstance(track_payload, dict):
+        return None
+
+    spotify_id = str(track_payload.get("id") or "").strip()
+    if not spotify_id:
+        return None
+
+    album_payload = track_payload.get("album")
+    album = (
+        str(album_payload.get("name") or "").strip()
+        if isinstance(album_payload, dict)
+        else ""
+    )
+    duration_value = track_payload.get("duration_ms")
+    try:
+        duration_ms = int(duration_value) if duration_value is not None else None
+    except (TypeError, ValueError):
+        duration_ms = None
+
+    external_ids = track_payload.get("external_ids")
+    isrc = (
+        str(external_ids.get("isrc") or "").strip()
+        if isinstance(external_ids, dict)
+        else ""
+    )
+
+    return replace(
+        track,
+        spotify_id=spotify_id,
+        album=album or None,
+        duration_ms=duration_ms,
+        added_at=str(payload.get("added_at") or "").strip() or None,
+        isrc=isrc or None,
     )
 
 

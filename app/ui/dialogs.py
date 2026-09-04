@@ -1,11 +1,13 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -28,6 +30,264 @@ SearchCandidate = (
     | SoundCloudCandidate
     | Mp3PartyCandidate
 )
+
+
+class SpotifySyncRow(QFrame):
+    """A compact clickable row for the Spotify favorite-sync setting."""
+
+    settings_requested = Signal()
+    sync_toggled = Signal(bool)
+
+    def __init__(
+        self,
+        *,
+        authenticated: bool = False,
+        sync_enabled: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("spotifySyncRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(60)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 12, 8)
+        layout.setSpacing(9)
+
+        self.sync_checkbox = QCheckBox()
+        self.sync_checkbox.setObjectName("spotifyFavSyncCheck")
+        self.sync_checkbox.setToolTip(
+            "Watch for newly saved Spotify tracks every five minutes."
+        )
+        self.sync_checkbox.toggled.connect(self.sync_toggled)
+        layout.addWidget(self.sync_checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(1)
+
+        self.title_label = QLabel("Spotify fav sync")
+        self.title_label.setObjectName("spotifySyncTitle")
+        self.subtitle_label = QLabel(
+            "Watch new saved tracks every 5 minutes"
+        )
+        self.subtitle_label.setObjectName("spotifySyncSubtitle")
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.subtitle_label)
+        layout.addLayout(text_layout, 1)
+
+        self.auth_status_label = QLabel()
+        self.auth_status_label.setObjectName("spotifyAuthStatus")
+        self.auth_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(self.auth_status_label)
+
+        self.arrow_label = QLabel("›")
+        self.arrow_label.setObjectName("spotifySyncArrow")
+        self.arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.arrow_label)
+
+        for child in (
+            self.title_label,
+            self.subtitle_label,
+            self.auth_status_label,
+            self.arrow_label,
+        ):
+            child.installEventFilter(self)
+
+        self.set_sync_enabled(sync_enabled)
+        self.set_authenticated(authenticated)
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        clickable_children = (
+            self.title_label,
+            self.subtitle_label,
+            self.auth_status_label,
+            self.arrow_label,
+        )
+        if (
+            watched in clickable_children
+            and isinstance(event, QEvent)
+            and event.type() == QEvent.Type.MouseButtonRelease
+        ):
+            self.settings_requested.emit()
+            return True
+
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        if (
+            isinstance(event, QEvent)
+            and event.type() == QEvent.Type.MouseButtonRelease
+        ):
+            self.settings_requested.emit()
+            return
+        super().mouseReleaseEvent(event)
+
+    def set_authenticated(self, authenticated: bool) -> None:
+        # Keep the checkbox clickable even before OAuth.  The host window can
+        # then offer to open Spotify settings instead of silently ignoring the
+        # user's click.
+        self.sync_checkbox.setEnabled(True)
+        self.sync_checkbox.setToolTip(
+            "Watch new saved Spotify tracks every five minutes."
+            if authenticated
+            else "Connect Spotify with OAuth to enable fav sync."
+        )
+        self.auth_status_label.setProperty("connected", authenticated)
+        self.auth_status_label.setText(
+            "✓ Connected" if authenticated else "Connect in settings"
+        )
+        self.auth_status_label.style().unpolish(self.auth_status_label)
+        self.auth_status_label.style().polish(self.auth_status_label)
+
+    def set_sync_enabled(self, enabled: bool) -> None:
+        signals_blocked = self.sync_checkbox.blockSignals(True)
+        self.sync_checkbox.setChecked(enabled)
+        self.sync_checkbox.blockSignals(signals_blocked)
+
+
+class SpotifySettingsDialog(QDialog):
+    """Settings and connection status for Spotify integrations."""
+
+    authenticate_requested = Signal()
+    sync_toggled = Signal(bool)
+    sync_requested = Signal()
+
+    def __init__(
+        self,
+        *,
+        authenticated: bool = False,
+        sync_enabled: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("spotifySettingsDialog")
+        self.setWindowTitle("Spotify settings")
+        self.resize(500, 300)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Spotify integration")
+        title.setObjectName("spotifySettingsTitle")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "Connect Spotify to read saved-track metadata and watch for "
+            "new favorites."
+        )
+        description.setWordWrap(True)
+        description.setObjectName("spotifySettingsDescription")
+        layout.addWidget(description)
+
+        auth_frame = QFrame()
+        auth_frame.setObjectName("spotifySettingsSection")
+        auth_layout = QHBoxLayout(auth_frame)
+        auth_layout.setContentsMargins(12, 10, 12, 10)
+        auth_layout.setSpacing(10)
+
+        self.auth_status_label = QLabel()
+        self.auth_status_label.setObjectName("spotifySettingsAuthStatus")
+        auth_layout.addWidget(self.auth_status_label, 1)
+
+        self.authenticate_button = QPushButton("Connect Spotify (OAuth)")
+        self.authenticate_button.setObjectName("spotifyOAuthButton")
+        self.authenticate_button.setToolTip(
+            "Authorize Musefy to read your saved Spotify tracks."
+        )
+        self.authenticate_button.clicked.connect(self.authenticate_requested)
+        auth_layout.addWidget(self.authenticate_button)
+        layout.addWidget(auth_frame)
+
+        sync_frame = QFrame()
+        sync_frame.setObjectName("spotifySettingsSection")
+        sync_layout = QVBoxLayout(sync_frame)
+        sync_layout.setContentsMargins(12, 10, 12, 10)
+        sync_layout.setSpacing(5)
+
+        self.sync_checkbox = QCheckBox("Spotify fav sync")
+        self.sync_checkbox.setObjectName("spotifyFavSyncCheck")
+        self.sync_checkbox.setToolTip(
+            "Check Spotify for newly saved tracks every five minutes."
+        )
+        self.sync_checkbox.toggled.connect(self.sync_toggled)
+        sync_layout.addWidget(self.sync_checkbox)
+
+        sync_description = QLabel(
+            "Only tracks saved after enabling this option are reported by "
+            "automatic sync."
+        )
+        sync_description.setObjectName("spotifySettingsDescription")
+        sync_description.setWordWrap(True)
+        sync_layout.addWidget(sync_description)
+
+        self.sync_now_button = QPushButton("Sync all")
+        self.sync_now_button.setObjectName("spotifySyncAllButton")
+        self.sync_now_button.setToolTip(
+            "Read all saved Spotify tracks now."
+        )
+        self.sync_now_button.clicked.connect(self.sync_requested)
+        sync_layout.addWidget(
+            self.sync_now_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+        layout.addWidget(sync_frame)
+
+        self.status_label = QLabel()
+        self.status_label.setObjectName("spotifySettingsStatus")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        buttons_layout.addWidget(close_button)
+        layout.addLayout(buttons_layout)
+
+        self.set_authenticated(authenticated)
+        self.set_sync_enabled(sync_enabled)
+        self.set_busy(False, "")
+
+    def set_authenticated(self, authenticated: bool) -> None:
+        self.auth_status_label.setProperty("connected", authenticated)
+        self.auth_status_label.setText(
+            "✓ Spotify OAuth connected"
+            if authenticated
+            else "Spotify OAuth is not connected"
+        )
+        self.authenticate_button.setText(
+            "Reconnect Spotify (OAuth)"
+            if authenticated
+            else "Connect Spotify (OAuth)"
+        )
+        self.sync_checkbox.setEnabled(authenticated)
+        self.sync_now_button.setEnabled(authenticated)
+        self.auth_status_label.style().unpolish(self.auth_status_label)
+        self.auth_status_label.style().polish(self.auth_status_label)
+
+    def set_sync_enabled(self, enabled: bool) -> None:
+        signals_blocked = self.sync_checkbox.blockSignals(True)
+        self.sync_checkbox.setChecked(enabled)
+        self.sync_checkbox.blockSignals(signals_blocked)
+
+    def set_busy(self, busy: bool, message: str) -> None:
+        self.authenticate_button.setEnabled(not busy)
+        self.sync_checkbox.setEnabled(
+            not busy and self._is_authenticated()
+        )
+        self.sync_now_button.setEnabled(
+            not busy and self._is_authenticated()
+        )
+        if message:
+            self.status_label.setText(message)
+
+    def _is_authenticated(self) -> bool:
+        return bool(self.auth_status_label.property("connected"))
 
 
 class TrackMetadataDialog(QDialog):
@@ -121,11 +381,19 @@ class YouTubeSearchDialog(QDialog):
     # Compatibility signals for integrations that still use the old API.
     search_requested = Signal(str)
     authenticate_requested = Signal(str)
+    spotify_settings_requested = Signal()
+    spotify_sync_toggled = Signal(bool)
     url_load_requested = Signal(str)
     import_requested = Signal(object)
     playlist_import_requested = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        spotify_authenticated: bool = False,
+        spotify_sync_enabled: bool = False,
+    ) -> None:
         super().__init__(parent)
 
         self._busy = False
@@ -194,17 +462,34 @@ class YouTubeSearchDialog(QDialog):
         )
         search_layout.addWidget(self.mp3party_button)
 
-        self.authenticate_button = QPushButton("Authenticate Spotify")
+        self.authenticate_button = QPushButton("Spotify OAuth")
         self.authenticate_button.setToolTip(
-            "Authorize Spotify for private or collaborative playlists."
+            "Authorize Spotify for private playlists and saved-track sync."
         )
         self.authenticate_button.clicked.connect(
             self._request_authenticate
         )
         search_layout.addWidget(self.authenticate_button)
 
+        self.spotify_auth_status_label = QLabel()
+        self.spotify_auth_status_label.setObjectName("spotifyAuthStatus")
+        search_layout.addWidget(self.spotify_auth_status_label)
+
         search_layout.addStretch()
         layout.addLayout(search_layout)
+
+        self.spotify_sync_row = SpotifySyncRow(
+            authenticated=spotify_authenticated,
+            sync_enabled=spotify_sync_enabled,
+            parent=self,
+        )
+        self.spotify_sync_row.settings_requested.connect(
+            self.spotify_settings_requested
+        )
+        self.spotify_sync_row.sync_toggled.connect(
+            self.spotify_sync_toggled
+        )
+        layout.addWidget(self.spotify_sync_row)
 
         self.results_list = QListWidget()
         self.results_list.setWordWrap(True)
@@ -240,6 +525,7 @@ class YouTubeSearchDialog(QDialog):
         layout.addLayout(buttons_layout)
 
         self._cancel_button = cancel_button
+        self.set_spotify_authenticated(spotify_authenticated)
 
     def _request_source(self) -> None:
         source = self.source_edit.text().strip()
@@ -298,15 +584,32 @@ class YouTubeSearchDialog(QDialog):
     def _request_authenticate(self) -> None:
         url = self.source_edit.text().strip()
 
-        if not url:
-            QMessageBox.warning(
-                self,
-                "Authentication failed",
-                "Paste a YouTube or Spotify URL first.",
-            )
+        if not url or not url.casefold().startswith(
+            ("http://", "https://")
+        ):
+            self.spotify_settings_requested.emit()
             return
 
         self.authenticate_requested.emit(url)
+
+    def set_spotify_authenticated(self, authenticated: bool) -> None:
+        self.spotify_auth_status_label.setProperty(
+            "connected",
+            authenticated,
+        )
+        self.spotify_auth_status_label.setText(
+            "✓ Connected" if authenticated else "Not connected"
+        )
+        self.spotify_auth_status_label.style().unpolish(
+            self.spotify_auth_status_label
+        )
+        self.spotify_auth_status_label.style().polish(
+            self.spotify_auth_status_label
+        )
+        self.spotify_sync_row.set_authenticated(authenticated)
+
+    def set_spotify_sync_enabled(self, enabled: bool) -> None:
+        self.spotify_sync_row.set_sync_enabled(enabled)
 
     def _request_import(self) -> None:
         candidates = self.selected_candidates()
@@ -517,6 +820,7 @@ class YouTubeSearchDialog(QDialog):
         self.soundcloud_button.setEnabled(not busy)
         self.mp3party_button.setEnabled(not busy)
         self.authenticate_button.setEnabled(not busy)
+        self.spotify_sync_row.setEnabled(not busy)
         self.source_edit.setEnabled(not busy)
         self._cancel_button.setEnabled(not busy)
         self.status_label.setText(message)
