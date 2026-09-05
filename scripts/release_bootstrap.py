@@ -134,11 +134,16 @@ def _assemble_installer(
         )
         downloaded_paths.append(destination)
 
+    if len(downloaded_paths) == 1:
+        return downloaded_paths[0]
+
     installer_path = temporary_dir / f"Musefy-{profile.upper()}-Setup.exe"
     with installer_path.open("wb") as output:
         for part_path in downloaded_paths:
             with part_path.open("rb") as part:
                 shutil.copyfileobj(part, output, length=CHUNK_SIZE)
+    for part_path in downloaded_paths:
+        part_path.unlink()
     expected_total = sum(int(asset["size"]) for asset in assets)
     if installer_path.stat().st_size != expected_total:
         raise RuntimeError("Собранный установщик имеет неправильный размер.")
