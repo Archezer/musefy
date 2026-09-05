@@ -1,163 +1,40 @@
 # Musefy
 
-<p align="center">
-  <img src="assets/musefy-icon.png" alt="Musefy" width="128">
-</p>
+A Windows desktop application for a **local music library**. It imports audio
+from files, YouTube, Spotify and SoundCloud links, analyses each track locally, and builds
+recommendations without uploading the library or listening history to a cloud
+service.
 
-<p align="center">
-  <strong>Your music library. Your data. Your recommendations.</strong><br>
-  A local-first Windows desktop player that turns scattered music sources into
-  one searchable library and learns what you actually like.
-</p>
+The app is designed around three complementary signals:
 
-<p align="center">
-  <code>Windows 10/11</code> · <code>PySide6</code> · <code>PyTorch</code> ·
-  <code>SQLite</code> · <code>CUDA/CPU</code>
-</p>
+- **MAEST** generates genre predictions and a 768-dimensional musical embedding
+  for every track;
+- **Music2Emo** estimates valence, arousal and mood-oriented tags;
+- local playback events and playlist context personalise ranking over time.
 
-Musefy imports music, analyses it locally and builds mood-aware recommendations
-without sending your library or listening history to a cloud service. It is a
-finished personal project you can run from source or package as a portable
-Windows app.
+The project is a personal-library tool. Respect YouTube, Spotify, SoundCloud and copyright
+rules when importing content.
 
-> **Important:** Musefy can download tracks that are available through supported
-> sources, but you are responsible for using it only with music you own or have
-> permission to download. Platform rules and regional availability still apply.
+## Features
 
-## Why Musefy is useful
-
-- **One library from almost anywhere.** Add local files, search YouTube, paste a
-  direct URL, import a YouTube playlist, or bring metadata from Spotify,
-  SoundCloud and MP3Party. Spotify playlists are matched to YouTube candidates
-  so you can review the exact files before importing them.
-- **Firefox-aware YouTube access.** When YouTube asks for a verified browser
-  session, Musefy can reuse cookies from Firefox automatically. You can also use
-  an exported cookie file when Firefox is closed or a browser profile is not
-  available.
-- **Local AI analysis.** MAEST predicts genres and creates a 768-dimensional
-  audio embedding; Music2Emo estimates valence, arousal and mood tags. Analysis
-  runs in the background and prefers CUDA when an NVIDIA GPU is available.
-- **Recommendations that adapt to you.** Use global recommendations, track
-  radio, mood sessions and the personalized **My Wave** feed. Likes, skips,
-  playback progress and playlists stay in the local database.
-- **A real player, not only a demo.** Create playlists, keep a separate queue,
-  use shuffle or smart shuffle, resume playback, and inspect listening
-  statistics.
-- **Playlist Extension для VK, Spotify и Яндекс Музыки.** Браузерное
-  расширение переносит открытый плейлист из **VK Music**, **Spotify Web Player**
-  или **Yandex Music** прямо в Musefy: порядок треков, исполнители и названия
-  сохраняются, после чего приложение само запускает обычный поиск,
-  скачивание и анализ выбранных композиций.
-
-## Installation
-
-Choose the path that matches your goal: the portable bundle is convenient for a
-demo, while the source install is best for development and a portfolio review.
-
-### Option A — run the portable Windows bundle
-
-From a clone of this repository, double-click
-[`build_musefy.bat`](build_musefy.bat). The build output is
-`dist/Musefy/Musefy.exe`; launch that file after the build finishes. This is a
-portable **onedir** bundle, so keep the executable together with its `_internal`
-folder. User data and model weights live outside the bundle.
-
-### Option B — run from source
-
-#### Requirements
-
-- Windows 10/11 x64;
-- Python 3.12 or 3.13;
-- [uv](https://docs.astral.sh/uv/);
-- the shared FFmpeg build used by TorchCodec;
-- an NVIDIA GPU and current driver are recommended, but CPU mode works too;
-- Firefox is recommended when YouTube requires browser authentication.
-
-Clone the project and install the locked environment:
-
-```powershell
-git clone https://github.com/Archezer/music-recommendation-system.git
-cd music-recommendation-system
-$env:UV_CACHE_DIR = "$pwd\.uv-cache"
-uv sync --locked
-```
-
-Install and verify FFmpeg:
-
-```powershell
-winget install --id Gyan.FFmpeg.Shared -e
-ffmpeg -version
-```
-
-### Add the model files
-
-The neural-network weights are intentionally not committed to Git. Download
-the two approved artifacts into these exact paths:
-
-```text
-data/models/maest/maest.onnx
-data/models/music2emo/inference/data/btc_model_large_voca.pt
-```
-
-Run this PowerShell block after `uv sync --locked`:
-
-```powershell
-New-Item -ItemType Directory -Force `
-  data\models\maest, data\models\music2emo\inference\data
-
-curl.exe -L --fail -o data\models\maest\maest.onnx `
-  "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx"
-
-curl.exe -L --fail -o data\models\music2emo\inference\data\btc_model_large_voca.pt `
-  "https://huggingface.co/amaai-lab/music2emo/resolve/main/inference/data/btc_model_large_voca.pt?download=true"
-```
-
-The MERT backbone is downloaded automatically on the first analysis from
-[`m-a-p/MERT-v1-95M`](https://huggingface.co/m-a-p/MERT-v1-95M), so leave several
-hundred MB of free disk space and an Internet connection for that first run.
-Model licenses differ: MAEST is CC BY-NC-SA 4.0, Music2Emo is Apache 2.0, and
-MERT is CC BY-NC 4.0. Review the linked model cards before redistributing a
-bundle.
-
-### Start Musefy
-
-```powershell
-uv run python -m app.desktop
-```
-
-To verify GPU acceleration:
-
-```powershell
-uv run python -c "import torch, onnxruntime as ort; print('Torch CUDA:', torch.cuda.is_available()); print('ONNX providers:', ort.get_available_providers())"
-```
-
-The app falls back to CPU automatically; genre and mood analysis simply take
-longer without CUDA.
-
-### Can the models be placed inside one installer?
-
-Technically yes, but it is not the best default for this project. MAEST and
-Music2Emo already add roughly 360 MB, MERT is fetched on first use, and the
-PyTorch/CUDA runtime makes a fully self-contained installer very large. The
-model licenses also need to be carried with any redistributed bundle.
-
-The practical release format is therefore a portable app plus a first-run model
-download (or a separate `Musefy-models.zip`). A future Inno Setup installer can
-automate both steps without forcing every user to redownload the models when the
-application itself is updated.
-
-The app stores local state next to the project (or next to the portable bundle):
-
-```text
-data/music.db                 SQLite library, playlists and interactions
-data/library/                 imported audio files
-data/models/                  MAEST, Music2Emo and cached model files
-data/youtube_cookies.txt      optional exported YouTube cookies
-data/spotify_token.json       optional Spotify OAuth token
-data/spotify_fav_sync.json    local Spotify favorite-sync state
-```
-
-None of these files should be committed or shared.
+- Import local audio files (`mp3`, `m4a`, `mp4`, `flac`, `wav`, `ogg`, `opus`).
+- Search ***YouTube***, import a direct ***YouTube*** link, or load a ***YouTube playlist***.
+- Import a ***Spotify track***, ***album*** or ***playlist***: Spotify supplies metadata, then
+  the app searches YouTube for matching audio candidates.
+- Sync newly saved ***Spotify favorites*** at startup and every five minutes, with
+  a playlist-style review flow for selecting the tracks to download.
+- Search ***SoundCloud***, load a ***direct track URL***, or load a ***SoundCloud set*** and
+  choose which tracks to import through `yt-dlp`.
+- Search ***MP3Party***, choose a result, or load a direct ***MP3Party track URL***.
+- ***Use Firefox YouTube cookies automatically when a browser session is required***.
+- Analyse new tracks in the background with CUDA when it is available.
+- Store genre hierarchy, mood profile and one reusable MAEST embedding per
+  track in a local SQLite database.
+- Browse the library, create playlists, delete tracks, and manage a separate
+  playback queue.
+- Play normally, shuffle, smart shuffle, or start a mood session.
+- Get four recommendation styles: global recommendations, track radio,
+  mood-first recommendations, and the personalized **My Wave** session.
 
 ## How the recommendation system works
 
