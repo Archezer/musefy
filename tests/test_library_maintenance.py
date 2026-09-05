@@ -60,6 +60,60 @@ def test_health_scan_reports_missing_broken_and_identical_files(
     assert report.acoustic_duplicates == ()
 
 
+def test_remove_exact_duplicates_keeps_one_record_and_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library_dir = tmp_path / "library"
+    library_dir.mkdir(parents=True)
+    first_file = library_dir / "first.mp3"
+    duplicate_file = library_dir / "duplicate.mp3"
+    first_file.write_bytes(b"same audio")
+    duplicate_file.write_bytes(b"same audio")
+    monkeypatch.setattr(library_maintenance, "LIBRARY_DIR", library_dir)
+
+    store = InMemoryMusicStore()
+    created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    survivor = Track(
+        id="survivor",
+        title="Survivor",
+        artist="Artist",
+        created_at=created_at,
+        track_embedding=(1.0, 0.0),
+        local_path=str(first_file),
+    )
+    duplicate = Track(
+        id="duplicate",
+        title="Duplicate",
+        artist="Artist",
+        created_at=created_at,
+        local_path=str(duplicate_file),
+    )
+    store.add_track(survivor)
+    store.add_track(duplicate)
+    playlist = Playlist(
+        id="playlist-1",
+        name="Favorites",
+        created_at=created_at,
+    )
+    store.add_playlist(playlist)
+    store.replace_playlist_entries(
+        playlist.id,
+        [PlaylistEntry(playlist.id, duplicate.id, 0)],
+    )
+
+    removed = LibraryHealthService(store).remove_exact_duplicates()
+
+    assert removed == 1
+    assert store.get_track("duplicate") is None
+    assert store.get_track("survivor") is not None
+    assert not duplicate_file.exists()
+    assert [
+        entry.track_id
+        for entry in store.list_playlist_entries(playlist.id)
+    ] == ["survivor"]
+
+
 def test_backup_creates_json_and_restorable_zip(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

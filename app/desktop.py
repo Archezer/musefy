@@ -11,6 +11,7 @@ from app.ingestion.audio import AudioIngestionService
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
+from app.services.library_maintenance import LibraryHealthService
 from app.services.mp3party_import import Mp3PartyImportService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlist_bridge import PlaylistBridgeServer
@@ -41,6 +42,13 @@ def main() -> None:
 
     store = SQLAlchemyMusicStore(create_session)
     _ensure_current_user(store)
+
+    removed_duplicates = LibraryHealthService(store).remove_exact_duplicates()
+    if removed_duplicates:
+        print(
+            f"Removed {removed_duplicates} exact duplicate track record(s).",
+            file=sys.stderr,
+        )
 
     ingestion_service = AudioIngestionService(store)
     demo_track = _ensure_demo_track(ingestion_service, store)

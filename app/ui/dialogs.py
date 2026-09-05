@@ -2644,6 +2644,7 @@ class LibraryMaintenanceDialog(QDialog):
     watch_disable_requested = Signal()
     watch_update_metadata_toggled = Signal(bool)
     compact_preferences_requested = Signal()
+    delete_missing_requested = Signal()
 
     def __init__(
         self,
@@ -2656,6 +2657,7 @@ class LibraryMaintenanceDialog(QDialog):
         self.setObjectName("libraryMaintenanceDialog")
         self.setWindowTitle("Library health & backup")
         self.resize(780, 540)
+        self._missing_track_ids: tuple[str, ...] = ()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -2681,6 +2683,12 @@ class LibraryMaintenanceDialog(QDialog):
         self.scan_button = QPushButton("Check library")
         self.scan_button.clicked.connect(self.scan_requested)
         health_row.addWidget(self.scan_button)
+        self.delete_missing_button = QPushButton("Delete missing records")
+        self.delete_missing_button.setEnabled(False)
+        self.delete_missing_button.clicked.connect(
+            self.delete_missing_requested
+        )
+        health_row.addWidget(self.delete_missing_button)
         layout.addLayout(health_row)
 
         self.issues_table = QTableWidget(0, 3)
@@ -2787,6 +2795,9 @@ class LibraryMaintenanceDialog(QDialog):
 
     def set_scanning(self, active: bool) -> None:
         self.scan_button.setEnabled(not active)
+        self.delete_missing_button.setEnabled(
+            not active and bool(self._missing_track_ids)
+        )
         self.compact_preferences_button.setEnabled(not active)
         self.zip_backup_button.setEnabled(not active)
         self.json_export_button.setEnabled(not active)
@@ -2798,6 +2809,11 @@ class LibraryMaintenanceDialog(QDialog):
 
     def show_report(self, report: LibraryHealthReport) -> None:
         self.set_scanning(False)
+        self._missing_track_ids = tuple(
+            issue.track.id
+            for issue in report.missing_files
+        )
+        self.delete_missing_button.setEnabled(bool(self._missing_track_ids))
         rows: list[tuple[str, str, str]] = []
         rows.extend(
             ("Missing file", self._track_name(issue.track), issue.detail)
@@ -2870,7 +2886,13 @@ class LibraryMaintenanceDialog(QDialog):
 
     def show_scan_error(self, message: str) -> None:
         self.set_scanning(False)
+        self._missing_track_ids = ()
+        self.delete_missing_button.setEnabled(False)
         self.health_status.setText(f"Check failed: {message}")
+
+    @property
+    def missing_track_ids(self) -> tuple[str, ...]:
+        return self._missing_track_ids
 
     @staticmethod
     def _track_name(track: Track) -> str:

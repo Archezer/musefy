@@ -26,7 +26,12 @@ from app.domain.models import (
     User,
 )
 from app.ingestion.metadata import read_audio_metadata
-from app.storage.paths import DATA_DIR, ensure_storage_directories
+from app.storage.paths import (
+    DATA_DIR,
+    LIBRARY_DIR,
+    TRACK_COVERS_DIR,
+    ensure_storage_directories,
+)
 from app.storage.protocols import MusicStore
 
 JSON_EXPORT_FORMAT = "musefy-library-export"
@@ -142,6 +147,90 @@ class LibraryHealthService:
             acoustic_duplicates=acoustic_groups,
             fingerprint_unavailable=tuple(unavailable),
         )
+
+    def remove_exact_duplicates(self) -> int:
+        """Merge exact duplicate files and remove redundant library records."""
+
+        hash_groups: dict[str, list[Track]] = {}
+        for track in self.store.list_tracks():
+            path = self._track_path(track)
+            if path is None or not path.is_file():
+                continue
+            try:
+                content_hash = self._file_hash(path)
+            except OSError:
+                continue
+            hash_groups.setdefault(content_hash, []).append(track)
+
+        removed = 0
+        for group in hash_groups.values():
+            if len(group) < 2:
+                continue
+
+            survivor = max(group, key=self._survivor_score)
+            for duplicate in group:
+                if duplicate.id == survivor.id:
+                    continue
+
+                self.store.merge_track_references(
+                    duplicate_track_id=duplicate.id,
+                    survivor_track_id=survivor.id,
+                )
+                self._remove_managed_file(
+                    duplicate.local_path,
+                    survivor.local_path,
+                    LIBRARY_DIR,
+                )
+                self._remove_managed_file(
+                    duplicate.cover_path,
+                    survivor.cover_path,
+                    TRACK_COVERS_DIR,
+                )
+                removed += 1
+
+        return removed
+
+    @staticmethod
+    def _survivor_score(track: Track) -> tuple[int, int, int, int, float]:
+        created_at = track.created_at.timestamp()
+        return (
+            int(track.track_embedding is not None),
+            int(track.mood is not None),
+            len(track.detected_genres),
+            int(track.cover_path is not None),
+            -created_at,
+        )
+
+    @staticmethod
+    def _remove_managed_file(
+        duplicate_path: str | None,
+        survivor_path: str | None,
+        root: Path,
+    ) -> None:
+        if not duplicate_path:
+            return
+
+        duplicate = Path(duplicate_path).expanduser().resolve()
+        survivor = (
+            Path(survivor_path).expanduser().resolve()
+            if survivor_path
+            else None
+        )
+        if duplicate == survivor:
+            return
+
+        try:
+            duplicate.relative_to(root.resolve())
+        except ValueError:
+            return
+
+        try:
+            if duplicate.is_file():
+                duplicate.unlink()
+        except OSError:
+            # Removing the database duplicate is still useful if an audio
+            # file is locked by another process.
+            return
 
     @staticmethod
     def _track_path(track: Track) -> Path | None:

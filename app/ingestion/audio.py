@@ -68,6 +68,26 @@ class AudioIngestionService:
             or content_id
         )
 
+        existing_track = self.store.get_track(resolved_track_id)
+        if existing_track is not None:
+            if (
+                existing_track.local_path
+                and Path(existing_track.local_path).is_file()
+            ):
+                # The content hash is the track ID, so importing the same
+                # audio from another source must reuse the existing record.
+                return existing_track
+
+            return self.restore_missing_track(
+                existing_track=existing_track,
+                file_path=file_path,
+                title=resolved_title,
+                artist=resolved_artist,
+                source=source,
+                source_id=source_id,
+                source_url=source_url,
+            )
+
         internal_path = self._copy_to_library(
             file_path=file_path,
             content_id=content_id,

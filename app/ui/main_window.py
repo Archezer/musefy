@@ -4616,6 +4616,9 @@ class MainWindow(QMainWindow):
         dialog.scan_requested.connect(
             lambda: self._scan_library_health(dialog)
         )
+        dialog.delete_missing_requested.connect(
+            lambda: self._delete_missing_library_records(dialog)
+        )
         dialog.zip_backup_requested.connect(
             lambda: self._create_library_zip_backup(dialog)
         )
@@ -4863,6 +4866,58 @@ class MainWindow(QMainWindow):
         self._library_health_thread = None
         if thread is not None:
             thread.deleteLater()
+
+    def _delete_missing_library_records(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        track_ids = dialog.missing_track_ids
+        if not track_ids:
+            return
+
+        confirmation = QMessageBox.question(
+            dialog,
+            "Delete missing records",
+            (
+                f"Delete {len(track_ids)} database record(s) whose audio "
+                "files are missing?\n\n"
+                "The records will be removed from playlists, history and "
+                "recommendation data. Files that still exist will not be "
+                "touched."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        removed = 0
+        errors: list[str] = []
+        for track_id in track_ids:
+            try:
+                self.track_management_service.delete_track(track_id)
+                self.recommendation_service.remove_track(track_id)
+            except (FileNotFoundError, OSError, ValueError) as error:
+                errors.append(str(error))
+            else:
+                removed += 1
+
+        self.selected_track_id = None
+        self._load_library()
+        self._load_history()
+        self._load_recommendations()
+        self.statusBar().showMessage(
+            f"Removed {removed} missing track record(s)"
+        )
+
+        if errors:
+            QMessageBox.warning(
+                dialog,
+                "Some records were not removed",
+                "\n".join(errors),
+            )
+
+        self._scan_library_health(dialog)
 
     def _create_library_zip_backup(
         self,
