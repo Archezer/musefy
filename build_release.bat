@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 title Musefy release build
 
-echo Building CPU and CUDA installers plus the one-file release checker...
+echo Building CPU and CUDA installers plus the one-file profile selector...
 echo This can take a long time and requires several gigabytes of free disk space.
 echo.
 
