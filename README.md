@@ -196,7 +196,7 @@ are only convenient distribution artifacts.
 
 The generated `build/`, `dist/` and model binaries are intentionally ignored by
 Git. Do not commit the multi-gigabyte installers to the source repository;
-publish the selector and profile assets as a GitHub Release.
+publish the checker and profile assets as a GitHub Release.
 
 The release build includes the preinstalled Rick Astley demo track. Keep the
 legally obtained audio file at
@@ -543,9 +543,8 @@ Run these from the project root:
 ```
 
 Run these commands after `install_musefy.bat` from the repository root so the
-selected PyTorch profile is active. To create a release installer, use
-`build_installer.bat`; it first builds the complete application directory and
-then invokes Inno Setup.
+selected PyTorch profile is active. To create the complete CPU/CUDA release
+packages and the release checker, use `build_release.bat`.
 
 ## Troubleshooting
 
