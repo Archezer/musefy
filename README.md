@@ -1,7 +1,7 @@
 # Musefy
 
-A Windows desktop application for a **local music library**. It imports audio
-from files, YouTube, Spotify and SoundCloud links, analyses each track locally, and builds
+A Windows desktop application for a **local music library**. ***It imports audio
+from files, YouTube, Spotify and SoundCloud links***, analyses each track locally, and builds
 recommendations without uploading the library or listening history to a cloud
 service.
 
