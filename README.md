@@ -5,7 +5,8 @@ from files, YouTube, Spotify and SoundCloud links, analyses each track locally, 
 recommendations without uploading the library or listening history to a cloud
 service.
 
-<img width="1229" height="822" alt="image" src="https://github.com/user-attachments/assets/f9c8ac76-fcca-49f5-9705-f86f1fd736e0" />
+<img width="1253" height="820" alt="image" src="https://github.com/user-attachments/assets/d5db200e-bafa-4de4-b07b-91a1459790d1" />
+
 
 
 The app is designed around three complementary signals:
