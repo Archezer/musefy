@@ -7,7 +7,10 @@ from transformers import (
     Wav2Vec2FeatureExtractor,
 )
 
+from app.storage.paths import resolve_mert_source
+
 MODEL_NAME = "m-a-p/MERT-v1-95M"
+MODEL_SOURCE = resolve_mert_source(MODEL_NAME)
 
 
 class MertAudioEmbedder:
@@ -17,12 +20,12 @@ class MertAudioEmbedder:
         )
 
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
-            MODEL_NAME,
+            MODEL_SOURCE,
             trust_remote_code=True,
         )
 
         self.model = AutoModel.from_pretrained(
-            MODEL_NAME,
+            MODEL_SOURCE,
             trust_remote_code=True,
         ).to(self.device)
 

@@ -152,6 +152,40 @@ $env:YTDLP_COOKIES_FILE = "C:\path\to\youtube_cookies.txt"
 Cookie files and browser sessions are sensitive credentials. Never commit them,
 send them to another person, or use cookies from an account you do not control.
 
+#### Ready-to-use Windows installer
+
+For a normal user, distribute `dist/Musefy-Setup.exe`. The installer contains
+the Musefy runtime, the desktop application and all local ML models, including
+MERT. The user only runs the setup file, chooses an installation directory and
+then starts Musefy from the desktop or Start menu shortcut. Python, `uv`, Git,
+the repository and manual model downloads are not required on the user's PC.
+
+An NVIDIA driver is optional: the packaged application uses CUDA when the
+driver and GPU are available and falls back to CPU otherwise. A separate CUDA
+Toolkit is not required. The release installer also includes the shared FFmpeg
+files needed for audio decoding and YouTube imports.
+
+The installer is generated from the open source code with:
+
+```powershell
+.\build_installer.bat
+```
+
+The maintainer needs Python, `uv`, the model files below, a cached MERT model,
+an installed shared FFmpeg build, and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+once to build the release installer. The source code remains open in this
+repository; the installer is only the convenient distribution artifact.
+
+The generated `build/`, `dist/` and model binaries are intentionally ignored by
+Git. Do not commit the multi-gigabyte installer to the source repository; publish
+`dist/Musefy-Setup.exe` as a release artifact or through external file storage.
+
+The release build can also include the optional Rick Astley Easter egg. Keep
+the legally obtained audio file at
+`data/library/Rick Astley — Rick Astley - Never Gonna Give You Up.m4a` on the
+builder's machine. It is ignored by Git, but the build copies it into the
+installer and imports it into a new user's library on first launch.
+
 #### Complete source installation (Windows)
 
 The steps below install the desktop app, its local ML models and the optional
@@ -211,7 +245,7 @@ Check the interpreter and GPU from the same directory:
 .venv\Scripts\python.exe -c "import onnxruntime as ort; print('ONNX providers:', ort.get_available_providers())"
 ```
 
-##### 3. Add the model files
+##### 3. Add the model files for a source run or release build
 
 Model binaries are deliberately excluded from Git. The metadata files
 (`data/models/maest/maest.json`, `data/models/music2emo/inference/data/`, and
@@ -250,9 +284,10 @@ Get-Item `
   Select-Object FullName, Length
 ```
 
-Music2Emo also uses the `m-a-p/MERT-v1-95M` transformer. It is downloaded
-automatically from Hugging Face the first time analysis runs and then reused
-from the local Hugging Face cache. To pre-download it while online, run:
+Music2Emo also uses the `m-a-p/MERT-v1-95M` transformer. Source runs download
+it automatically from Hugging Face the first time analysis runs. A release
+build copies the cached snapshot into the installer, so the installed app does
+not download MERT on first launch. To cache it before building, run:
 
 ```powershell
 .venv\Scripts\python.exe -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; n='m-a-p/MERT-v1-95M'; Wav2Vec2FeatureExtractor.from_pretrained(n, trust_remote_code=True); AutoModel.from_pretrained(n, trust_remote_code=True); print('MERT cached')"
@@ -265,7 +300,7 @@ the first analysis):
 $env:HF_HOME = "D:\Musefy\huggingface-cache"
 ```
 
-##### 4. Choose data paths and launch Musefy
+##### 4. Choose data paths and launch Musefy from source
 
 With no extra configuration, source runs keep the database and library under
 the repository's `data\` directory:
@@ -293,13 +328,15 @@ $env:MUSEFY_DATA_DIR = "D:\Musefy\data"
 .venv\Scripts\python.exe -m app.desktop
 ```
 
-`MUSEFY_DATA_DIR` affects `music.db`, `library`, `models`, covers and cookies;
-`playlist_exports` remains next to the project (or next to `Musefy.exe` in a
-packaged build). Set the variable again in each new terminal, or persist it
-with `[Environment]::SetEnvironmentVariable` if desired.
+`MUSEFY_DATA_DIR` affects `music.db`, `library`, models, covers and cookies in a
+source run. In an installed build, user data is stored in
+`%LOCALAPPDATA%\Musefy\data`; bundled models remain read-only inside the
+installed application. Set `MUSEFY_DATA_DIR` only when you need a custom data
+location.
 
-On the first track analysis, MERT may take a little longer while its cache is
-created. Analysis then runs in the background and the interface remains usable.
+On the first track analysis, a packaged build may take a little longer while
+the included MERT model is loaded. Analysis then runs in the background and
+the interface remains usable.
 
 ### Spotify links and authorization
 
@@ -487,7 +524,9 @@ Run these from the project root:
 ```
 
 Run these commands after `install_musefy.bat` from the repository root so the
-selected PyTorch profile is active.
+selected PyTorch profile is active. To create a release installer, use
+`build_installer.bat`; it first builds the complete application directory and
+then invokes Inno Setup.
 
 ## Troubleshooting
 

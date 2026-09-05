@@ -13,7 +13,7 @@ from urllib.request import urlopen
 import yt_dlp
 from yt_dlp.utils import DownloadError
 
-from app.storage.paths import DATA_DIR
+from app.storage.paths import BUNDLED_DATA_DIR, DATA_DIR
 
 SUPPORTED_DOWNLOAD_EXTENSIONS = {
     ".flac",
@@ -489,6 +489,11 @@ class YouTubeSearchProvider:
 
 def _find_ffmpeg() -> str | None:
     """Locate FFmpeg, including the Windows WinGet installation used by Musefy."""
+
+    if BUNDLED_DATA_DIR is not None:
+        bundled_ffmpeg = BUNDLED_DATA_DIR / "ffmpeg" / "ffmpeg.exe"
+        if bundled_ffmpeg.is_file():
+            return str(bundled_ffmpeg)
 
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path:

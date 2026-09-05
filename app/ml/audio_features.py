@@ -1,32 +1,40 @@
 import os
 from pathlib import Path
 
+from app.storage.paths import BUNDLED_DATA_DIR
+
 _ffmpeg_dll_dir = None
+
+ffmpeg_bins: list[Path] = []
+if BUNDLED_DATA_DIR is not None:
+    ffmpeg_bins.append(BUNDLED_DATA_DIR / "ffmpeg")
 
 local_app_data = os.environ.get("LOCALAPPDATA")
 
 if local_app_data:
-    ffmpeg_bins = sorted(
-        Path(local_app_data).glob(
+    ffmpeg_bins.extend(
+        sorted(
+            Path(local_app_data).glob(
             "Microsoft/WinGet/Packages/"
             "Gyan.FFmpeg.Shared_*/*/bin"
+            )
         )
     )
 
-    if ffmpeg_bins:
+if ffmpeg_bins:
+    ffmpeg_bin = ffmpeg_bins[0]
+    if not (ffmpeg_bin / "ffmpeg.exe").is_file():
         ffmpeg_bin = ffmpeg_bins[-1]
 
-        os.environ["PATH"] = (
-            str(ffmpeg_bin)
-            + os.pathsep
-            + os.environ.get("PATH", "")
-        )
+    os.environ["PATH"] = (
+        str(ffmpeg_bin)
+        + os.pathsep
+        + os.environ.get("PATH", "")
+    )
 
-        if hasattr(os, "add_dll_directory"):
-            _ffmpeg_dll_dir = (
-                os.add_dll_directory(str(ffmpeg_bin))
-            )
-            
+    if hasattr(os, "add_dll_directory"):
+        _ffmpeg_dll_dir = os.add_dll_directory(str(ffmpeg_bin))
+
 import torch
 import torchaudio
 

@@ -6,9 +6,25 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from app.storage.paths import DATA_DIR
+from app.storage.paths import BUNDLED_DATA_DIR, DATA_DIR
 
-MODEL_DIR = DATA_DIR / "models" / "maest"
+
+def _resolve_model_dir() -> Path:
+    """Prefer user-provided models and fall back to packaged model data."""
+
+    external_dir = DATA_DIR / "models" / "maest"
+    if (external_dir / "maest.onnx").is_file():
+        return external_dir
+
+    if BUNDLED_DATA_DIR is not None:
+        bundled_dir = BUNDLED_DATA_DIR / "models" / "maest"
+        if (bundled_dir / "maest.onnx").is_file():
+            return bundled_dir
+
+    return external_dir
+
+
+MODEL_DIR = _resolve_model_dir()
 
 
 @dataclass(frozen=True)

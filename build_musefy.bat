@@ -22,5 +22,6 @@ if errorlevel 1 (
 
 echo.
 echo Build complete: dist\Musefy\Musefy.exe
+echo This folder contains the complete portable application.
 pause
 endlocal

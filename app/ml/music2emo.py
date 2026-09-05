@@ -22,10 +22,32 @@ from app.ml.mood_profiles import (
     music2emo_to_vector,
     predict_mood_profiles,
 )
-from app.storage.paths import DATA_DIR
+from app.storage.paths import BUNDLED_DATA_DIR, DATA_DIR, resolve_mert_source
 
-MODEL_ROOT = DATA_DIR / "models" / "music2emo"
 MERT_NAME = "m-a-p/MERT-v1-95M"
+
+
+def _resolve_model_root() -> Path:
+    """Prefer complete user models and fall back to packaged model data."""
+
+    required_files = (
+        "saved_models/J_all.ckpt",
+        "inference/data/btc_model_large_voca.pt",
+    )
+    external_root = DATA_DIR / "models" / "music2emo"
+    if all((external_root / relative_path).is_file() for relative_path in required_files):
+        return external_root
+
+    if BUNDLED_DATA_DIR is not None:
+        bundled_root = BUNDLED_DATA_DIR / "models" / "music2emo"
+        if all((bundled_root / relative_path).is_file() for relative_path in required_files):
+            return bundled_root
+
+    return external_root
+
+
+MODEL_ROOT = _resolve_model_root()
+MERT_SOURCE = resolve_mert_source(MERT_NAME)
 MERT_SAMPLE_RATE = 24_000
 CHORD_SAMPLE_RATE = 22_050
 MERT_WINDOW_SECONDS = 30
@@ -238,11 +260,11 @@ class Music2EmoMoodAnalyzer:
                 )
 
             self._processor = Wav2Vec2FeatureExtractor.from_pretrained(
-                MERT_NAME,
+                MERT_SOURCE,
                 trust_remote_code=True,
             )
             self._mert = AutoModel.from_pretrained(
-                MERT_NAME,
+                MERT_SOURCE,
                 trust_remote_code=True,
             ).to(self.device)
             self._mert.eval()
