@@ -152,6 +152,145 @@ $env:YTDLP_COOKIES_FILE = "C:\path\to\youtube_cookies.txt"
 Cookie files and browser sessions are sensitive credentials. Never commit them,
 send them to another person, or use cookies from an account you do not control.
 
+#### Complete source installation (Windows)
+
+The steps below install the desktop app, its local ML models and the optional
+playlist browser extension. Run the commands from the repository root unless a
+command says otherwise.
+
+##### 1. Install prerequisites
+
+- [Git for Windows](https://git-scm.com/download/win).
+- [Python 3.12 or 3.13 (64-bit)](https://www.python.org/downloads/windows/).
+  Python 3.14 is not supported by this project yet.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), which creates
+  and manages the project environment:
+
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
+- A shared FFmpeg build. The easiest Windows installation is:
+
+  ```powershell
+  winget install --id Gyan.FFmpeg.Shared --exact
+  ffmpeg -version
+  ```
+
+  If `ffmpeg` is not recognised, restart the terminal and make sure the
+  package's `bin` directory is in `PATH`.
+- An up-to-date NVIDIA driver is optional. `uv` installs the CUDA 12.6 PyTorch
+  wheels declared by this project; a separate CUDA Toolkit is not required.
+  CPU mode remains available when no compatible GPU is present.
+
+##### 2. Clone the repository and create the environment
+
+```powershell
+git clone https://github.com/Archezer/musefy.git
+Set-Location musefy
+uv sync --locked
+```
+
+`uv sync` creates `.venv` in the project directory and installs the exact
+locked dependency set. Check the interpreter and (if applicable) GPU from the
+same directory:
+
+```powershell
+uv run python --version
+uv run python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+uv run python -c "import onnxruntime as ort; print('ONNX providers:', ort.get_available_providers())"
+```
+
+##### 3. Add the model files
+
+Model binaries are deliberately excluded from Git. The metadata files
+(`data/models/maest/maest.json`, `data/models/music2emo/inference/data/`, and
+the Music2Emo utility modules) are already tracked in the repository. Download
+the three binary files to these exact paths:
+
+```powershell
+New-Item -ItemType Directory -Force `
+  data\models\maest, `
+  data\models\music2emo\saved_models, `
+  data\models\music2emo\inference\data | Out-Null
+
+$music2emo = "https://huggingface.co/amaai-lab/music2emo/resolve/main"
+
+# MAEST genre/embedding model (about 348 MB)
+Invoke-WebRequest `
+  -Uri "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx" `
+  -OutFile "data\models\maest\maest.onnx"
+
+# Music2Emo chord model and checkpoint
+Invoke-WebRequest `
+  -Uri "$music2emo/inference/data/btc_model_large_voca.pt?download=true" `
+  -OutFile "data\models\music2emo\inference\data\btc_model_large_voca.pt"
+Invoke-WebRequest `
+  -Uri "$music2emo/saved_models/J_all.ckpt?download=true" `
+  -OutFile "data\models\music2emo\saved_models\J_all.ckpt"
+```
+
+Verify the files before starting the app:
+
+```powershell
+Get-Item `
+  data\models\maest\maest.onnx, `
+  data\models\music2emo\inference\data\btc_model_large_voca.pt, `
+  data\models\music2emo\saved_models\J_all.ckpt |
+  Select-Object FullName, Length
+```
+
+Music2Emo also uses the `m-a-p/MERT-v1-95M` transformer. It is downloaded
+automatically from Hugging Face the first time analysis runs and then reused
+from the local Hugging Face cache. To pre-download it while online, run:
+
+```powershell
+uv run python -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; n='m-a-p/MERT-v1-95M'; Wav2Vec2FeatureExtractor.from_pretrained(n, trust_remote_code=True); AutoModel.from_pretrained(n, trust_remote_code=True); print('MERT cached')"
+```
+
+To put that cache on another drive, set `HF_HOME` before the command (and before
+the first analysis):
+
+```powershell
+$env:HF_HOME = "D:\Musefy\huggingface-cache"
+```
+
+##### 4. Choose data paths and launch Musefy
+
+With no extra configuration, source runs keep the database and library under
+the repository's `data\` directory:
+
+```text
+data\music.db                    SQLite database
+data\library\                    imported audio files
+data\models\maest\              MAEST model and labels
+data\models\music2emo\          Music2Emo files
+data\youtube_cookies.txt         optional Firefox/Netscape cookies
+playlist_exports\                browser-extension exports
+```
+
+Start the app from the repository root:
+
+```powershell
+uv run python -m app.desktop
+```
+
+To keep the database, library and models elsewhere, set `MUSEFY_DATA_DIR`
+before launching. The directory is created automatically:
+
+```powershell
+$env:MUSEFY_DATA_DIR = "D:\Musefy\data"
+uv run python -m app.desktop
+```
+
+`MUSEFY_DATA_DIR` affects `music.db`, `library`, `models`, covers and cookies;
+`playlist_exports` remains next to the project (or next to `Musefy.exe` in a
+packaged build). Set the variable again in each new terminal, or persist it
+with `[Environment]::SetEnvironmentVariable` if desired.
+
+On the first track analysis, MERT may take a little longer while its cache is
+created. Analysis then runs in the background and the interface remains usable.
+
 ### Spotify links and authorization
 
 Paste a Spotify track, album or playlist URL into the same URL field and press
@@ -254,8 +393,50 @@ matched or downloaded.
 For Spotify, this is an alternative to API-based metadata import: it works from
 the user's already-open Spotify Web Player and therefore does not require the
 project's Spotify client ID, OAuth callback, or Dashboard test-user allowlist.
-Install and usage instructions are in the extension's
-[README](extensions/vk-spotify-playlist-exporter/README.md).
+
+#### Install the extension locally
+
+The extension is a local, unpacked Manifest V3 extension. It does not need an
+online store account.
+
+- **Chrome or Edge:** open `chrome://extensions` or `edge://extensions`, enable
+  **Developer mode**, click **Load unpacked**, and select the folder
+  `extensions/vk-spotify-playlist-exporter`. Pin **Playlist Exporter** to keep
+  its button visible.
+- **Firefox:** open `about:debugging#/runtime/this-firefox`, click **Load
+  Temporary Add-on**, and select
+  `extensions/vk-spotify-playlist-exporter/manifest.json`. Firefox removes a
+  temporary add-on after a browser restart, so load it again when needed.
+
+#### Use the extension
+
+1. Start Musefy first if you want exports to be copied directly into the
+   project:
+
+   ```powershell
+   uv run python -m app.desktop
+   ```
+
+   The local bridge listens on `http://127.0.0.1:8765`.
+2. In the same browser, open a playlist in VK Music, Spotify Web Player or
+   Yandex Music. The extension works only on these HTTPS hosts and reads the
+   playlist that is currently open in the active tab.
+3. On VK, click **Show all** first when VK displays that control. Wait until the
+   playlist rows are visible, then click the extension icon and choose
+   **Export current playlist**. The extension scrolls the list until the number
+   of tracks stops increasing and shows progress in the popup.
+4. When Musefy is running, the JSON is saved to
+   `playlist_exports\<source>\` next to the project. If the app is closed or the
+   bridge is unavailable, the extension saves the same JSON through the
+   browser's Downloads dialog instead.
+5. In Musefy choose **Import exported playlist** and select the JSON file. The
+   app searches YouTube for each `artist — title` pair, lets you review matches,
+   then downloads and analyses the selected tracks into a local playlist.
+
+The extension exports only playlist title/URL, order, artist, title and visible
+duration. It never reads or sends cookies, passwords, OAuth tokens, audio URLs
+or audio files. Full source-specific notes and troubleshooting are in the
+extension's [README](extensions/vk-spotify-playlist-exporter/README.md).
 
 ## Analysis pipeline
 
