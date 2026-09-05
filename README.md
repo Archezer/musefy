@@ -235,6 +235,10 @@ reports a working NVIDIA GPU; otherwise it chooses `cpu`. It then downloads all
 required model files automatically and stores the MERT snapshot in
 `data\models\mert`.
 
+The repository includes the preinstalled Rick Astley demo track. On the first
+source launch, Musefy imports it into the local database automatically, so the
+library is not empty after installation.
+
 If CUDA dependencies install but the verification cannot start CUDA, the BAT
 automatically switches the environment to the CPU profile. It does not install
 the full CUDA Toolkit because the packaged PyTorch CUDA runtime does not need
@@ -242,6 +246,16 @@ it. To force a profile for troubleshooting, set `MUSEFY_FORCE_PROFILE` to
 `cpu` or `cuda` before running the BAT.
 
 ##### 3. Launch Musefy from source
+
+The installer creates Musefy shortcuts in the Start Menu and on the desktop.
+Open Musefy from either shortcut, then right-click it and choose **Pin to
+taskbar** if you want a permanent taskbar button. The pinned shortcut remains
+available after a Windows restart. The terminal command remains available for
+troubleshooting:
+
+```powershell
+.venv\Scripts\python.exe -m app.desktop
+```
 
 Check the interpreter and GPU from the same directory if needed:
 

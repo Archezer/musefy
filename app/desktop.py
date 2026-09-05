@@ -159,9 +159,6 @@ def _ensure_demo_track(
 ) -> Track | None:
     """Install the bundled test track into the user's library once."""
 
-    if BUNDLED_DATA_DIR is None:
-        return None
-
     existing_track = store.get_track_by_source(
         DEMO_TRACK_SOURCE,
         DEMO_TRACK_SOURCE_ID,
@@ -169,12 +166,21 @@ def _ensure_demo_track(
     if existing_track is not None:
         return None
 
-    bundled_track_path = BUNDLED_DATA_DIR / "demo" / DEMO_TRACK_FILENAME
-    if not bundled_track_path.is_file():
+    if BUNDLED_DATA_DIR is not None:
+        demo_track_path = BUNDLED_DATA_DIR / "demo" / DEMO_TRACK_FILENAME
+    else:
+        demo_track_path = (
+            Path(__file__).resolve().parents[1]
+            / "data"
+            / "library"
+            / DEMO_TRACK_FILENAME
+        )
+
+    if not demo_track_path.is_file():
         return None
 
     return ingestion_service.ingest(
-        bundled_track_path,
+        demo_track_path,
         title="Never Gonna Give You Up",
         artist="Rick Astley",
         source=DEMO_TRACK_SOURCE,

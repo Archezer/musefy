@@ -95,7 +95,7 @@ call :verify_runtime
 if errorlevel 1 goto :failure
 
 :download_models
-echo [5/5] Downloading required models and local MERT snapshot...
+echo [5/6] Downloading required models and local MERT snapshot...
 if not exist ".venv\Scripts\python.exe" (
     echo [ERROR] The project environment was not created.
     exit /b 1
@@ -106,9 +106,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [6/6] Creating Start Menu and desktop shortcuts...
+call :create_shortcuts
+if errorlevel 1 (
+    echo [WARNING] Could not create shortcuts automatically.
+    echo The application is still installed and can be started manually.
+)
+
 echo.
 echo Musefy is ready with the %MUSEFY_INSTALL_PROFILE% profile.
-echo Start it with: .venv\Scripts\python.exe -m app.desktop
+echo Start Musefy from the Start Menu or the desktop shortcut.
+echo Right-click the shortcut and choose "Pin to taskbar" if desired.
 echo The browser extension is in: extensions\vk-spotify-playlist-exporter
 exit /b 0
 
@@ -147,6 +155,12 @@ for /f "delims=" %%P in ('where uv 2^>nul') do if not defined MUSEFY_UV_EXE set 
 if not defined MUSEFY_UV_EXE if exist "%USERPROFILE%\.local\bin\uv.exe" set "MUSEFY_UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
 if not defined MUSEFY_UV_EXE if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "MUSEFY_UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
 exit /b 0
+
+:create_shortcuts
+set "MUSEFY_ROOT=%CD%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; $target = Join-Path $root '.venv\Scripts\python.exe'; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = '-m app.desktop'; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
+exit /b %errorlevel%
 
 :failure
 echo [ERROR] Musefy environment verification failed.
