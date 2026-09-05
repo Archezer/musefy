@@ -34,6 +34,7 @@ CURRENT_USER_ID = "user-1"
 DEMO_TRACK_SOURCE = "musefy_easter_egg"
 DEMO_TRACK_SOURCE_ID = "never-gonna-give-you-up"
 DEMO_TRACK_FILENAME = "Rick Astley — Rick Astley - Never Gonna Give You Up.m4a"
+WINDOWS_APP_USER_MODEL_ID = "Archezer.Musefy"
 _NATIVE_MUSEFY_ICON_HANDLE = None
 
 
@@ -319,7 +320,7 @@ def _set_windows_taskbar_properties(hwnd: int, icon_path: Path) -> None:
     )
     app_id_key = _PropertyKey(app_user_model_fmtid, 5)
     relaunch_icon_key = _PropertyKey(app_user_model_fmtid, 3)
-    app_id_value = _PropVariant(vt=31, pwsz_val="Archzer.Musefy")
+    app_id_value = _PropVariant(vt=31, pwsz_val=WINDOWS_APP_USER_MODEL_ID)
     icon_value = _PropVariant(
         vt=31,
         pwsz_val=f"{icon_path},0",
@@ -400,7 +401,7 @@ def _set_windows_app_user_model_id() -> None:
         shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [
             wintypes.LPCWSTR
         ]
-        shell32.SetCurrentProcessExplicitAppUserModelID("Archzer.Musefy")
+        shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
     except (AttributeError, OSError):
         # The desktop app is also runnable on non-Windows platforms and the
         # shell API may be unavailable there.

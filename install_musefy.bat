@@ -159,7 +159,7 @@ exit /b 0
 :create_shortcuts
 set "MUSEFY_ROOT=%CD%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; $target = Join-Path $root '.venv\Scripts\python.exe'; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = '-m app.desktop'; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
+    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; $target = Join-Path $root '.venv\Scripts\pythonw.exe'; if (-not (Test-Path $target)) { throw 'pythonw.exe was not found in the project environment.' }; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = '-m app.desktop'; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
 exit /b %errorlevel%
 
 :failure
