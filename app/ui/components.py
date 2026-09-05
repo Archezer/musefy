@@ -5,6 +5,7 @@ import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from random import SystemRandom
 from types import MappingProxyType
 from typing import ClassVar
 
@@ -1245,6 +1246,173 @@ class _PlaylistHoverMixin:
             set_hovered(hovered)
 
 
+_PLAYLIST_ARTWORK_RANDOM = SystemRandom()
+
+
+class SvgArtworkWidget(QWidget):
+    """Paint playlist artwork as SVG instead of a pre-rasterized pixmap."""
+
+    def __init__(
+        self,
+        svg: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _event: object) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._renderer.render(painter, QRectF(self.rect()))
+        painter.end()
+
+
+def _random_playlist_artwork_svg() -> str:
+    """Build a fresh green-to-purple liquid graph artwork for one card."""
+
+    rng = _PLAYLIST_ARTWORK_RANDOM
+    palettes = (
+        ("#55F6C4", "#39D8D0", "#438BFF", "#765CFF", "#EF8DFF"),
+        ("#A0F7B8", "#35D5C0", "#4C9CFF", "#8B63FF", "#F58BE8"),
+        ("#55E7B2", "#26C8E8", "#5577FF", "#A05BFF", "#F68CDB"),
+        ("#7FF0C0", "#41D4CF", "#4380F0", "#805BFF", "#ECA0FF"),
+    )
+    spectrum = rng.choice(palettes)
+    range_start = rng.randrange(len(spectrum) - 2)
+    local_range = spectrum[range_start:range_start + 3]
+    first_color, middle_color, last_color = local_range
+    dark_a, dark_b = rng.choice(
+        (
+            ("#071C20", "#15112D"),
+            ("#081A25", "#1B102C"),
+            ("#101B24", "#1D1028"),
+            ("#081F1D", "#190F2B"),
+        )
+    )
+
+    gradient_id = f"liquid-{rng.randrange(1_000_000)}"
+    background_id = f"background-{rng.randrange(1_000_000)}"
+    glow_ids = [f"glow-{rng.randrange(1_000_000)}" for _ in range(4)]
+
+    background_angle = rng.randrange(0, 360)
+    liquid_angle = rng.randrange(0, 360)
+    background = f"""
+    <linearGradient id="{background_id}" x1="0" y1="0" x2="1" y2="1"
+                    gradientTransform="rotate({background_angle} .5 .5)">
+      <stop stop-color="{dark_a}"/>
+      <stop offset=".48" stop-color="#102B38"/>
+      <stop offset="1" stop-color="{dark_b}"/>
+    </linearGradient>
+    <linearGradient id="{gradient_id}" x1="0" y1="0" x2="1" y2="1"
+                    gradientTransform="rotate({liquid_angle} .5 .5)">
+      <stop stop-color="{first_color}"/>
+      <stop offset=".46" stop-color="{middle_color}"/>
+      <stop offset="1" stop-color="{last_color}"/>
+    </linearGradient>
+    """
+
+    glow_colors = (
+        first_color,
+        middle_color,
+        last_color,
+        rng.choice(local_range),
+    )
+    glow_defs: list[str] = []
+    glow_shapes: list[str] = []
+    for glow_id, color in zip(glow_ids, glow_colors):
+        cx = rng.randrange(18, 168)
+        cy = rng.randrange(16, 86)
+        radius = rng.randrange(28, 66)
+        glow_defs.append(
+            f"""
+            <radialGradient id="{glow_id}" cx="{cx}" cy="{cy}" r="{radius}"
+                            gradientUnits="userSpaceOnUse">
+              <stop stop-color="{color}" stop-opacity=".{rng.randrange(22, 48)}"/>
+              <stop offset=".58" stop-color="{color}" stop-opacity=".{rng.randrange(7, 20)}"/>
+              <stop offset="1" stop-color="{color}" stop-opacity="0"/>
+            </radialGradient>
+            """
+        )
+        glow_shapes.append(
+            f'<ellipse cx="{cx}" cy="{cy}" rx="{radius * 1.35:.1f}" '
+            f'ry="{radius * .82:.1f}" fill="url(#{glow_id})"/>'
+        )
+
+    top = rng.randrange(12, 28)
+    left = rng.randrange(8, 20)
+    right = rng.randrange(164, 178)
+    bottom = rng.randrange(76, 94)
+    blob_path = (
+        f"M {left} {rng.randrange(48, 64)} "
+        f"C {rng.randrange(12, 32)} {rng.randrange(22, 44)}, "
+        f"{rng.randrange(40, 66)} {top}, {rng.randrange(65, 86)} {top + 6} "
+        f"C {rng.randrange(98, 125)} {rng.randrange(6, 20)}, "
+        f"{rng.randrange(140, 164)} {rng.randrange(16, 30)}, {right} {rng.randrange(34, 56)} "
+        f"C {rng.randrange(174, 184)} {rng.randrange(58, 72)}, "
+        f"{rng.randrange(142, 170)} {bottom}, {rng.randrange(112, 138)} {bottom - 2} "
+        f"C {rng.randrange(92, 110)} {rng.randrange(88, 98)}, "
+        f"{rng.randrange(66, 88)} {rng.randrange(68, 82)}, {rng.randrange(42, 64)} {rng.randrange(72, 84)} "
+        f"C {rng.randrange(24, 42)} {rng.randrange(84, 96)}, {left} {rng.randrange(70, 86)}, {left} {rng.randrange(48, 64)} Z"
+    )
+
+    nodes = [
+        (
+            rng.randrange(18, 168),
+            rng.randrange(16, 86),
+            rng.choice(local_range),
+            rng.choice((1.5, 1.8, 2.1)),
+        )
+        for _ in range(rng.randrange(6, 10))
+    ]
+    edge_pairs: set[tuple[int, int]] = set()
+    for index in range(1, len(nodes)):
+        edge_pairs.add((index, rng.randrange(index)))
+    for _ in range(rng.randrange(2, 5)):
+        first = rng.randrange(len(nodes))
+        second = rng.randrange(len(nodes))
+        if first != second:
+            edge_pairs.add((first, second))
+
+    edges = "".join(
+        f'<path d="M {nodes[first][0]} {nodes[first][1]} '
+        f'L {nodes[second][0]} {nodes[second][1]}" '
+        f'stroke="{rng.choice(local_range)}" '
+        f'stroke-opacity=".{rng.randrange(18, 42)}" '
+        f'stroke-width="{rng.choice((.7, .9, 1.1))}"/>'
+        for first, second in edge_pairs
+    )
+    node_marks = "".join(
+        f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{color}" '
+        f'fill-opacity=".{rng.randrange(48, 88)}" stroke="#E8FFF8" '
+        f'stroke-opacity=".{rng.randrange(26, 62)}" stroke-width=".7"/>'
+        for x, y, color, radius in nodes
+    )
+
+    return f"""
+    <svg viewBox="0 0 184 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        {background}
+        {''.join(glow_defs)}
+        <clipPath id="cover-clip-{gradient_id}">
+          <rect width="184" height="100" rx="17"/>
+        </clipPath>
+      </defs>
+      <rect width="184" height="100" rx="17" fill="url(#{background_id})"/>
+      <g clip-path="url(#cover-clip-{gradient_id})">
+        {''.join(glow_shapes)}
+        <path d="{blob_path}" fill="url(#{gradient_id})" fill-opacity=".86"/>
+        <path d="{blob_path}" fill="none" stroke="#DFFFF5" stroke-opacity=".16" stroke-width="1.2"/>
+        <path d="M 8 28 C 48 4 91 18 125 9 C 151 3 171 14 184 28"
+              stroke="#DFFFF5" stroke-opacity=".13" stroke-width="1.4"/>
+        <g>{edges}{node_marks}</g>
+        <ellipse cx="61" cy="22" rx="48" ry="13" fill="#FFFFFF" fill-opacity=".07"
+                 transform="rotate(-14 61 22)"/>
+      </g>
+    </svg>
+    """
+
+
 class PlaylistCard(_PlaylistHoverMixin, QFrame):
     """A horizontally-scrollable playlist tile with a stored or generated cover."""
 
@@ -1277,11 +1445,27 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
-        self.cover_label = QLabel()
-        self.cover_label.setFixedSize(92, 50)
-        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cover = self._cover_pixmap(name, cover_path)
-        self.cover_label.setPixmap(cover)
+        cover_size = QSize(92, 50)
+        source_cover = QPixmap(str(Path(cover_path))) if cover_path else QPixmap()
+        if not source_cover.isNull():
+            scaled_cover = source_cover.scaled(
+                cover_size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            cover = _rounded_pixmap(
+                scaled_cover,
+                radius=12,
+                size=cover_size,
+            )
+            self.cover_label = QLabel()
+            self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.cover_label.setPixmap(cover)
+        else:
+            cover_svg = _random_playlist_artwork_svg()
+            cover = _svg_cover_pixmap(cover_svg, cover_size)
+            self.cover_label = SvgArtworkWidget(cover_svg)
+        self.cover_label.setFixedSize(cover_size)
         self._setup_playlist_hover(cover)
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(self.cover_label)
@@ -1313,112 +1497,6 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             self.activated.emit(self.playlist_id)
-
-    def _cover_pixmap(
-        self,
-        name: str,
-        cover_path: str | None,
-    ) -> QPixmap:
-        if cover_path:
-            pixmap = QPixmap(str(Path(cover_path)))
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    self.cover_label.size(),
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                return _rounded_pixmap(
-                    scaled,
-                    radius=12,
-                    size=self.cover_label.size(),
-                )
-
-        pixmap = QPixmap(self.cover_label.size())
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        gradient_index = 0
-        for character in name:
-            # A stable rolling hash keeps artwork reproducible without the
-            # collisions that made common playlist names look identical.
-            gradient_index = (
-                gradient_index * 31 + ord(character)
-            ) % 5
-        gradient_stops = (
-            ("#24453F", "#081113", "#7FD9C0"),
-            ("#283E55", "#0A111A", "#76B7D5"),
-            ("#463A5E", "#110E18", "#C09BD6"),
-            ("#5A3154", "#140B16", "#D79ACB"),
-            ("#29335E", "#0C101C", "#99A9F0"),
-        )[gradient_index]
-        cover_rect = pixmap.rect().adjusted(0, 0, -1, -1)
-        clip_path = QPainterPath()
-        clip_path.addRoundedRect(cover_rect, 12, 12)
-        painter.save()
-        painter.setClipPath(clip_path)
-
-        gradient_vectors = (
-            (0, 0, pixmap.width(), pixmap.height()),
-            (pixmap.width(), 0, 0, pixmap.height()),
-            (0, pixmap.height(), pixmap.width(), 0),
-            (pixmap.width(), pixmap.height(), 0, 0),
-            (pixmap.width() * 0.2, 0, pixmap.width() * 0.8, pixmap.height()),
-        )
-        base_gradient = QLinearGradient(*gradient_vectors[gradient_index])
-        base_gradient.setColorAt(0.0, QColor(gradient_stops[0]))
-        base_gradient.setColorAt(0.56, QColor(gradient_stops[1]))
-        base_gradient.setColorAt(1.0, QColor(gradient_stops[2]))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(base_gradient)
-        painter.drawRect(pixmap.rect())
-
-        blob_layouts = (
-            (
-                (0.12, 0.12, 0.82, gradient_stops[2], 118),
-                (0.88, 0.82, 0.50, gradient_stops[0], 72),
-                (0.52, 0.42, 0.42, "#D8E9E3", 18),
-            ),
-            (
-                (0.84, 0.12, 0.70, gradient_stops[0], 106),
-                (0.18, 0.82, 0.60, gradient_stops[2], 92),
-                (0.52, 0.52, 0.34, "#D8E9E3", 24),
-            ),
-            (
-                (0.28, 0.52, 0.76, gradient_stops[2], 124),
-                (0.88, 0.18, 0.44, gradient_stops[0], 68),
-                (0.76, 0.86, 0.40, "#D8E9E3", 18),
-            ),
-            (
-                (0.84, 0.72, 0.86, gradient_stops[2], 102),
-                (0.16, 0.18, 0.54, gradient_stops[0], 82),
-                (0.52, 0.24, 0.30, "#D8E9E3", 28),
-            ),
-            (
-                (0.52, 0.44, 0.88, gradient_stops[2], 116),
-                (0.08, 0.84, 0.46, gradient_stops[0], 66),
-                (0.94, 0.10, 0.44, "#D8E9E3", 22),
-            ),
-        )
-        blob_specs = blob_layouts[gradient_index]
-        for x_ratio, y_ratio, radius_ratio, color, alpha in blob_specs:
-            center_x = pixmap.width() * x_ratio
-            center_y = pixmap.height() * y_ratio
-            radius = pixmap.width() * radius_ratio
-            blob = QRadialGradient(center_x, center_y, radius)
-            blob.setColorAt(0.0, _color_with_alpha(color, alpha))
-            blob.setColorAt(0.58, _color_with_alpha(color, alpha // 2))
-            blob.setColorAt(1.0, _color_with_alpha(color, 0))
-            painter.setBrush(blob)
-            painter.drawEllipse(
-                round(center_x - radius),
-                round(center_y - radius),
-                round(radius * 2),
-                round(radius * 2),
-            )
-        painter.restore()
-
-        return pixmap
-
 
 MAIN_LIBRARY_SVG = """
 <svg viewBox="0 0 160 100" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1550,10 +1628,9 @@ class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
-        cover = QLabel()
+        cover = SvgArtworkWidget(cover_svg)
         cover.setFixedSize(92, 50)
         cover_pixmap = _svg_cover_pixmap(cover_svg, cover.size())
-        cover.setPixmap(cover_pixmap)
         self._setup_playlist_hover(cover_pixmap)
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(cover)
@@ -1649,10 +1726,9 @@ class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
-        cover = QLabel()
+        cover = SvgArtworkWidget(CALM_MOOD_SVG)
         cover.setFixedSize(92, 50)
-        cover_pixmap = self._mood_pixmap(cover.size())
-        cover.setPixmap(cover_pixmap)
+        cover_pixmap = _svg_cover_pixmap(CALM_MOOD_SVG, cover.size())
         self._setup_playlist_hover(cover_pixmap)
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(cover)
@@ -1677,18 +1753,6 @@ class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
                 lambda checked=False, value=mood_name: self.mood_selected.emit(value)
             )
         menu.exec(self.mapToGlobal(event.position().toPoint()))
-
-    @staticmethod
-    def _mood_pixmap(size: QSize) -> QPixmap:
-        pixmap = QPixmap(size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        renderer = QSvgRenderer(QByteArray(CALM_MOOD_SVG.encode("utf-8")))
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        renderer.render(painter, pixmap.rect())
-        painter.end()
-        return pixmap
-
 
 class TrackNumberPlayWidget(QWidget):
     """A table-row index that turns into the row's play action."""
