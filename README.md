@@ -1,4 +1,5 @@
 # Musefy
+<img width="1229" height="822" alt="image" src="https://github.com/user-attachments/assets/f6d241a3-17bf-4b2c-ad84-9261375b954c" />
 
 A Windows desktop application for a **local music library**. It imports audio
 from files, YouTube, Spotify and SoundCloud links, analyses each track locally, and builds
