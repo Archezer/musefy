@@ -212,7 +212,9 @@ class TrackBatchTask(QRunnable):
             )
             # Let the main thread paint between batches so long libraries
             # appear progressively instead of freezing the window.
-            QThread.msleep(8)
+            # Leave a short frame-sized gap so the table paints each small
+            # batch instead of receiving the whole library at once.
+            QThread.msleep(12)
 
         self.signals.finished.emit(self.generation)
 

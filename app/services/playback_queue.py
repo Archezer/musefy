@@ -83,6 +83,56 @@ class PlaybackQueueService:
 
         return self._queue
 
+    def restore(
+        self,
+        current_track_id: str | None,
+        remaining_track_ids: Iterable[str],
+        queued_track_ids: Iterable[str],
+        *,
+        mode: QueueMode = QueueMode.NORMAL,
+        source_playlist_id: str | None = None,
+    ) -> PlaybackQueue | None:
+        """Restore a queue snapshot saved by the desktop session."""
+
+        normalized_current_id = (
+            current_track_id.strip()
+            if current_track_id is not None
+            else None
+        )
+        if normalized_current_id == "":
+            normalized_current_id = None
+
+        normalized_remaining_ids = self._normalize_track_ids(
+            remaining_track_ids
+        )
+        normalized_queued_ids = self._normalize_track_ids(queued_track_ids)
+        if (
+            normalized_current_id is None
+            and not normalized_remaining_ids
+            and not normalized_queued_ids
+        ):
+            self.clear()
+            return None
+
+        self._history.clear()
+        self._queue = PlaybackQueue(
+            current_track_id=normalized_current_id,
+            remaining_track_ids=normalized_remaining_ids,
+            queued_track_ids=normalized_queued_ids,
+            mode=mode,
+            source_playlist_id=source_playlist_id,
+        )
+        self._cycle_track_ids = (
+            ((normalized_current_id,) if normalized_current_id else ())
+            + normalized_remaining_ids
+        )
+        if not self._cycle_track_ids:
+            self._cycle_track_ids = normalized_queued_ids
+        self._cycle_queue_mode = mode
+        self._cycle_source_playlist_id = source_playlist_id
+
+        return self._queue
+
     def jump_to(self, track_id: str) -> PlaybackQueue | None:
         """Make an upcoming track current and discard items before it.
 

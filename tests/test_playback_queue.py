@@ -26,6 +26,36 @@ def test_manual_queue_has_priority_over_playlist() -> None:
     assert service.advance().current_track_id == "playlist-2"
 
 
+def test_restore_rebuilds_current_upcoming_and_repeatable_queue_state() -> None:
+    service = PlaybackQueueService()
+
+    queue = service.restore(
+        "current",
+        ("playlist-1", "playlist-2"),
+        ("manual-1",),
+        mode=QueueMode.SHUFFLE,
+        source_playlist_id="playlist-id",
+    )
+
+    assert queue is not None
+    assert queue.current_track_id == "current"
+    assert queue.remaining_track_ids == ("playlist-1", "playlist-2")
+    assert queue.queued_track_ids == ("manual-1",)
+    assert queue.mode == QueueMode.SHUFFLE
+    assert queue.source_playlist_id == "playlist-id"
+    assert service.upcoming_track_ids() == (
+        "manual-1",
+        "playlist-1",
+        "playlist-2",
+    )
+
+    restarted = service.restart_cycle()
+
+    assert restarted is not None
+    assert restarted.current_track_id == "current"
+    assert restarted.remaining_track_ids == ("playlist-1", "playlist-2")
+
+
 def test_appended_recommendations_stay_behind_manual_queue() -> None:
     service = PlaybackQueueService()
     service.start(

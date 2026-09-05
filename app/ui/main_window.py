@@ -29,6 +29,7 @@ from PySide6.QtGui import (
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QDialog,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGraphicsBlurEffect,
@@ -201,8 +202,8 @@ DEFAULT_VOLUME_PERCENT = 50
 DEFAULT_MASTER_VOLUME_PERCENT = 100
 RECOMMENDATION_QUEUE_SIZE = 30
 RECOMMENDATION_REFILL_THRESHOLD = 10
-INITIAL_TRACK_BATCH_SIZE = 30
-DEFERRED_TRACK_BATCH_SIZE = 30
+INITIAL_TRACK_BATCH_SIZE = 12
+DEFERRED_TRACK_BATCH_SIZE = 12
 QUEUE_RENDER_BATCH_SIZE = 12
 QUEUE_RENDER_INTERVAL_MS = 12
 # A carousel page never shows more than seven playlist-sized cards.  The
@@ -277,6 +278,9 @@ class MainWindow(QMainWindow):
         self._track_batch_task: TrackBatchTask | None = None
         self._library_sort_column: int | None = None
         self._library_sort_descending = False
+        self._add_tracks_mode = False
+        self._add_tracks_target_playlist_id: str | None = None
+        self._add_tracks_selected_ids: set[str] = set()
         self._playlist_page_index = 0
         self._playlist_page_count = 1
         self._playlist_page_items: list[Playlist] = []
@@ -337,6 +341,7 @@ class MainWindow(QMainWindow):
                 type=int,
             )
         )
+        self._playback_state_settings = QSettings("Musefy", "Musefy")
         self._genre_analysis_service = (
             GenreAnalysisService(
                 top_k=10,
@@ -449,6 +454,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._finish_initial_load)
 
     def _finish_initial_load(self) -> None:
+        self._restore_playback_state()
         self._refresh_music_map(self._library_tracks)
 
     def _build_interface(self) -> None:
@@ -1481,6 +1487,31 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignBottom,
         )
         library_header.addStretch()
+        self.add_tracks_button = QPushButton("Add tracks")
+        self.add_tracks_button.setObjectName("addTracksButton")
+        self.add_tracks_button.setToolTip(
+            "Choose tracks from the music library"
+        )
+        self.add_tracks_button.clicked.connect(
+            self._begin_add_tracks_mode
+        )
+        library_header.addWidget(self.add_tracks_button)
+        self.add_selected_tracks_button = QPushButton("Add selected")
+        self.add_selected_tracks_button.setObjectName(
+            "addSelectedTracksButton"
+        )
+        self.add_selected_tracks_button.clicked.connect(
+            self._finish_add_tracks_mode
+        )
+        library_header.addWidget(self.add_selected_tracks_button)
+        self.cancel_add_tracks_button = QPushButton("Cancel")
+        self.cancel_add_tracks_button.setObjectName(
+            "cancelAddTracksButton"
+        )
+        self.cancel_add_tracks_button.clicked.connect(
+            self._cancel_add_tracks_mode
+        )
+        library_header.addWidget(self.cancel_add_tracks_button)
         layout.addLayout(library_header)
 
         self.track_table = HoverTableWidget()
@@ -1488,7 +1519,7 @@ class MainWindow(QMainWindow):
         self.track_table.setVerticalScrollBar(
             RoundedScrollBar(Qt.Orientation.Vertical)
         )
-        self.track_table.setColumnCount(7)
+        self.track_table.setColumnCount(8)
         header = LibraryHeaderView(
             Qt.Orientation.Horizontal,
             self.track_table,
@@ -1503,6 +1534,7 @@ class MainWindow(QMainWindow):
         self.track_table.setHorizontalHeaderLabels(
             [
                 "#",
+                "",
                 "Title",
                 "Genres",
                 "Added",
@@ -1523,15 +1555,15 @@ class MainWindow(QMainWindow):
         )
         header.setSectionResizeMode(
             1,
-            QHeaderView.ResizeMode.Stretch,
+            QHeaderView.ResizeMode.Fixed,
         )
         header.setSectionResizeMode(
             2,
-            QHeaderView.ResizeMode.Interactive,
+            QHeaderView.ResizeMode.Stretch,
         )
         header.setSectionResizeMode(
             3,
-            QHeaderView.ResizeMode.ResizeToContents,
+            QHeaderView.ResizeMode.Interactive,
         )
         header.setSectionResizeMode(
             4,
@@ -1539,14 +1571,24 @@ class MainWindow(QMainWindow):
         )
         header.setSectionResizeMode(
             5,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+        header.setSectionResizeMode(
+            6,
             QHeaderView.ResizeMode.Fixed,
         )
-        header.resizeSection(2, 120)
+        header.setSectionResizeMode(
+            7,
+            QHeaderView.ResizeMode.Fixed,
+        )
+        header.resizeSection(1, 38)
         # Give the metadata columns a little more room so their headers sit
         # slightly closer to the title column instead of hugging the edge.
         header.resizeSection(3, 112)
         header.resizeSection(4, 72)
         header.resizeSection(5, 44)
+        header.resizeSection(6, 44)
+        header.resizeSection(7, 44)
         header.resizeSection(0, 50)
         # Keep the custom row rendering while allowing the library columns to
         # be sorted through the existing _handle_library_sort implementation.
@@ -1569,8 +1611,9 @@ class MainWindow(QMainWindow):
                 Qt.AlignmentFlag.AlignCenter
                 | Qt.AlignmentFlag.AlignVCenter
             )
-        self.track_table.setColumnHidden(5, True)
+        self.track_table.setColumnHidden(1, True)
         self.track_table.setColumnHidden(6, True)
+        self.track_table.setColumnHidden(7, True)
         self.track_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
@@ -1592,6 +1635,9 @@ class MainWindow(QMainWindow):
         self.track_table.row_double_clicked.connect(
             self._play_track_from_table_row
         )
+        self.track_table.row_clicked.connect(
+            self._handle_track_row_clicked
+        )
         self.track_table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -1599,6 +1645,7 @@ class MainWindow(QMainWindow):
             self._show_track_context_menu
         )
 
+        self._update_add_tracks_controls()
         layout.addWidget(self.track_table)
 
         return panel
@@ -1725,9 +1772,14 @@ class MainWindow(QMainWindow):
         self._library_tracks = tracks
 
         if self.selected_playlist_id is None:
+            title = (
+                self._add_tracks_view_title()
+                if self._add_tracks_mode
+                else "Music library"
+            )
             self._set_visible_tracks(
                 tracks,
-                title="Music library",
+                title=title,
             )
         else:
             self._load_selected_playlist_tracks()
@@ -1748,13 +1800,18 @@ class MainWindow(QMainWindow):
 
         self._track_scope_tracks = list(tracks)
         if hasattr(self, "track_table"):
-            # Column 5 is reserved for the playlist-only remove action.  It is
+            # Column 6 is reserved for the playlist-only remove action.  It is
             # hidden in the library so the normal table keeps its original
             # proportions.
             self.track_table.setColumnHidden(
-                5,
+                1,
+                not self._add_tracks_mode,
+            )
+            self.track_table.setColumnHidden(
+                6,
                 self.selected_playlist_id is None,
             )
+            self._update_add_tracks_controls()
         self._render_visible_tracks(title)
 
     def _render_visible_tracks(self, title: str) -> None:
@@ -1783,6 +1840,11 @@ class MainWindow(QMainWindow):
             f"{'s' if len(self._visible_tracks) != 1 else ''}"
         )
         self._refresh_track_row_visuals()
+        if len(initial_tracks) < len(self._visible_tracks):
+            self.statusBar().showMessage(
+                f"Loading tracks… {len(initial_tracks)}/"
+                f"{len(self._visible_tracks)}"
+            )
         self._start_track_batch_loading(generation, len(initial_tracks))
         # Defer recommendation work until after the first batch is painted.
         QTimer.singleShot(0, self._load_recommendations)
@@ -1816,7 +1878,7 @@ class MainWindow(QMainWindow):
         ]
 
     def _handle_library_sort(self, column: int) -> None:
-        if column not in {1, 2, 3, 4}:
+        if column not in {2, 3, 4, 5}:
             return
 
         if self._library_sort_column == column:
@@ -1827,12 +1889,12 @@ class MainWindow(QMainWindow):
             self._library_sort_column = column
             # Added uses newest-first for the initial downward indicator;
             # text and duration start in their natural ascending order.
-            self._library_sort_descending = column == 3
+            self._library_sort_descending = column == 4
 
         # The requested visual convention is a downward triangle on the first
         # click, then upward on the reverse order. Added intentionally maps
         # that first click to newest-first.
-        if column == 3:
+        if column == 4:
             indicator_order = (
                 Qt.SortOrder.DescendingOrder
                 if self._library_sort_descending
@@ -1867,17 +1929,17 @@ class MainWindow(QMainWindow):
         column = self._library_sort_column
 
         def sort_key(track: Track) -> object:
-            if column == 1:
+            if column == 2:
                 return (
                     track.title.casefold(),
                     track.artist.casefold(),
                 )
-            if column == 2:
+            if column == 3:
                 return (
                     self._format_display_genres(track).casefold(),
                     track.title.casefold(),
                 )
-            if column == 4:
+            if column == 5:
                 return (
                     track.duration_ms
                     if track.duration_ms is not None
@@ -1956,12 +2018,19 @@ class MainWindow(QMainWindow):
                 range(first_row, first_row + len(tracks))
             )
         )
+        self.statusBar().showMessage(
+            f"Loading tracks… {self.track_table.rowCount()}/"
+            f"{len(self._visible_tracks)}"
+        )
 
     def _finish_track_batch_loading(self, generation: int) -> None:
         if generation == self._track_table_generation:
             self._track_batch_task = None
+            self.statusBar().showMessage("Library ready")
 
     def _show_main_library(self) -> None:
+        if self._add_tracks_mode:
+            self._clear_add_tracks_mode_state()
         if self.selected_playlist_id is not None:
             self._reset_library_sort()
         self.selected_playlist_id = None
@@ -1970,7 +2039,11 @@ class MainWindow(QMainWindow):
         self.playlist_list.blockSignals(False)
         self._set_visible_tracks(
             self._library_tracks,
-            title="Music library",
+            title=(
+                self._add_tracks_view_title()
+                if self._add_tracks_mode
+                else "Music library"
+            ),
         )
         self._populate_playlist_carousel(
             self.playlist_management_service.list_playlists()
@@ -2061,6 +2134,34 @@ class MainWindow(QMainWindow):
         )
         self.track_table.setCellWidget(row_index, 0, index_widget)
         self.track_table.register_row_widget(index_widget, row_index)
+        if self._add_tracks_mode:
+            checkbox_container = QWidget()
+            checkbox_layout = QHBoxLayout(checkbox_container)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            checkbox = QCheckBox()
+            checkbox.setObjectName("playlistTrackCheck")
+            checkbox.setToolTip("Add this track to the playlist")
+            checkbox.setChecked(
+                track.id in self._add_tracks_selected_ids
+            )
+            checkbox.toggled.connect(
+                lambda checked, track_id=track.id: (
+                    self._set_add_track_selected(track_id, checked)
+                )
+            )
+            checkbox_layout.addWidget(checkbox)
+            self.track_table.setCellWidget(
+                row_index,
+                1,
+                checkbox_container,
+            )
+            self.track_table.register_row_widget(
+                checkbox_container,
+                row_index,
+            )
+        else:
+            self.track_table.removeCellWidget(row_index, 1)
         track_identity = TrackIdentityWidget(
             track.title,
             track.artist,
@@ -2071,8 +2172,8 @@ class MainWindow(QMainWindow):
             lambda track_id=track.id: self._play_track_now(track_id)
         )
         track_identity.set_search_query(self._library_search_query)
-        self.track_table.setItem(row_index, 1, QTableWidgetItem())
-        self.track_table.setCellWidget(row_index, 1, track_identity)
+        self.track_table.setItem(row_index, 2, QTableWidgetItem())
+        self.track_table.setCellWidget(row_index, 2, track_identity)
         self.track_table.register_row_widget(track_identity, row_index)
         remove_button: QToolButton | None = None
         if self.selected_playlist_id is not None:
@@ -2088,35 +2189,35 @@ class MainWindow(QMainWindow):
                 )
             )
         if remove_button is None:
-            self.track_table.removeCellWidget(row_index, 5)
+            self.track_table.removeCellWidget(row_index, 6)
         else:
-            self.track_table.setCellWidget(row_index, 5, remove_button)
+            self.track_table.setCellWidget(row_index, 6, remove_button)
             self.track_table.register_row_widget(remove_button, row_index)
         self.track_table.setItem(
             row_index,
-            2,
+            3,
             QTableWidgetItem(
                 self._format_display_genres(track)
             ),
         )
         self.track_table.setItem(
             row_index,
-            3,
+            4,
             QTableWidgetItem(self._format_added_date(track.created_at)),
         )
         self.track_table.setItem(
             row_index,
-            4,
+            5,
             QTableWidgetItem(self._format_duration(track.duration_ms)),
         )
-        for column in (2, 3):
+        for column in (3, 4):
             item = self.track_table.item(row_index, column)
             if item is not None:
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignLeft
                     | Qt.AlignmentFlag.AlignVCenter
                 )
-        duration_item = self.track_table.item(row_index, 4)
+        duration_item = self.track_table.item(row_index, 5)
         if duration_item is not None:
             duration_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter
@@ -2125,7 +2226,7 @@ class MainWindow(QMainWindow):
 
         self.track_table.setItem(
             row_index,
-            6,
+            7,
             QTableWidgetItem(
                 self._genre_statuses.get(
                     track.id,
@@ -3546,6 +3647,155 @@ class MainWindow(QMainWindow):
             f"Added playlist to queue: {playlist.name}"
         )
 
+    def _add_tracks_view_title(self) -> str:
+        playlist_id = self._add_tracks_target_playlist_id
+        playlist = (
+            self.store.get_playlist(playlist_id)
+            if playlist_id is not None
+            else None
+        )
+        if playlist is None:
+            return "Music library"
+        return f'Add tracks to "{playlist.name}"'
+
+    def _update_add_tracks_controls(self) -> None:
+        if not hasattr(self, "add_tracks_button"):
+            return
+
+        in_playlist = self.selected_playlist_id is not None
+        self.add_tracks_button.setVisible(
+            in_playlist and not self._add_tracks_mode
+        )
+        self.add_selected_tracks_button.setVisible(self._add_tracks_mode)
+        self.add_selected_tracks_button.setEnabled(
+            self._add_tracks_mode
+            and bool(self._add_tracks_selected_ids)
+        )
+        self.add_selected_tracks_button.setText(
+            (
+                f"Add selected ({len(self._add_tracks_selected_ids)})"
+                if self._add_tracks_selected_ids
+                else "Add selected"
+            )
+        )
+        self.cancel_add_tracks_button.setVisible(self._add_tracks_mode)
+
+    def _set_add_track_selected(
+        self,
+        track_id: str,
+        selected: bool,
+    ) -> None:
+        if not self._add_tracks_mode:
+            return
+        if selected:
+            self._add_tracks_selected_ids.add(track_id)
+        else:
+            self._add_tracks_selected_ids.discard(track_id)
+        self._update_add_tracks_controls()
+
+    def _begin_add_tracks_mode(self) -> None:
+        playlist_id = self.selected_playlist_id
+        if playlist_id is None:
+            return
+
+        playlist = self.store.get_playlist(playlist_id)
+        if playlist is None:
+            return
+
+        self._add_tracks_mode = True
+        self._add_tracks_target_playlist_id = playlist.id
+        self._add_tracks_selected_ids.clear()
+        self._reset_library_sort()
+        self.selected_playlist_id = None
+        self.playlist_list.blockSignals(True)
+        self.playlist_list.clearSelection()
+        self.playlist_list.blockSignals(False)
+        self._set_visible_tracks(
+            self._library_tracks,
+            title=self._add_tracks_view_title(),
+        )
+        self._populate_playlist_carousel(
+            self.playlist_management_service.list_playlists()
+        )
+        self._update_add_tracks_controls()
+        self.statusBar().showMessage(
+            f"Choose tracks to add to playlist: {playlist.name}"
+        )
+
+    def _finish_add_tracks_mode(self) -> None:
+        playlist_id = self._add_tracks_target_playlist_id
+        if playlist_id is None:
+            return
+
+        playlist = self.store.get_playlist(playlist_id)
+        if playlist is None:
+            self._cancel_add_tracks_mode()
+            return
+
+        selected_ids = self._add_tracks_selected_ids
+        existing_ids = {
+            entry.track_id
+            for entry in self.store.list_playlist_entries(playlist.id)
+        }
+        ordered_ids = [
+            track.id
+            for track in self._library_tracks
+            if track.id in selected_ids
+        ]
+        errors: list[str] = []
+        added_count = 0
+        skipped_count = 0
+        for track_id in ordered_ids:
+            if track_id in existing_ids:
+                skipped_count += 1
+                continue
+            try:
+                self.playlist_management_service.add_track(
+                    playlist.id,
+                    track_id,
+                )
+            except ValueError as error:
+                errors.append(str(error))
+            else:
+                existing_ids.add(track_id)
+                added_count += 1
+
+        self._clear_add_tracks_mode_state()
+        self.selected_playlist_id = playlist.id
+        self._load_playlists()
+        self.statusBar().showMessage(
+            f"Added {added_count} track(s) to {playlist.name}"
+            + (
+                f"; skipped {skipped_count} already in playlist"
+                if skipped_count
+                else ""
+            )
+        )
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Some tracks were not added",
+                "\n".join(errors),
+            )
+
+    def _cancel_add_tracks_mode(self) -> None:
+        playlist_id = self._add_tracks_target_playlist_id
+        self._clear_add_tracks_mode_state()
+
+        if playlist_id is not None and self.store.get_playlist(playlist_id):
+            self.selected_playlist_id = playlist_id
+            self._load_playlists()
+            return
+
+        self.selected_playlist_id = None
+        self._load_playlists()
+        self._show_main_library()
+
+    def _clear_add_tracks_mode_state(self) -> None:
+        self._add_tracks_mode = False
+        self._add_tracks_target_playlist_id = None
+        self._add_tracks_selected_ids.clear()
+
     def _load_playlists(self) -> None:
         playlists = self.playlist_management_service.list_playlists()
         selected_playlist_id = self.selected_playlist_id
@@ -3804,6 +4054,9 @@ class MainWindow(QMainWindow):
         carousel selection in sync.
         """
 
+        if self._add_tracks_mode:
+            self._clear_add_tracks_mode_state()
+
         for index in range(self.playlist_list.count()):
             item = self.playlist_list.item(index)
             if item.data(Qt.ItemDataRole.UserRole) == playlist_id:
@@ -3915,6 +4168,9 @@ class MainWindow(QMainWindow):
         self._load_playlists()
 
     def _handle_playlist_selection(self) -> None:
+        if self._add_tracks_mode:
+            self._clear_add_tracks_mode_state()
+
         selected_items = self.playlist_list.selectedItems()
 
         if not selected_items:
@@ -4334,6 +4590,36 @@ class MainWindow(QMainWindow):
 
         self.track_table.selectRow(row_index)
         self._play_track_now(track_id)
+
+    def _handle_track_row_clicked(self, row_index: int) -> None:
+        """Toggle track selection when the add-to-playlist mode is active."""
+
+        if not self._add_tracks_mode:
+            return
+        if row_index < 0 or row_index >= self.track_table.rowCount():
+            return
+
+        title_item = self.track_table.item(row_index, 0)
+        if title_item is None:
+            return
+        track_id = title_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(track_id, str):
+            return
+
+        checkbox_container = self.track_table.cellWidget(row_index, 1)
+        checkbox = (
+            checkbox_container.findChild(QCheckBox)
+            if checkbox_container is not None
+            else None
+        )
+        if checkbox is not None:
+            checkbox.setChecked(not checkbox.isChecked())
+            return
+
+        self._set_add_track_selected(
+            track_id,
+            track_id not in self._add_tracks_selected_ids,
+        )
 
     def _toggle_playback(self) -> None:
         state = self.media_player.playbackState()
@@ -5791,6 +6077,175 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(watched, event)
 
+    @staticmethod
+    def _read_setting_string(
+        settings: QSettings,
+        key: str,
+    ) -> str:
+        value = settings.value(key, "")
+        return value.strip() if isinstance(value, str) else ""
+
+    @staticmethod
+    def _read_setting_string_list(
+        settings: QSettings,
+        key: str,
+    ) -> tuple[str, ...]:
+        value = settings.value(key, [])
+        if isinstance(value, str):
+            values = (value,)
+        elif isinstance(value, (list, tuple)):
+            values = tuple(str(item) for item in value)
+        else:
+            values = ()
+
+        return tuple(item.strip() for item in values if item.strip())
+
+    def _save_playback_state(self) -> None:
+        """Persist the current player and queue snapshot for the next launch."""
+
+        settings = self._playback_state_settings
+        queue = self.playback_queue_service.queue
+        last_track_id = self.current_track_id
+        if last_track_id is None and queue is not None:
+            last_track_id = queue.current_track_id
+        if last_track_id:
+            settings.setValue("playback/last_track_id", last_track_id)
+
+        settings.setValue("playback/repeat_mode", self._repeat_mode.value)
+        settings.setValue("playback/queue_active", queue is not None)
+        if queue is not None:
+            settings.setValue(
+                "playback/queue/current_track_id",
+                queue.current_track_id or "",
+            )
+            settings.setValue(
+                "playback/queue/remaining_track_ids",
+                list(queue.remaining_track_ids),
+            )
+            settings.setValue(
+                "playback/queue/queued_track_ids",
+                list(queue.queued_track_ids),
+            )
+            settings.setValue("playback/queue/mode", queue.mode.value)
+            settings.setValue(
+                "playback/queue/source_playlist_id",
+                queue.source_playlist_id or "",
+            )
+
+        settings.sync()
+
+    def _track_has_local_audio(self, track_id: str) -> bool:
+        track = self.store.get_track(track_id)
+        return bool(
+            track is not None
+            and track.local_path
+            and Path(track.local_path).is_file()
+        )
+
+    def _apply_restored_queue_mode(self, mode: QueueMode) -> None:
+        self.session_mood_name = None
+        self.selected_mood_name = None
+        self._track_radio_enabled = mode == QueueMode.RECOMMENDATIONS
+        self._radio_anchor_track_id = (
+            self.playback_queue_service.queue.current_track_id
+            if self._track_radio_enabled
+            and self.playback_queue_service.queue is not None
+            else None
+        )
+        self._radio_impression_session_id = (
+            f"radio-resume-{uuid4().hex}"
+            if self._track_radio_enabled
+            else None
+        )
+        self._radio_impression_position = 0
+        self._playback_mode = (
+            mode if mode in LIBRARY_PLAYBACK_MODES else QueueMode.NORMAL
+        )
+        self._update_playback_mode_controls()
+
+    def _restore_playback_state(self) -> None:
+        """Resume the last queue after the library is available."""
+
+        settings = self._playback_state_settings
+        repeat_value = self._read_setting_string(
+            settings,
+            "playback/repeat_mode",
+        )
+        try:
+            self._repeat_mode = RepeatMode(repeat_value)
+        except ValueError:
+            self._repeat_mode = RepeatMode.OFF
+        self.playback_queue_service.set_repeat_mode(self._repeat_mode)
+
+        queue_active = bool(
+            settings.value("playback/queue_active", False, type=bool)
+        )
+        current_track_id = self._read_setting_string(
+            settings,
+            "playback/queue/current_track_id",
+        ) or None
+        if current_track_id is not None and not self._track_has_local_audio(
+            current_track_id
+        ):
+            current_track_id = None
+
+        mode_value = self._read_setting_string(
+            settings,
+            "playback/queue/mode",
+        )
+        try:
+            queue_mode = QueueMode(mode_value)
+        except ValueError:
+            queue_mode = QueueMode.NORMAL
+
+        if queue_active:
+            try:
+                queue = self.playback_queue_service.restore(
+                    current_track_id,
+                    self._read_setting_string_list(
+                        settings,
+                        "playback/queue/remaining_track_ids",
+                    ),
+                    self._read_setting_string_list(
+                        settings,
+                        "playback/queue/queued_track_ids",
+                    ),
+                    mode=queue_mode,
+                    source_playlist_id=(
+                        self._read_setting_string(
+                            settings,
+                            "playback/queue/source_playlist_id",
+                        )
+                        or None
+                    ),
+                )
+            except ValueError:
+                queue = None
+            if queue is not None:
+                self._apply_restored_queue_mode(queue.mode)
+                self._load_queue()
+                if queue.current_track_id is not None:
+                    self._play_track(
+                        queue.current_track_id,
+                        autoplay=False,
+                    )
+                return
+
+        last_track_id = self._read_setting_string(
+            settings,
+            "playback/last_track_id",
+        )
+        if not last_track_id or not self._track_has_local_audio(last_track_id):
+            return
+
+        self._apply_restored_queue_mode(QueueMode.NORMAL)
+        self.playback_queue_service.start(
+            (last_track_id,),
+            mode=QueueMode.NORMAL,
+        )
+        self._load_queue()
+        self._play_track(last_track_id, autoplay=False)
+
     def closeEvent(self, event: object) -> None:
         """Stop loader work before the main process is allowed to exit."""
 
@@ -5843,6 +6298,7 @@ class MainWindow(QMainWindow):
         self._recommendation_pool.waitForDone(3_000)
         self._mood_recommendation_pool.waitForDone(3_000)
         self._radio_recommendation_pool.waitForDone(3_000)
+        self._save_playback_state()
         self.media_player.stop()
         super().closeEvent(event)
 
@@ -7303,7 +7759,7 @@ class MainWindow(QMainWindow):
 
             self.track_table.setItem(
                 row_index,
-                4,
+                7,
                 QTableWidgetItem(status),
             )
             return
@@ -7604,6 +8060,7 @@ class MainWindow(QMainWindow):
         if self.current_track_id == track.id:
             self.current_track_id = None
             self.playback_queue_service.clear()
+            self._playback_state_settings.remove("playback/last_track_id")
         self._load_queue()
         self._load_recommendations()
         self.statusBar().showMessage(
@@ -7735,7 +8192,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Finding the next recommendation…")
         QTimer.singleShot(250, self._wait_for_radio_track)
 
-    def _play_track(self, track_id: str) -> bool:
+    def _play_track(
+        self,
+        track_id: str,
+        *,
+        autoplay: bool = True,
+    ) -> bool:
         track = self.store.get_track(track_id)
 
         if track is None or not track.local_path:
@@ -7763,8 +8225,13 @@ class MainWindow(QMainWindow):
         self._current_track_listen_recorded = False
         self._current_track_early_exit_recorded = False
         self.media_player.setSource(source_url)
-        self.media_player.play()
+        if autoplay:
+            self.media_player.play()
         self.current_track_id = track.id
+        self._playback_state_settings.setValue(
+            "playback/last_track_id",
+            track.id,
+        )
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id = None
         self.player_title_label.setText(track.title)
@@ -7779,13 +8246,15 @@ class MainWindow(QMainWindow):
         )
         self._update_like_button()
 
-        self._record_playback_signal(InteractionType.PLAY_START)
+        if autoplay:
+            self._record_playback_signal(InteractionType.PLAY_START)
 
         self._load_history()
         self._load_queue()
         self._load_recommendations()
         self.statusBar().showMessage(
-            f"Playing: {track.artist} — {track.title}"
+            f"{'Playing' if autoplay else 'Paused'}: "
+            f"{track.artist} — {track.title}"
         )
         return True
 
@@ -8074,6 +8543,7 @@ class MainWindow(QMainWindow):
     def _restart_application(self) -> None:
         """Restart this process so edited Python modules are re-imported."""
 
+        self._save_playback_state()
         if getattr(sys, "frozen", False):
             os.execv(sys.executable, [sys.executable])
             return

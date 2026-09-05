@@ -288,6 +288,24 @@ QWidget#trackRowCell[rowState="hover"] {
 QWidget#trackRowCell[rowState="selected"] {
     background-color: #303334;
 }
+QCheckBox#playlistTrackCheck {
+    spacing: 0;
+}
+QCheckBox#playlistTrackCheck::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #697A75;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 8);
+}
+QCheckBox#playlistTrackCheck::indicator:hover {
+    border-color: #9BE8CB;
+    background-color: rgba(93, 216, 183, 22);
+}
+QCheckBox#playlistTrackCheck::indicator:checked {
+    border-color: #5DD8B7;
+    background-color: #5DD8B7;
+}
 QToolButton#playlistRemoveButton {
     background: transparent;
     border: none;

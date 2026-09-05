@@ -123,8 +123,10 @@ def main() -> None:
     window.show()
     _apply_windows_taskbar_icon(window)
     if demo_track is not None:
+        # Bootstrap the bundled example once.  The analysis writes its
+        # embedding, genres, and mood back to the track record; subsequent
+        # launches skip it because the embedding is already present.
         window._enqueue_genre_analysis(demo_track)
-
     sys.exit(qt_application.exec())
 
 
@@ -212,7 +214,11 @@ def _ensure_demo_track(
         DEMO_TRACK_SOURCE_ID,
     )
     if existing_track is not None:
-        return None
+        return (
+            existing_track
+            if existing_track.track_embedding is None
+            else None
+        )
 
     if BUNDLED_DATA_DIR is not None:
         demo_track_path = BUNDLED_DATA_DIR / "demo" / DEMO_TRACK_FILENAME
@@ -227,13 +233,14 @@ def _ensure_demo_track(
     if not demo_track_path.is_file():
         return None
 
-    return ingestion_service.ingest(
+    track = ingestion_service.ingest(
         demo_track_path,
         title="Never Gonna Give You Up",
         artist="Rick Astley",
         source=DEMO_TRACK_SOURCE,
         source_id=DEMO_TRACK_SOURCE_ID,
     )
+    return track if track.track_embedding is None else None
 
 
 def _apply_windows_taskbar_icon(window: MainWindow) -> None:

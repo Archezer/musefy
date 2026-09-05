@@ -437,12 +437,18 @@ class HoverTableWidget(QTableWidget):
     """QTableWidget that exposes the full row under the mouse pointer."""
 
     row_hovered = Signal(int)
+    row_clicked = Signal(int)
     row_double_clicked = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._row_widgets: dict[QWidget, int] = {}
         self._hovered_row = -1
+        self._pending_click_row: int | None = None
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(220)
+        self._click_timer.timeout.connect(self._emit_pending_row_click)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
         self.viewport().installEventFilter(self)
@@ -489,7 +495,14 @@ class HoverTableWidget(QTableWidget):
                 self._publish_row_hover(
                     self.rowAt(int(event.position().y()))
                 )
+            elif event_type == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._queue_row_click(
+                        self.rowAt(int(event.position().y()))
+                    )
             elif event_type == QEvent.Type.MouseButtonDblClick:
+                self._click_timer.stop()
+                self._pending_click_row = None
                 row_index = self.rowAt(int(event.position().y()))
                 if row_index >= 0:
                     self.row_double_clicked.emit(row_index)
@@ -498,7 +511,20 @@ class HoverTableWidget(QTableWidget):
                 self._publish_row_hover(-1)
         elif watched in self._row_widgets:
             event_type = event.type()
-            if event_type == QEvent.Type.MouseButtonDblClick:
+            object_name = getattr(watched, "objectName", lambda: "")()
+            if event_type == QEvent.Type.MouseButtonPress:
+                if (
+                    event.button() == Qt.MouseButton.LeftButton
+                    and object_name
+                    not in {
+                        "playlistTrackCheck",
+                        "playlistRemoveButton",
+                    }
+                ):
+                    self._queue_row_click(self._row_widgets[watched])
+            elif event_type == QEvent.Type.MouseButtonDblClick:
+                self._click_timer.stop()
+                self._pending_click_row = None
                 self.row_double_clicked.emit(self._row_widgets[watched])
                 return True
             if event_type in (
@@ -512,6 +538,18 @@ class HoverTableWidget(QTableWidget):
                     self._publish_row_hover(-1)
 
         return super().eventFilter(watched, event)
+
+    def _queue_row_click(self, row_index: int) -> None:
+        if row_index < 0:
+            return
+        self._pending_click_row = row_index
+        self._click_timer.start()
+
+    def _emit_pending_row_click(self) -> None:
+        row_index = self._pending_click_row
+        self._pending_click_row = None
+        if row_index is not None:
+            self.row_clicked.emit(row_index)
 
     def _publish_row_hover(self, row_index: int) -> None:
         if row_index == self._hovered_row:
@@ -890,8 +928,8 @@ def svg_icon(svg: str, size: int = 18) -> QIcon:
 class LibraryHeaderView(QHeaderView):
     """Header whose active sort chevron sits above the column label."""
 
-    _SORTABLE_COLUMNS = frozenset({1, 2, 3, 4})
-    _CENTERED_COLUMNS = frozenset({2, 3, 4})
+    _SORTABLE_COLUMNS = frozenset({2, 3, 4, 5})
+    _CENTERED_COLUMNS = frozenset({3, 4, 5})
 
     def __init__(
         self,
@@ -936,7 +974,7 @@ class LibraryHeaderView(QHeaderView):
         # section instead of being pushed to the far right.
         metrics = QFontMetrics(self.font())
         label_width = metrics.horizontalAdvance(label)
-        if logicalIndex == 1:
+        if logicalIndex == 2:
             center_x = rect.center().x()
             top = rect.center().y() - 1.5
         elif logicalIndex in self._CENTERED_COLUMNS:
@@ -1247,6 +1285,20 @@ class _PlaylistHoverMixin:
 
 
 _PLAYLIST_ARTWORK_RANDOM = SystemRandom()
+_PLAYLIST_ARTWORK_PALETTES = (
+    # Cool aurora and ocean families.
+    ("#55F6C4", "#39D8D0", "#438BFF", "#765CFF", "#EF8DFF"),
+    ("#A0F7B8", "#35D5C0", "#4C9CFF", "#8B63FF", "#F58BE8"),
+    ("#55E7B2", "#26C8E8", "#5577FF", "#A05BFF", "#F68CDB"),
+    ("#7FF0C0", "#41D4CF", "#4380F0", "#805BFF", "#ECA0FF"),
+    ("#B4F0FF", "#5ED9E9", "#4F9EFF", "#7A73F0", "#C18BFF"),
+    # Warm sunset, citrus, and berry families.
+    ("#FFE38A", "#FFB36B", "#FF7C7C", "#E667B7", "#9E70FF"),
+    ("#FFF275", "#FFD166", "#FF975E", "#F2647F", "#C457C9"),
+    ("#F4F77A", "#BCE86B", "#61D99B", "#35C8C9", "#5B8DFF"),
+    ("#FFB6E1", "#F783AC", "#C56CCF", "#8468E6", "#5DA9FF"),
+    ("#FFB38A", "#F47A61", "#D95776", "#A54FB7", "#665AD9"),
+)
 
 
 class SvgArtworkWidget(QWidget):
@@ -1269,92 +1321,33 @@ class SvgArtworkWidget(QWidget):
 
 
 def _random_playlist_artwork_svg() -> str:
-    """Build a fresh green-to-purple liquid graph artwork for one card."""
+    """Build a fresh graph artwork with a varied color family."""
 
     rng = _PLAYLIST_ARTWORK_RANDOM
-    palettes = (
-        ("#55F6C4", "#39D8D0", "#438BFF", "#765CFF", "#EF8DFF"),
-        ("#A0F7B8", "#35D5C0", "#4C9CFF", "#8B63FF", "#F58BE8"),
-        ("#55E7B2", "#26C8E8", "#5577FF", "#A05BFF", "#F68CDB"),
-        ("#7FF0C0", "#41D4CF", "#4380F0", "#805BFF", "#ECA0FF"),
-    )
-    spectrum = rng.choice(palettes)
+    spectrum = rng.choice(_PLAYLIST_ARTWORK_PALETTES)
     range_start = rng.randrange(len(spectrum) - 2)
     local_range = spectrum[range_start:range_start + 3]
-    first_color, middle_color, last_color = local_range
     dark_a, dark_b = rng.choice(
         (
-            ("#071C20", "#15112D"),
-            ("#081A25", "#1B102C"),
-            ("#101B24", "#1D1028"),
-            ("#081F1D", "#190F2B"),
+            ("#0B2428", "#1A1632"),
+            ("#0C2230", "#201735"),
+            ("#17242E", "#221A34"),
+            ("#0B2926", "#1D1732"),
         )
     )
 
-    gradient_id = f"liquid-{rng.randrange(1_000_000)}"
+    clip_id = f"artwork-clip-{rng.randrange(1_000_000)}"
     background_id = f"background-{rng.randrange(1_000_000)}"
-    glow_ids = [f"glow-{rng.randrange(1_000_000)}" for _ in range(4)]
 
     background_angle = rng.randrange(0, 360)
-    liquid_angle = rng.randrange(0, 360)
     background = f"""
     <linearGradient id="{background_id}" x1="0" y1="0" x2="1" y2="1"
                     gradientTransform="rotate({background_angle} .5 .5)">
       <stop stop-color="{dark_a}"/>
-      <stop offset=".48" stop-color="#102B38"/>
+      <stop offset=".48" stop-color="#153A44"/>
       <stop offset="1" stop-color="{dark_b}"/>
     </linearGradient>
-    <linearGradient id="{gradient_id}" x1="0" y1="0" x2="1" y2="1"
-                    gradientTransform="rotate({liquid_angle} .5 .5)">
-      <stop stop-color="{first_color}"/>
-      <stop offset=".46" stop-color="{middle_color}"/>
-      <stop offset="1" stop-color="{last_color}"/>
-    </linearGradient>
     """
-
-    glow_colors = (
-        first_color,
-        middle_color,
-        last_color,
-        rng.choice(local_range),
-    )
-    glow_defs: list[str] = []
-    glow_shapes: list[str] = []
-    for glow_id, color in zip(glow_ids, glow_colors):
-        cx = rng.randrange(18, 168)
-        cy = rng.randrange(16, 86)
-        radius = rng.randrange(28, 66)
-        glow_defs.append(
-            f"""
-            <radialGradient id="{glow_id}" cx="{cx}" cy="{cy}" r="{radius}"
-                            gradientUnits="userSpaceOnUse">
-              <stop stop-color="{color}" stop-opacity=".{rng.randrange(22, 48)}"/>
-              <stop offset=".58" stop-color="{color}" stop-opacity=".{rng.randrange(7, 20)}"/>
-              <stop offset="1" stop-color="{color}" stop-opacity="0"/>
-            </radialGradient>
-            """
-        )
-        glow_shapes.append(
-            f'<ellipse cx="{cx}" cy="{cy}" rx="{radius * 1.35:.1f}" '
-            f'ry="{radius * .82:.1f}" fill="url(#{glow_id})"/>'
-        )
-
-    top = rng.randrange(12, 28)
-    left = rng.randrange(8, 20)
-    right = rng.randrange(164, 178)
-    bottom = rng.randrange(76, 94)
-    blob_path = (
-        f"M {left} {rng.randrange(48, 64)} "
-        f"C {rng.randrange(12, 32)} {rng.randrange(22, 44)}, "
-        f"{rng.randrange(40, 66)} {top}, {rng.randrange(65, 86)} {top + 6} "
-        f"C {rng.randrange(98, 125)} {rng.randrange(6, 20)}, "
-        f"{rng.randrange(140, 164)} {rng.randrange(16, 30)}, {right} {rng.randrange(34, 56)} "
-        f"C {rng.randrange(174, 184)} {rng.randrange(58, 72)}, "
-        f"{rng.randrange(142, 170)} {bottom}, {rng.randrange(112, 138)} {bottom - 2} "
-        f"C {rng.randrange(92, 110)} {rng.randrange(88, 98)}, "
-        f"{rng.randrange(66, 88)} {rng.randrange(68, 82)}, {rng.randrange(42, 64)} {rng.randrange(72, 84)} "
-        f"C {rng.randrange(24, 42)} {rng.randrange(84, 96)}, {left} {rng.randrange(70, 86)}, {left} {rng.randrange(48, 64)} Z"
-    )
 
     nodes = [
         (
@@ -1393,16 +1386,12 @@ def _random_playlist_artwork_svg() -> str:
     <svg viewBox="0 0 184 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <defs>
         {background}
-        {''.join(glow_defs)}
-        <clipPath id="cover-clip-{gradient_id}">
+        <clipPath id="{clip_id}">
           <rect width="184" height="100" rx="17"/>
         </clipPath>
       </defs>
       <rect width="184" height="100" rx="17" fill="url(#{background_id})"/>
-      <g clip-path="url(#cover-clip-{gradient_id})">
-        {''.join(glow_shapes)}
-        <path d="{blob_path}" fill="url(#{gradient_id})" fill-opacity=".86"/>
-        <path d="{blob_path}" fill="none" stroke="#DFFFF5" stroke-opacity=".16" stroke-width="1.2"/>
+      <g clip-path="url(#{clip_id})">
         <path d="M 8 28 C 48 4 91 18 125 9 C 151 3 171 14 184 28"
               stroke="#DFFFF5" stroke-opacity=".13" stroke-width="1.4"/>
         <g>{edges}{node_marks}</g>
