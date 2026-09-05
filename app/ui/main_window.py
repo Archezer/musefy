@@ -435,6 +435,13 @@ class MainWindow(QMainWindow):
             )
         )
         self._playback_state_settings = QSettings("Musefy", "Musefy")
+        self._music_map_background_enabled = bool(
+            self._playback_state_settings.value(
+                "appearance/music_map_background",
+                True,
+                type=bool,
+            )
+        )
         self._genre_analysis_service = (
             GenreAnalysisService(
                 top_k=10,
@@ -982,6 +989,16 @@ class MainWindow(QMainWindow):
         self.liquid_glass_action.toggled.connect(
             self._set_liquid_glass_enabled
         )
+        self.music_map_background_action = playlist_menu.addAction(
+            "Music graph background",
+        )
+        self.music_map_background_action.setCheckable(True)
+        self.music_map_background_action.setChecked(
+            self._music_map_background_enabled
+        )
+        self.music_map_background_action.toggled.connect(
+            self._set_music_map_background_enabled
+        )
         playlist_menu.addSeparator()
         playlist_menu.addAction(
             "Spotify settings",
@@ -1187,7 +1204,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(app_root)
         self.statusBar().showMessage("Ready")
         self.statusBar().hide()
-        self._set_music_map_mode("background", animated=False)
+        self._set_music_map_mode(
+            "background"
+            if self._music_map_background_enabled
+            else "hidden",
+            animated=False,
+        )
 
     def _build_player_bar(self) -> QFrame:
         player_bar = QFrame()
@@ -1771,6 +1793,24 @@ class MainWindow(QMainWindow):
             self._ensure_music_map_ready()
 
         self._music_map_mode = mode
+        self._music_map_background_enabled = mode != "hidden"
+        self._playback_state_settings.setValue(
+            "appearance/music_map_background",
+            self._music_map_background_enabled,
+        )
+        music_map_action = getattr(
+            self,
+            "music_map_background_action",
+            None,
+        )
+        if music_map_action is not None:
+            signals_blocked = music_map_action.blockSignals(True)
+            try:
+                music_map_action.setChecked(
+                    self._music_map_background_enabled
+                )
+            finally:
+                music_map_action.blockSignals(signals_blocked)
         self.music_map.set_mode(mode)
         if (
             mode == "background"
@@ -1855,6 +1895,18 @@ class MainWindow(QMainWindow):
         self._set_music_map_mode(
             next_mode
         )
+
+    def _set_music_map_background_enabled(self, enabled: bool) -> None:
+        """Show or hide the music graph behind the main library."""
+        target_mode = "background" if enabled else "hidden"
+        if self._music_map_mode != target_mode:
+            self._set_music_map_mode(target_mode)
+        else:
+            self._music_map_background_enabled = bool(enabled)
+            self._playback_state_settings.setValue(
+                "appearance/music_map_background",
+                self._music_map_background_enabled,
+            )
 
     def _refresh_music_map(
         self,
