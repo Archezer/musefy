@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -80,6 +81,7 @@ from app.ml.genre_analysis import (
 from app.ml.maest import (
     GenrePrediction,
 )
+from app.recommenders.radio import build_radio_sequence
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
 from app.services.interactions import InteractionService
@@ -154,6 +156,7 @@ from app.ui.components import (
     STATISTICS_ICON,
     VOLUME_ICON,
     YOUTUBE_ICON,
+    ClickableMarqueeLabel,
     CreatePlaylistCard,
     FadingVolumeSlider,
     HoverCircleMenuButton,
@@ -161,7 +164,6 @@ from app.ui.components import (
     LibraryHeaderView,
     LiquidGlassPanel,
     MainLibraryCard,
-    MarqueeLabel,
     MoodPlaylistCard,
     PlaylistCard,
     QueueDialog,
@@ -287,8 +289,12 @@ class MainWindow(QMainWindow):
         self._library_health_thread: LibraryHealthTaskThread | None = None
         self._recommendation_task: RecommendationTask | None = None
         self._recommendation_generation = 0
+        self._recommendation_impression_session_id: str | None = None
+        self._recommendation_impression_position = 0
         self._mood_session_task: RecommendationTask | None = None
         self._mood_session_generation = 0
+        self._mood_session_impression_session_id: str | None = None
+        self._mood_session_impression_position = 0
         self._mood_session_result_generation: int | None = None
         self._mood_session_pending_name: str | None = None
         self._mood_refill_task: RecommendationTask | None = None
@@ -297,6 +303,8 @@ class MainWindow(QMainWindow):
         self._radio_recommendation_task: RecommendationTask | None = None
         self._radio_recommendation_generation = 0
         self._radio_recommendation_inflight = False
+        self._radio_impression_session_id: str | None = None
+        self._radio_impression_position = 0
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id: str | None = None
         self._queue_render_generation = 0
@@ -318,6 +326,7 @@ class MainWindow(QMainWindow):
         self._liquid_glass_enabled = True
         self._playback_mode = QueueMode.NORMAL
         self._track_radio_enabled = False
+        self._radio_anchor_track_id: str | None = None
         self._repeat_mode = RepeatMode.OFF
         self._player_duration_ms = 0
         self._volume_settings = QSettings("Musefy", "Musefy")
@@ -735,18 +744,6 @@ class MainWindow(QMainWindow):
         )
         playlist_menu = QMenu(playlist_menu_button)
         playlist_menu.addAction("New playlist", self._create_playlist)
-        playlist_menu.addAction("Rename playlist", self._rename_playlist)
-        playlist_menu.addAction("Change artwork", self._set_playlist_cover)
-        playlist_menu.addAction("Delete playlist", self._delete_playlist)
-        playlist_menu.addSeparator()
-        playlist_menu.addAction(
-            "Add selected track",
-            self._add_selected_track_to_playlist,
-        )
-        playlist_menu.addAction(
-            "Remove selected playlist track",
-            self._remove_selected_playlist_track,
-        )
         playlist_menu.addSeparator()
         master_volume_menu = playlist_menu.addMenu("Master volume")
         master_volume_widget = QWidget(master_volume_menu)
@@ -999,28 +996,42 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(10)
 
+        left_panel = QWidget(player_bar)
+        left_layout = QHBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
         self.player_cover = QLabel("♫")
         self.player_cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.player_cover.setFixedSize(38, 38)
         self.player_cover.setStyleSheet(
             "background: #2A2A2D; border-radius: 10px; color: #D8D8D8;"
         )
-        layout.addWidget(self.player_cover)
+        left_layout.addWidget(self.player_cover)
 
         metadata_layout = QVBoxLayout()
         metadata_layout.setContentsMargins(0, 2, 0, 0)
         metadata_layout.setSpacing(0)
-        self.player_title_label = MarqueeLabel("Nothing playing")
+        self.player_title_label = ClickableMarqueeLabel("Nothing playing")
         self.player_title_label.setObjectName("playerTitle")
+        self.player_title_label.setToolTip("Track actions")
+        self.player_title_label.clicked.connect(
+            self._show_current_track_action_menu
+        )
         self.player_title_label.setFixedHeight(18)
         self.player_artist_label = QLabel("Choose a track or playlist")
         self.player_artist_label.setObjectName("playerArtist")
         self.player_artist_label.setFixedHeight(14)
         metadata_layout.addWidget(self.player_title_label)
         metadata_layout.addWidget(self.player_artist_label)
-        layout.addLayout(metadata_layout, 2)
+        left_layout.addLayout(metadata_layout, 1)
+        left_panel.setMinimumWidth(220)
+        layout.addWidget(left_panel, 1, Qt.AlignmentFlag.AlignVCenter)
 
-        center_layout = QVBoxLayout()
+        center_panel = QWidget(player_bar)
+        center_panel.setMinimumWidth(320)
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(1)
         control_layout = QHBoxLayout()
         control_layout.setSpacing(4)
@@ -1119,21 +1130,13 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.player_progress_slider, 1)
         progress_layout.addWidget(self.player_duration_label)
         center_layout.addLayout(progress_layout)
-        layout.addLayout(center_layout, 5)
+        layout.addWidget(center_panel, 3, Qt.AlignmentFlag.AlignVCenter)
 
-        next_track_layout = QVBoxLayout()
-        next_track_layout.setContentsMargins(0, 4, 0, 0)
-        next_track_layout.setSpacing(0)
-        next_caption = QLabel("Next")
-        next_caption.setObjectName("nextTrackCaption")
-        self.next_track_title_label = MarqueeLabel("Nothing next")
-        self.next_track_title_label.setObjectName("nextTrackTitle")
-        self.next_track_artist_label = QLabel("")
-        self.next_track_artist_label.setObjectName("nextTrackArtist")
-        next_track_layout.addWidget(next_caption)
-        next_track_layout.addWidget(self.next_track_title_label)
-        next_track_layout.addWidget(self.next_track_artist_label)
-        layout.addLayout(next_track_layout, 1)
+        right_panel = QWidget(player_bar)
+        right_layout = QHBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_layout.addStretch()
 
         self.like_button = SvgIconButton(
             HEART_ICON,
@@ -1143,7 +1146,7 @@ class MainWindow(QMainWindow):
             parent=player_bar,
         )
         self.like_button.clicked.connect(self._toggle_like_current_track)
-        layout.addWidget(self.like_button)
+        right_layout.addWidget(self.like_button)
 
         player_menu_button = HoverCircleMenuButton(parent=player_bar)
         player_menu_button.setObjectName("plainActionButton")
@@ -1183,9 +1186,8 @@ class MainWindow(QMainWindow):
             self._set_track_radio_enabled
         )
         player_menu.addAction("Stop playback", self._stop_playback)
-        player_menu.addAction("Save current track", self._save_current_track)
         player_menu_button.setMenu(player_menu)
-        layout.addWidget(player_menu_button)
+        right_layout.addWidget(player_menu_button)
 
         volume_button = SvgIconButton(
             VOLUME_ICON,
@@ -1195,7 +1197,7 @@ class MainWindow(QMainWindow):
             parent=player_bar,
         )
         volume_button.setEnabled(False)
-        layout.addWidget(volume_button)
+        right_layout.addWidget(volume_button)
 
         self.volume_slider = FadingVolumeSlider()
         self.volume_slider.setObjectName("volumeSlider")
@@ -1203,7 +1205,9 @@ class MainWindow(QMainWindow):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(DEFAULT_VOLUME_PERCENT)
         self.volume_slider.valueChanged.connect(self._handle_volume_changed)
-        layout.addWidget(self.volume_slider)
+        right_layout.addWidget(self.volume_slider)
+        right_panel.setMinimumWidth(220)
+        layout.addWidget(right_panel, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self._update_playback_mode_controls()
         self._update_like_button()
@@ -1847,6 +1851,15 @@ class MainWindow(QMainWindow):
         self.track_table.horizontalHeader().viewport().update()
         self._render_visible_tracks(self.library_title_label.text())
 
+    def _reset_library_sort(self) -> None:
+        """Clear the active table sort when changing the track scope."""
+
+        self._library_sort_column = None
+        self._library_sort_descending = False
+        header = self.track_table.horizontalHeader()
+        header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        header.viewport().update()
+
     def _sort_tracks(self, tracks: list[Track]) -> list[Track]:
         if self._library_sort_column is None:
             return list(tracks)
@@ -1949,6 +1962,8 @@ class MainWindow(QMainWindow):
             self._track_batch_task = None
 
     def _show_main_library(self) -> None:
+        if self.selected_playlist_id is not None:
+            self._reset_library_sort()
         self.selected_playlist_id = None
         self.playlist_list.blockSignals(True)
         self.playlist_list.clearSelection()
@@ -2259,6 +2274,10 @@ class MainWindow(QMainWindow):
 
         self._recommendation_generation += 1
         generation = self._recommendation_generation
+        self._recommendation_impression_session_id = (
+            f"sidebar-{generation}-{uuid4().hex}"
+        )
+        self._recommendation_impression_position = 0
         if self._recommendation_task is not None:
             self._recommendation_task.cancel()
 
@@ -2331,23 +2350,36 @@ class MainWindow(QMainWindow):
             self.recommendation_list.addItem(text)
             shown_recommendations.append(recommendation)
 
-        self._record_recommendation_impressions(shown_recommendations)
+        if self._record_recommendation_impressions(
+            shown_recommendations,
+            session_id=self._recommendation_impression_session_id,
+            position_offset=self._recommendation_impression_position,
+        ):
+            self._recommendation_impression_position += len(
+                shown_recommendations
+            )
 
     def _record_recommendation_impressions(
         self,
         recommendations: list[Recommendation] | tuple[Recommendation, ...],
-    ) -> None:
+        *,
+        session_id: str | None = None,
+        position_offset: int = 0,
+    ) -> bool:
         if not recommendations:
-            return
+            return False
         try:
             self.recommendation_analytics_service.record_impressions(
                 self.user_id,
                 recommendations,
+                session_id=session_id,
+                position_offset=position_offset,
             )
         except (OSError, RuntimeError, ValueError):
             # Telemetry must never interrupt playback or a UI refresh if a
             # track disappears during a background operation.
-            return
+            return False
+        return True
 
     def _finish_recommendation_loading(self, generation: int) -> None:
         if generation != self._recommendation_generation:
@@ -2429,6 +2461,10 @@ class MainWindow(QMainWindow):
 
         self._mood_session_generation += 1
         generation = self._mood_session_generation
+        self._mood_session_impression_session_id = (
+            f"mood-{generation}-{uuid4().hex}"
+        )
+        self._mood_session_impression_position = 0
         self._mood_session_result_generation = None
         self._mood_session_pending_name = session_name
 
@@ -2503,13 +2539,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._record_recommendation_impressions(
-            tuple(
-                recommendation
-                for recommendation in recommendations
-                if recommendation.track.id in track_ids
-            )
+        shown_recommendations = tuple(
+            recommendation
+            for recommendation in recommendations
+            if recommendation.track.id in track_ids
         )
+        if self._record_recommendation_impressions(
+            shown_recommendations,
+            session_id=self._mood_session_impression_session_id,
+            position_offset=self._mood_session_impression_position,
+        ):
+            self._mood_session_impression_position += len(
+                shown_recommendations
+            )
         self.selected_mood_name = (
             None
             if session_name == MY_WAVE_SESSION_NAME
@@ -2711,6 +2753,9 @@ class MainWindow(QMainWindow):
             return
 
         self._cancel_radio_recommendations()
+        self._radio_impression_session_id = None
+        self._radio_impression_position = 0
+        self._radio_anchor_track_id = None
         if self.selected_playlist_id is not None:
             self._start_playlist_queue(
                 shuffle=self._playback_mode == QueueMode.SHUFFLE,
@@ -2844,6 +2889,9 @@ class MainWindow(QMainWindow):
 
         self.session_mood_name = None
         self._track_radio_enabled = True
+        self._radio_anchor_track_id = track.id
+        self._radio_impression_session_id = f"radio-{uuid4().hex}"
+        self._radio_impression_position = 0
         self._update_playback_mode_controls()
         self._cancel_radio_recommendations()
         self.playback_queue_service.start(
@@ -2877,22 +2925,31 @@ class MainWindow(QMainWindow):
         if tracks_needed <= 0 or queue.current_track_id is None:
             return
 
-        seed_track_id = queue.current_track_id
+        anchor_track_id = (
+            self._radio_anchor_track_id
+            or queue.current_track_id
+        )
+        previous_track_id = queue.current_track_id
         self._radio_recommendation_generation += 1
         generation = self._radio_recommendation_generation
         task = RecommendationTask(
             lambda: self._get_radio_recommendations(
-                seed_track_id,
+                anchor_track_id,
+                previous_track_id=previous_track_id,
                 limit=max(RECOMMENDATION_QUEUE_SIZE, tracks_needed),
             ),
             generation,
             batch_size=5,
         )
         task.signals.batch_ready.connect(
-            lambda task_generation, batch, seed=seed_track_id: (
+            lambda task_generation,
+            batch,
+            anchor=anchor_track_id,
+            previous=previous_track_id: (
                 self._handle_radio_recommendation_batch(
                     task_generation,
-                    seed,
+                    anchor,
+                    previous,
                     batch,
                 )
             )
@@ -2910,7 +2967,8 @@ class MainWindow(QMainWindow):
     def _handle_radio_recommendation_batch(
         self,
         generation: int,
-        seed_track_id: str,
+        anchor_track_id: str,
+        previous_track_id: str | None,
         batch: object,
     ) -> None:
         if generation != self._radio_recommendation_generation:
@@ -2920,7 +2978,8 @@ class MainWindow(QMainWindow):
         if (
             queue is None
             or queue.mode != QueueMode.RECOMMENDATIONS
-            or queue.current_track_id != seed_track_id
+            or queue.current_track_id != previous_track_id
+            or self._radio_anchor_track_id != anchor_track_id
         ):
             return
 
@@ -2950,7 +3009,14 @@ class MainWindow(QMainWindow):
                 break
 
         if additions:
-            self._record_recommendation_impressions(shown_recommendations)
+            if self._record_recommendation_impressions(
+                shown_recommendations,
+                session_id=self._radio_impression_session_id,
+                position_offset=self._radio_impression_position,
+            ):
+                self._radio_impression_position += len(
+                    shown_recommendations
+                )
             self.playback_queue_service.append_remaining(additions)
             self._load_queue()
 
@@ -2986,45 +3052,54 @@ class MainWindow(QMainWindow):
 
     def _get_radio_recommendations(
         self,
-        seed_track_id: str,
+        anchor_track_id: str,
         *,
+        previous_track_id: str | None = None,
         limit: int,
     ) -> list[Recommendation]:
-        """Combine similar-track radio with popularity fallback."""
+        """Combine anchored radio with fallback and arrange the sequence."""
 
         recommendations = self._get_track_radio_recommendations(
-            seed_track_id,
+            anchor_track_id,
             limit=limit,
         )
 
-        if len(recommendations) >= limit:
-            return recommendations
+        if len(recommendations) < limit:
+            try:
+                fallback = self.recommendation_service.get_recommendations(
+                    user_id=self.user_id,
+                    limit=limit,
+                    context=RecommendationContext(),
+                )
+            except (RuntimeError, ValueError):
+                fallback = []
 
-        try:
-            fallback = self.recommendation_service.get_recommendations(
-                user_id=self.user_id,
-                limit=limit,
-                context=RecommendationContext(),
-            )
-        except (RuntimeError, ValueError):
-            fallback = []
+            seen_ids = {
+                recommendation.track.id
+                for recommendation in recommendations
+            }
+            for recommendation in fallback:
+                if recommendation.track.id in seen_ids:
+                    continue
+                seen_ids.add(recommendation.track.id)
+                recommendations.append(recommendation)
+                if len(recommendations) == limit:
+                    break
 
-        seen_ids = {
-            recommendation.track.id
-            for recommendation in recommendations
-        }
-        for recommendation in fallback:
-            if recommendation.track.id in seen_ids:
-                continue
-            seen_ids.add(recommendation.track.id)
-            recommendations.append(recommendation)
-            if len(recommendations) == limit:
-                break
-
-        # Keep the stream close to the seed track without making every
-        # transition deterministic or too narrowly matched.
-        random.shuffle(recommendations)
-        return recommendations
+        previous_track = (
+            self.store.get_track(previous_track_id)
+            if previous_track_id is not None
+            else None
+        )
+        return build_radio_sequence(
+            recommendations,
+            limit=limit,
+            initial_artist=(
+                previous_track.artist
+                if previous_track is not None
+                else None
+            ),
+        )
 
     def _get_track_radio_recommendations(
         self,
@@ -3122,7 +3197,14 @@ class MainWindow(QMainWindow):
             existing_ids.add(track.id)
             shown_recommendations.append(recommendation)
 
-        self._record_recommendation_impressions(shown_recommendations)
+        if self._record_recommendation_impressions(
+            shown_recommendations,
+            session_id=self._mood_session_impression_session_id,
+            position_offset=self._mood_session_impression_position,
+        ):
+            self._mood_session_impression_position += len(
+                shown_recommendations
+            )
 
     def _finish_mood_refill(self, generation: int) -> None:
         if generation != self._mood_refill_generation:
@@ -3174,21 +3256,6 @@ class MainWindow(QMainWindow):
         generation = self._queue_render_generation
         self._queue_render_track_ids = track_ids
         self._queue_render_index = 0
-
-        next_track = next(
-            (
-                track
-                for track_id in track_ids[:4]
-                if (track := self.store.get_track(track_id)) is not None
-            ),
-            None,
-        )
-        if next_track is not None:
-            self.next_track_title_label.setText(next_track.title)
-            self.next_track_artist_label.setText(next_track.artist)
-        else:
-            self.next_track_title_label.setText("Nothing next")
-            self.next_track_artist_label.setText("")
 
         if hasattr(self, "queue_count_label"):
             self.queue_count_label.setText(
@@ -3307,6 +3374,19 @@ class MainWindow(QMainWindow):
 
         menu = self._build_track_context_menu(self.current_track_id)
         menu.exec(self._player_bar.mapToGlobal(position))
+
+    def _show_current_track_action_menu(self) -> None:
+        """Open track actions when the playing title is clicked."""
+
+        if self.current_track_id is None:
+            return
+
+        menu = self._build_track_context_menu(self.current_track_id)
+        anchor = QPoint(
+            0,
+            self.player_title_label.height(),
+        )
+        menu.exec(self.player_title_label.mapToGlobal(anchor))
 
     def _build_track_context_menu(self, track_id: str) -> QMenu:
         menu = QMenu(self)
@@ -3742,6 +3822,8 @@ class MainWindow(QMainWindow):
         # A card can outlive a library refresh by one event loop turn.  Do not
         # silently swallow its click if the playlist is still in the store.
         if self.store.get_playlist(playlist_id) is not None:
+            if self.selected_playlist_id != playlist_id:
+                self._reset_library_sort()
             self.selected_playlist_id = playlist_id
             self._load_selected_playlist_tracks()
 
@@ -3846,6 +3928,8 @@ class MainWindow(QMainWindow):
         if not isinstance(playlist_id, str):
             return
 
+        if self.selected_playlist_id != playlist_id:
+            self._reset_library_sort()
         self.selected_playlist_id = playlist_id
         self._load_selected_playlist_tracks()
         self._populate_playlist_carousel(
@@ -4325,6 +4409,9 @@ class MainWindow(QMainWindow):
                 track_id=self.current_track_id,
                 interaction_type=interaction_type,
                 mood_context=self._get_active_mood_context(),
+                recommendation_session_id=(
+                    self._get_active_recommendation_session_id()
+                ),
             )
         except ValueError as error:
             # Telemetry must never interrupt playback or surface a modal.
@@ -4550,6 +4637,9 @@ class MainWindow(QMainWindow):
         dialog.watch_update_metadata_toggled.connect(
             self._set_watch_folder_metadata_updates
         )
+        dialog.compact_preferences_requested.connect(
+            lambda: self._compact_preference_history(dialog)
+        )
         self._show_auxiliary_dialog(dialog)
 
     def _choose_watch_folder(
@@ -4585,6 +4675,60 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Could not save watch-folder setting: {error}"
             )
+
+    def _compact_preference_history(
+        self,
+        dialog: LibraryMaintenanceDialog,
+    ) -> None:
+        try:
+            plan = self.interaction_service.preference_compaction_plan()
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(dialog, "Cleanup unavailable", str(error))
+            return
+
+        if plan.redundant_records == 0:
+            QMessageBox.information(
+                dialog,
+                "No duplicate preferences",
+                "There are no redundant like, save or dislike records.",
+            )
+            return
+
+        confirmation = QMessageBox.question(
+            dialog,
+            "Clean duplicate preferences",
+            (
+                f"Remove {plan.redundant_records} redundant preference "
+                f"record(s) across {plan.affected_tracks} track(s)?\n\n"
+                "The latest state for each track will remain. Playback "
+                "history, playlists and audio files will not change. "
+                "A backup is recommended first."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        dialog.compact_preferences_button.setEnabled(False)
+        try:
+            removed_count = self.interaction_service.compact_preference_history()
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(dialog, "Cleanup failed", str(error))
+            return
+        finally:
+            dialog.compact_preferences_button.setEnabled(True)
+
+        self._load_history()
+        self._load_recommendations()
+        self.statusBar().showMessage(
+            f"Removed {removed_count} duplicate preference record(s)"
+        )
+        QMessageBox.information(
+            dialog,
+            "Cleanup complete",
+            f"Removed {removed_count} duplicate preference record(s).",
+        )
 
     def _disable_watch_folder(
         self,
@@ -7158,6 +7302,23 @@ class MainWindow(QMainWindow):
                         for value in analysis_result.genre_result.track_embedding
                     ),
                     mood=analysis_result.mood_result.mood,
+                    mood_tags=tuple(
+                        (
+                            str(tag),
+                            float(score),
+                        )
+                        for tag, score in analysis_result.mood_result.tags
+                    ),
+                    mood_profiles=tuple(
+                        (
+                            prediction.profile,
+                            float(prediction.score),
+                        )
+                        for prediction in analysis_result.mood_result.profiles
+                    ),
+                    mood_analysis_version=(
+                        analysis_result.mood_result.analysis_version
+                    ),
                 )
             )
             self.recommendation_service.update_track(updated_track)
@@ -7552,7 +7713,9 @@ class MainWindow(QMainWindow):
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id = None
         self.player_title_label.setText(track.title)
-        self.player_title_label.setToolTip(track.title)
+        self.player_title_label.setToolTip(
+            f"{track.title}\nClick for track actions"
+        )
         self.player_artist_label.setText(track.artist)
         self.player_artist_label.setToolTip(track.artist)
         self.player_cover.setText("")
@@ -7598,9 +7761,6 @@ class MainWindow(QMainWindow):
 
     def _allow_recommend_current_track(self) -> None:
         self._record_interaction(InteractionType.ALLOW_RECOMMEND)
-
-    def _save_current_track(self) -> None:
-        self._record_interaction(InteractionType.SAVE)
 
     def _update_like_button(self) -> None:
         if not hasattr(self, "like_button"):
@@ -7765,6 +7925,16 @@ class MainWindow(QMainWindow):
 
         return self.session_mood_name
 
+    def _get_active_recommendation_session_id(self) -> str | None:
+        queue = self.playback_queue_service.queue
+        if queue is None:
+            return None
+        if queue.mode == QueueMode.RECOMMENDATIONS:
+            return self._radio_impression_session_id
+        if queue.mode == QueueMode.SESSION:
+            return self._mood_session_impression_session_id
+        return None
+
     def _record_interaction(
         self,
         interaction_type: InteractionType,
@@ -7822,6 +7992,11 @@ class MainWindow(QMainWindow):
                 track_id=track_id,
                 interaction_type=interaction_type,
                 mood_context=self._get_active_mood_context(),
+                recommendation_session_id=(
+                    self._get_active_recommendation_session_id()
+                    if track_id == self.current_track_id
+                    else None
+                ),
             )
         except ValueError as error:
             self.statusBar().showMessage(f"Feedback failed: {error}")

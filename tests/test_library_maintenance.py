@@ -81,6 +81,9 @@ def test_backup_creates_json_and_restorable_zip(
         created_at=created_at,
         genres=("ambient",),
         track_embedding=(0.2, 0.8),
+        mood_tags=(("mood/theme---calm", 0.82),),
+        mood_profiles=(("calm", 0.79),),
+        mood_analysis_version="music2emo-v1",
         local_path=str(library_dir / "song.flac"),
     )
     playlist = Playlist(id="playlist-1", name="Favorites", created_at=created_at)
@@ -105,6 +108,7 @@ def test_backup_creates_json_and_restorable_zip(
     assert json_summary.includes_audio is False
     assert zip_summary.includes_audio is True
     assert '"track_embedding": [' in json_path.read_text(encoding="utf-8")
+    assert '"mood_tags": [' in json_path.read_text(encoding="utf-8")
     with ZipFile(zip_path) as archive:
         assert "manifest.json" in archive.namelist()
         assert "library.json" in archive.namelist()

@@ -87,6 +87,10 @@ class MusicStore(Protocol):
     ) -> int:
         ...
 
+    def compact_preference_interactions(self) -> int:
+        """Remove obsolete duplicate like/save/dislike records."""
+        ...
+
     def list_tracks(self) -> Iterable[Track]:
         ...
 

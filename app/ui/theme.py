@@ -270,12 +270,12 @@ QLabel#playerTitle {
     color: #F4F4F5;
     font-weight: 650;
 }
-QLabel#trackCellTitle, QLabel#nextTrackTitle {
+QLabel#trackCellTitle {
     color: #EEEEF0;
     font-size: 13px;
     font-weight: 600;
 }
-QLabel#trackCellArtist, QLabel#nextTrackArtist, QLabel#nextTrackCaption {
+QLabel#trackCellArtist {
     color: #96969E;
     font-size: 12px;
 }

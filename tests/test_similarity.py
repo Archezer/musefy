@@ -1,6 +1,14 @@
 import pytest
 
-from app.domain.models import Interaction, InteractionType, Track, User
+from app.domain.models import (
+    Interaction,
+    InteractionType,
+    Recommendation,
+    Track,
+    User,
+)
+from app.domain.recommendations import RecommendationMode
+from app.recommenders.radio import build_radio_sequence
 from app.recommenders.similarity import (
     TrackSimilarityIndex,
     cosine_similarity,
@@ -190,3 +198,61 @@ def test_similarity_service_respects_permanent_user_block() -> None:
     )
 
     assert recommendations == []
+
+
+def test_radio_sequence_avoids_repeating_previous_artist_when_possible() -> None:
+    recommendations = [
+        Recommendation(
+            track=Track(id="a1", title="A1", artist="Artist A"),
+            score=1.0,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+        Recommendation(
+            track=Track(id="b1", title="B1", artist="Artist B"),
+            score=0.9,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+        Recommendation(
+            track=Track(id="a2", title="A2", artist="Artist A"),
+            score=0.8,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+    ]
+
+    sequence = build_radio_sequence(
+        recommendations,
+        limit=3,
+        initial_artist="Artist A",
+    )
+
+    assert [item.track.id for item in sequence] == ["b1", "a1", "a2"]
+
+
+def test_radio_sequence_relaxes_artist_limit_for_small_library() -> None:
+    recommendations = [
+        Recommendation(
+            track=Track(id="a1", title="A1", artist="Artist A"),
+            score=1.0,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+        Recommendation(
+            track=Track(id="a2", title="A2", artist="Artist A"),
+            score=0.9,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+        Recommendation(
+            track=Track(id="a3", title="A3", artist="Artist A"),
+            score=0.8,
+            reason="similar",
+            mode=RecommendationMode.TRACK_RADIO,
+        ),
+    ]
+
+    sequence = build_radio_sequence(recommendations, limit=3)
+
+    assert [item.track.id for item in sequence] == ["a1", "a2", "a3"]

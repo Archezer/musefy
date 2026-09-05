@@ -854,6 +854,26 @@ class MarqueeLabel(QLabel):
         self.update()
 
 
+class ClickableMarqueeLabel(MarqueeLabel):
+    """A marquee label that exposes a left-click action."""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(text, parent=parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
 def svg_icon(svg: str, size: int = 18) -> QIcon:
     """Create a crisp menu icon without shipping a raster asset."""
 
@@ -910,16 +930,21 @@ class LibraryHeaderView(QHeaderView):
 
         # Metadata headers are left aligned.  Centering over the measured
         # label keeps the chevron attached to "Genres", "Added" and
-        # "Duration" instead of the wider section's right edge.  Title keeps
-        # the edge-oriented placement because its section is stretch-sized.
+        # "Duration" instead of the wider section's right edge.  The title
+        # section is stretch-sized, so its indicator is centered in the whole
+        # section instead of being pushed to the far right.
         metrics = QFontMetrics(self.font())
         label_width = metrics.horizontalAdvance(label)
-        if logicalIndex in self._CENTERED_COLUMNS:
+        if logicalIndex == 1:
+            center_x = rect.center().x()
+            top = rect.center().y() - 1.5
+        elif logicalIndex in self._CENTERED_COLUMNS:
             label_x = rect.left() + 7
             center_x = label_x + label_width / 2
+            top = rect.top() + 3
         else:
             center_x = rect.right() - 10
-        top = rect.top() + 3
+            top = rect.top() + 3
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

@@ -14,6 +14,7 @@ DEFAULT_INTEREST_HALF_LIFE_DAYS = 45.0
 DEFAULT_SKIP_COOLDOWN_DAYS = 14
 DEFAULT_SHORT_SKIP_COOLDOWN_DAYS = 7
 DEFAULT_SNOOZE_DAYS = 14
+MAX_PLAYBACK_WEIGHT_PER_TRACK = 6.0
 
 # Starts and seeks are useful telemetry, but must not move a track up the
 # ranking.  Legacy PLAY is included in playback history for replay cooldowns,
@@ -36,6 +37,33 @@ PLAYBACK_SESSION_TYPES = frozenset(
         InteractionType.REPEAT,
     }
 )
+
+STATEFUL_INTERACTION_TYPES = frozenset(
+    {
+        InteractionType.LIKE,
+        InteractionType.SAVE,
+        InteractionType.DISLIKE,
+        InteractionType.DO_NOT_RECOMMEND,
+        InteractionType.ALLOW_RECOMMEND,
+    }
+)
+
+POSITIVE_PREFERENCE_TYPES = frozenset(
+    {
+        InteractionType.LIKE,
+        # Retained for compatibility with history written before Save was
+        # removed from the player UI.
+        InteractionType.SAVE,
+    }
+)
+
+NEGATIVE_PREFERENCE_TYPES = frozenset(
+    {
+        InteractionType.DISLIKE,
+    }
+)
+
+PREFERENCE_STATE_TYPES = POSITIVE_PREFERENCE_TYPES | NEGATIVE_PREFERENCE_TYPES
 
 COMPLETION_INTERACTION_TYPES = frozenset(
     {
@@ -119,6 +147,145 @@ def effective_weight(
         now=now,
         half_life_days=half_life_days,
     )
+
+
+def latest_user_preference_states(
+    user_id: str,
+    interactions: list[Interaction],
+) -> dict[str, Interaction]:
+    """Return one latest explicit preference state per track.
+
+    Playback milestones are events and are intentionally ignored here.  The
+    result is also used to collapse legacy duplicate like/save/dislike rows
+    before they can distort a recommendation profile.
+    """
+
+    return {
+        track_id: interaction
+        for (state_user_id, track_id), interaction
+        in latest_preference_states(interactions).items()
+        if state_user_id == user_id
+    }
+
+
+def latest_preference_state_indices(
+    interactions: list[Interaction],
+) -> dict[tuple[str, str], int]:
+    """Return list positions of the latest explicit state per user/track."""
+
+    latest: dict[tuple[str, str], int] = {}
+    for index, interaction in enumerate(interactions):
+        if interaction.interaction_type not in PREFERENCE_STATE_TYPES:
+            continue
+
+        state_key = (interaction.user_id, interaction.track_id)
+        previous_index = latest.get(state_key)
+        if previous_index is None or as_utc(
+            interaction.created_at
+        ) >= as_utc(interactions[previous_index].created_at):
+            latest[state_key] = index
+    return latest
+
+
+def latest_preference_states(
+    interactions: list[Interaction],
+) -> dict[tuple[str, str], Interaction]:
+    """Return the latest explicit like/save/dislike for each user and track."""
+
+    return {
+        state_key: interactions[index]
+        for state_key, index in latest_preference_state_indices(
+            interactions
+        ).items()
+    }
+
+
+def aggregate_playback_weights(
+    user_id: str,
+    interactions: list[Interaction],
+    *,
+    now: datetime,
+    half_life_days: float = DEFAULT_INTEREST_HALF_LIFE_DAYS,
+    max_per_track: float = MAX_PLAYBACK_WEIGHT_PER_TRACK,
+) -> dict[str, float]:
+    """Aggregate positive playback events with diminishing total influence."""
+
+    if max_per_track <= 0.0:
+        raise ValueError("Maximum playback weight must be positive")
+
+    totals: dict[str, float] = {}
+    for interaction in interactions:
+        if (
+            interaction.user_id != user_id
+            or interaction.interaction_type not in PLAYBACK_INTERACTION_TYPES
+        ):
+            continue
+
+        weight = max(
+            0.0,
+            effective_weight(
+                interaction,
+                now=now,
+                half_life_days=half_life_days,
+            ),
+        )
+        if weight <= 0.0:
+            continue
+        totals[interaction.track_id] = totals.get(interaction.track_id, 0.0) + weight
+
+    return {
+        track_id: min(weight, max_per_track)
+        for track_id, weight in totals.items()
+    }
+
+
+def aggregate_user_track_weights(
+    user_id: str,
+    interactions: list[Interaction],
+    *,
+    now: datetime,
+    half_life_days: float = DEFAULT_INTEREST_HALF_LIFE_DAYS,
+    max_playback_weight: float = MAX_PLAYBACK_WEIGHT_PER_TRACK,
+) -> dict[str, float]:
+    """Combine one user's events without multiplying explicit states."""
+
+    totals = aggregate_playback_weights(
+        user_id,
+        interactions,
+        now=now,
+        half_life_days=half_life_days,
+        max_per_track=max_playback_weight,
+    )
+    latest_state_indices = latest_preference_state_indices(interactions)
+
+    for index, interaction in enumerate(interactions):
+        if interaction.user_id != user_id:
+            continue
+        if interaction.interaction_type in PLAYBACK_INTERACTION_TYPES:
+            continue
+        if (
+            interaction.interaction_type in PREFERENCE_STATE_TYPES
+            and latest_state_indices.get(
+                (interaction.user_id, interaction.track_id)
+            ) != index
+        ):
+            continue
+        if interaction.interaction_type in {
+            InteractionType.DO_NOT_RECOMMEND,
+            InteractionType.ALLOW_RECOMMEND,
+        }:
+            continue
+
+        totals[interaction.track_id] = (
+            totals.get(interaction.track_id, 0.0)
+            + effective_weight(
+                interaction,
+                now=now,
+                half_life_days=half_life_days,
+            )
+        )
+
+    return totals
 
 
 def latest_user_interactions(

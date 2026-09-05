@@ -99,6 +99,9 @@ class SQLAlchemyMusicStore:
                 if track.mood is not None
                 else None
             ),
+            mood_tags_json=json.dumps(track.mood_tags),
+            mood_profiles_json=json.dumps(track.mood_profiles),
+            mood_analysis_version=track.mood_analysis_version,
             duration_ms=track.duration_ms,
             source=track.source,
             source_id=track.source_id,
@@ -160,6 +163,9 @@ class SQLAlchemyMusicStore:
                 if track.mood is not None
                 else None
             )
+            record.mood_tags_json = json.dumps(track.mood_tags)
+            record.mood_profiles_json = json.dumps(track.mood_profiles)
+            record.mood_analysis_version = track.mood_analysis_version
             record.local_path = track.local_path
             record.source_id = track.source_id
             record.source_url = track.source_url
@@ -441,6 +447,9 @@ class SQLAlchemyMusicStore:
                 track_id=interaction.track_id,
                 interaction_type=interaction.interaction_type.value,
                 mood_context=interaction.mood_context,
+                recommendation_session_id=(
+                    interaction.recommendation_session_id
+                ),
                 created_at=interaction.created_at,
             )
 
@@ -464,6 +473,52 @@ class SQLAlchemyMusicStore:
             session.commit()
 
         return int(result.rowcount or 0)
+
+    def compact_preference_interactions(self) -> int:
+        preference_types = {
+            InteractionType.LIKE.value,
+            InteractionType.SAVE.value,
+            InteractionType.DISLIKE.value,
+        }
+        with self.session_factory() as session:
+            records = session.scalars(
+                select(InteractionRecord).order_by(InteractionRecord.id)
+            ).all()
+            latest: dict[tuple[str, str], InteractionRecord] = {}
+            for record in records:
+                if record.interaction_type not in preference_types:
+                    continue
+                state_key = (record.user_id, record.track_id)
+                previous = latest.get(state_key)
+                if (
+                    previous is None
+                    or record.created_at > previous.created_at
+                    or (
+                        record.created_at == previous.created_at
+                        and record.id > previous.id
+                    )
+                ):
+                    latest[state_key] = record
+
+            removable_ids = [
+                record.id
+                for record in records
+                if (
+                    record.interaction_type in preference_types
+                    and record.id
+                    != latest[(record.user_id, record.track_id)].id
+                )
+            ]
+            if not removable_ids:
+                return 0
+
+            result = session.execute(
+                delete(InteractionRecord).where(
+                    InteractionRecord.id.in_(removable_ids)
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
 
     def list_interactions(self) -> list[Interaction]:
         statement = select(InteractionRecord).order_by(
@@ -552,6 +607,17 @@ class SQLAlchemyMusicStore:
                 arousal=float(record.mood_arousal),
             )
 
+        mood_tags = tuple(
+            (str(item[0]), float(item[1]))
+            for item in json.loads(record.mood_tags_json or "[]")
+            if isinstance(item, list | tuple) and len(item) >= 2
+        )
+        mood_profiles = tuple(
+            (str(item[0]), float(item[1]))
+            for item in json.loads(record.mood_profiles_json or "[]")
+            if isinstance(item, list | tuple) and len(item) >= 2
+        )
+
         return Track(
             id=record.id,
             title=record.title,
@@ -567,6 +633,9 @@ class SQLAlchemyMusicStore:
             source_url=record.source_url,
             local_path=record.local_path,
             cover_path=record.cover_path,
+            mood_tags=mood_tags,
+            mood_profiles=mood_profiles,
+            mood_analysis_version=record.mood_analysis_version,
         )
 
     @staticmethod
@@ -605,6 +674,7 @@ class SQLAlchemyMusicStore:
             ),
             created_at=created_at,
             mood_context=record.mood_context,
+            recommendation_session_id=record.recommendation_session_id,
         )
 
     @staticmethod

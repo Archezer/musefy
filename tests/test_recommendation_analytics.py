@@ -142,6 +142,84 @@ def test_old_impression_does_not_attribute_events_after_window() -> None:
     assert metrics.started == 0
 
 
+def test_impression_positions_continue_across_batches() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    first_track = Track(id="track-1", title="One", artist="Artist A")
+    second_track = Track(id="track-2", title="Two", artist="Artist B")
+    store.add_track(first_track)
+    store.add_track(second_track)
+    service = RecommendationAnalyticsService(store)
+
+    service.record_impressions(
+        "user-1",
+        [
+            Recommendation(
+                track=first_track,
+                score=0.9,
+                reason="Because",
+                mode=RecommendationMode.MOOD,
+            )
+        ],
+        session_id="mood-1",
+    )
+    service.record_impressions(
+        "user-1",
+        [
+            Recommendation(
+                track=second_track,
+                score=0.8,
+                reason="Because",
+                mode=RecommendationMode.MOOD,
+            )
+        ],
+        session_id="mood-1",
+        position_offset=1,
+    )
+
+    impressions = list(store.list_recommendation_impressions())
+    assert [impression.position for impression in impressions] == [1, 2]
+    assert {impression.session_id for impression in impressions} == {"mood-1"}
+
+
+def test_linked_playback_only_attributes_to_its_recommendation_session() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    track = Track(id="track-1", title="One", artist="Artist")
+    store.add_track(track)
+    service = RecommendationAnalyticsService(store)
+    shown_at = datetime(2026, 1, 1, tzinfo=UTC)
+    recommendation = Recommendation(
+        track=track,
+        score=1.0,
+        reason="Because",
+        mode=RecommendationMode.MOOD,
+    )
+    service.record_impressions(
+        "user-1",
+        [recommendation],
+        session_id="mood-1",
+        shown_at=shown_at,
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id=track.id,
+            interaction_type=InteractionType.PLAY_START,
+            created_at=shown_at + timedelta(hours=1),
+            recommendation_session_id="different-session",
+        )
+    )
+
+    metrics = service.build(
+        "user-1",
+        now=shown_at + timedelta(days=1),
+        days=30,
+    )
+
+    assert metrics.started == 0
+
+
 def test_sqlalchemy_impressions_round_trip_and_track_cleanup(
     sql_store: SQLAlchemyMusicStore,
 ) -> None:

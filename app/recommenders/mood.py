@@ -5,15 +5,18 @@ from random import Random
 
 from app.domain.models import (
     Interaction,
-    InteractionType,
     Recommendation,
     Track,
 )
 from app.domain.mood import MoodVector
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.feedback import (
+    NEGATIVE_PREFERENCE_TYPES,
     PLAYBACK_SESSION_TYPES,
+    POSITIVE_PREFERENCE_TYPES,
+    aggregate_playback_weights,
     effective_weight,
+    latest_user_preference_states,
     suppressed_track_ids,
 )
 from app.recommenders.similarity import cosine_similarity
@@ -25,18 +28,6 @@ DEFAULT_EXPLORATION_POOL_SIZE = 8
 MOOD_EXPLORATION_TEMPERATURE = 0.05
 MOOD_RANDOM_SCORE_GAP = 0.12
 MOOD_FEEDBACK_FACTOR = 0.05
-MY_WAVE_POSITIVE_TYPES = frozenset(
-    {
-        InteractionType.LIKE,
-        InteractionType.SAVE,
-        InteractionType.PLAYED_30S,
-        InteractionType.COMPLETED_80,
-        InteractionType.LISTEN,
-        InteractionType.REPEAT,
-    }
-)
-
-
 class MoodRecommender:
     def __init__(
         self,
@@ -223,18 +214,12 @@ class MoodRecommender:
             | temporary_track_ids
             | cooldown_track_ids
         )
-        positive_track_ids = {
-            interaction.track_id
-            for interaction in user_interactions
-            if interaction.interaction_type in MY_WAVE_POSITIVE_TYPES
-        }
         candidates = []
         for index, track in enumerate(tracks):
             if index % 64 == 0:
                 self._check_cancelled(should_cancel)
             if (
                 track.id not in excluded_track_ids
-                and track.id not in positive_track_ids
             ):
                 candidates.append(track)
         if not candidates:
@@ -242,8 +227,41 @@ class MoodRecommender:
             for index, track in enumerate(tracks):
                 if index % 64 == 0:
                     self._check_cancelled(should_cancel)
-                if track.id not in permanent_track_ids:
+                if (
+                    track.id not in permanent_track_ids
+                    and track.id not in temporary_track_ids
+                ):
                     candidates.append(track)
+
+        preference_states = latest_user_preference_states(
+            user_id,
+            user_interactions,
+        )
+        profile_weights = aggregate_playback_weights(
+            user_id,
+            user_interactions,
+            now=current_time,
+        )
+        for track_id, interaction in preference_states.items():
+            if interaction.interaction_type not in POSITIVE_PREFERENCE_TYPES:
+                continue
+            profile_weights[track_id] = min(
+                8.0,
+                profile_weights.get(track_id, 0.0)
+                + max(
+                    0.0,
+                    effective_weight(
+                        interaction,
+                        now=current_time,
+                    ),
+                ),
+            )
+
+        feedback_scores = self._get_feedback_scores(
+            user_id=user_id,
+            interactions=user_interactions,
+            should_cancel=should_cancel,
+        )
 
         tracks_by_id = {track.id: track for track in tracks}
         profile_mood_valence = 0.0
@@ -253,21 +271,10 @@ class MoodRecommender:
         artist_weights: dict[str, float] = {}
         genre_weights: dict[str, float] = {}
 
-        for index, interaction in enumerate(user_interactions):
-            if index % 32 == 0:
-                self._check_cancelled(should_cancel)
-            if interaction.interaction_type not in MY_WAVE_POSITIVE_TYPES:
-                continue
-            weight = max(
-                0.0,
-                effective_weight(
-                    interaction,
-                    now=current_time,
-                ),
-            )
+        for track_id, weight in profile_weights.items():
             if weight <= 0.0:
                 continue
-            track = tracks_by_id.get(interaction.track_id)
+            track = tracks_by_id.get(track_id)
             if track is None:
                 continue
 
@@ -318,26 +325,33 @@ class MoodRecommender:
             )
             embedding_similarity = 0.0
             if track.track_embedding and profile_embeddings:
-                embedding_scores: list[float] = []
-                for profile_index, (embedding, _) in enumerate(
+                embedding_scores: list[tuple[float, float]] = []
+                for profile_index, (embedding, weight) in enumerate(
                     profile_embeddings
                 ):
                     if profile_index % 32 == 0:
                         self._check_cancelled(should_cancel)
                     embedding_scores.append(
                         (
-                            cosine_similarity(
-                                embedding,
-                                track.track_embedding,
+                            (
+                                cosine_similarity(
+                                    embedding,
+                                    track.track_embedding,
+                                )
+                                + 1.0
                             )
-                            + 1.0
+                            / 2.0,
+                            weight,
                         )
-                        / 2.0
                     )
-                embedding_similarity = max(
-                    0.0,
-                    max(embedding_scores, default=0.0),
-                )
+                embedding_scores.sort(key=lambda item: item[0], reverse=True)
+                closest_scores = embedding_scores[:5]
+                total_weight = sum(weight for _, weight in closest_scores)
+                if total_weight > 0.0:
+                    embedding_similarity = sum(
+                        similarity * weight
+                        for similarity, weight in closest_scores
+                    ) / total_weight
 
             artist_affinity = (
                 artist_weights.get(track.artist.strip().casefold(), 0.0)
@@ -361,6 +375,7 @@ class MoodRecommender:
                 0.45 * mood_similarity
                 + 0.40 * embedding_similarity
                 + 0.15 * affinity
+                + feedback_scores.get(track.id, 0.0)
             )
             scored_tracks.append(
                 (
@@ -444,36 +459,20 @@ class MoodRecommender:
         interactions: list[Interaction],
         should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, float]:
-        feedback_scores: dict[str, float] = {}
-
-        for index, interaction in enumerate(interactions):
-            if index % 64 == 0:
-                MoodRecommender._check_cancelled(should_cancel)
-            if interaction.user_id != user_id:
-                continue
-
-            if interaction.interaction_type not in {
-                InteractionType.LIKE,
-                InteractionType.SAVE,
-                InteractionType.DISLIKE,
-            }:
-                continue
-
-            direction = (
-                -1.0
-                if interaction.interaction_type == InteractionType.DISLIKE
-                else 1.0
+        MoodRecommender._check_cancelled(should_cancel)
+        return {
+            track_id: (
+                -MOOD_FEEDBACK_FACTOR
+                if interaction.interaction_type in NEGATIVE_PREFERENCE_TYPES
+                else MOOD_FEEDBACK_FACTOR
             )
-            current_score = feedback_scores.get(interaction.track_id, 0.0)
-            feedback_scores[interaction.track_id] = max(
-                -MOOD_FEEDBACK_FACTOR,
-                min(
-                    MOOD_FEEDBACK_FACTOR,
-                    current_score + direction * MOOD_FEEDBACK_FACTOR,
-                ),
-            )
-
-        return feedback_scores
+            for track_id, interaction in latest_user_preference_states(
+                user_id,
+                interactions,
+            ).items()
+            if interaction.interaction_type
+            in POSITIVE_PREFERENCE_TYPES | NEGATIVE_PREFERENCE_TYPES
+        }
 
     def _select_with_exploration(
         self,

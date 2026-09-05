@@ -1,6 +1,9 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.domain.models import (
+    Interaction,
     InteractionType,
     Track,
     User,
@@ -267,3 +270,77 @@ def test_like_state_can_be_read_and_removed_across_mood_contexts():
     assert service.remove_like("user-1", "track-1") is True
     assert service.is_liked("user-1", "track-1") is False
     assert store.list_interactions() == []
+
+
+def test_latest_dislike_clears_like_button_state():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="track-1",
+            title="Test Track",
+            artist="Test Artist",
+        )
+    )
+    service = InteractionService(store)
+
+    service.record("user-1", "track-1", InteractionType.LIKE)
+    service.record("user-1", "track-1", InteractionType.DISLIKE)
+
+    assert service.is_liked("user-1", "track-1") is False
+
+
+def test_preference_compaction_keeps_latest_state_and_playback_history():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="track-1",
+            title="Test Track",
+            artist="Test Artist",
+        )
+    )
+    timestamp = datetime(2026, 9, 5, tzinfo=UTC)
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            "track-1",
+            InteractionType.LIKE,
+            timestamp,
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            "track-1",
+            InteractionType.LIKE,
+            timestamp + timedelta(seconds=1),
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            "track-1",
+            InteractionType.DISLIKE,
+            timestamp + timedelta(seconds=2),
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            "user-1",
+            "track-1",
+            InteractionType.PLAY_START,
+            timestamp + timedelta(seconds=3),
+        )
+    )
+    service = InteractionService(store)
+
+    plan = service.preference_compaction_plan()
+
+    assert plan.redundant_records == 2
+    assert plan.affected_tracks == 1
+    assert service.compact_preference_history() == 2
+    assert [
+        interaction.interaction_type
+        for interaction in store.list_interactions()
+    ] == [InteractionType.DISLIKE, InteractionType.PLAY_START]

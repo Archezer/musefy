@@ -14,7 +14,9 @@ from app.recommenders.feedback import (
     DEFAULT_INTEREST_HALF_LIFE_DAYS,
     PLAYBACK_INTERACTION_TYPES,
     PLAYBACK_SESSION_TYPES,
+    aggregate_user_track_weights,
     effective_weight,
+    latest_preference_state_indices,
     suppressed_track_ids,
 )
 from app.recommenders.protocols import Recommender
@@ -142,19 +144,15 @@ class MostPopularRecommender(Recommender):
         now: datetime,
     ) -> dict[str, float]:
         genre_scores: dict[str, float] = defaultdict(float)
+        track_weights = aggregate_user_track_weights(
+            user_id,
+            interactions,
+            now=now,
+            half_life_days=self.interest_half_life_days,
+        )
 
-        for interaction in interactions:
-            if interaction.user_id != user_id:
-                continue
-            if interaction.interaction_type in {
-                InteractionType.DO_NOT_RECOMMEND,
-                InteractionType.ALLOW_RECOMMEND,
-            }:
-                continue
-
-            track = self.store.get_track(
-                interaction.track_id
-            )
+        for track_id, weight in track_weights.items():
+            track = self.store.get_track(track_id)
 
             if track is None:
                 continue
@@ -163,11 +161,7 @@ class MostPopularRecommender(Recommender):
                 self._get_track_genre_features(track).items()
             ):
                 genre_scores[genre] += (
-                    effective_weight(
-                        interaction,
-                        now=now,
-                        half_life_days=self.interest_half_life_days,
-                    )
+                    weight
                     * GENRE_PREFERENCE_FACTOR
                     * relevance
                 )
@@ -244,31 +238,20 @@ class MostPopularRecommender(Recommender):
         now: datetime,
     ) -> dict[str, float]:
         artist_scores: dict[str, float] = defaultdict(float)
+        track_weights = aggregate_user_track_weights(
+            user_id,
+            interactions,
+            now=now,
+            half_life_days=self.interest_half_life_days,
+        )
 
-        for interaction in interactions:
-            if interaction.user_id != user_id:
-                continue
-            if interaction.interaction_type in {
-                InteractionType.DO_NOT_RECOMMEND,
-                InteractionType.ALLOW_RECOMMEND,
-            }:
-                continue
-
-            track = self.store.get_track(
-                interaction.track_id
-            )
+        for track_id, weight in track_weights.items():
+            track = self.store.get_track(track_id)
 
             if track is None:
                 continue
 
-            artist_scores[track.artist] += (
-                effective_weight(
-                    interaction,
-                    now=now,
-                    half_life_days=self.interest_half_life_days,
-                )
-                * ARTIST_PREFERENCE_FACTOR
-            )
+            artist_scores[track.artist] += weight * ARTIST_PREFERENCE_FACTOR
 
         return artist_scores
 
@@ -330,28 +313,17 @@ class MostPopularRecommender(Recommender):
         tracks = list(self.store.list_tracks())
 
         track_scores: dict[str, float] = defaultdict(float)
-        seen_states: set[
-            tuple[str, str, InteractionType]
-        ] = set()
+        latest_state_indices = latest_preference_state_indices(interactions)
 
-        for interaction in interactions:
+        for index, interaction in enumerate(interactions):
             if interaction.interaction_type in {
                 InteractionType.LIKE,
                 InteractionType.SAVE,
                 InteractionType.DISLIKE,
-                InteractionType.DO_NOT_RECOMMEND,
-                InteractionType.ALLOW_RECOMMEND,
             }:
-                state_key = (
-                    interaction.user_id,
-                    interaction.track_id,
-                    interaction.interaction_type,
-                )
-
-                if state_key in seen_states:
+                state_key = (interaction.user_id, interaction.track_id)
+                if latest_state_indices.get(state_key) != index:
                     continue
-
-                seen_states.add(state_key)
 
             # Permanent hide/restore decisions belong to one user and must
             # never change global popularity for everyone else.
@@ -440,7 +412,10 @@ class MostPopularRecommender(Recommender):
         if fallback_used:
             candidate_tracks = [
                 track for track in tracks
-                if track.id not in permanent_track_ids
+                if (
+                    track.id not in permanent_track_ids
+                    and track.id not in temporary_track_ids
+                )
             ]
 
         last_played_at = self._get_last_played_at(

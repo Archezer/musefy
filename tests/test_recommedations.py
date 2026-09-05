@@ -103,6 +103,82 @@ def test_skip_excludes_track_from_recommendations(store):
     )
 
 
+def test_active_snooze_is_preserved_by_popularity_fallback():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(id="snoozed", title="Snoozed", artist="Artist")
+    )
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="snoozed",
+            interaction_type=InteractionType.SNOOZE,
+            created_at=now,
+        )
+    )
+
+    recommendations = MostPopularRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=1,
+    ).recommend("user-1", limit=1, now=now)
+
+    assert recommendations == []
+
+
+def test_latest_dislike_overrides_an_older_like(store):
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="track-liked",
+            interaction_type=InteractionType.LIKE,
+            created_at=now,
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="track-liked",
+            interaction_type=InteractionType.DISLIKE,
+            created_at=now,
+        )
+    )
+
+    recommendations = MostPopularRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=2,
+    ).recommend("user-1", limit=2, now=now)
+    scores = {item.track.id: item.score for item in recommendations}
+
+    assert scores["track-liked"] < 0.0
+
+
+def test_duplicate_explicit_states_do_not_multiply_artist_signal(store):
+    timestamp = datetime(2026, 9, 5, tzinfo=UTC)
+    duplicate_like = Interaction(
+        user_id="user-1",
+        track_id="track-liked",
+        interaction_type=InteractionType.LIKE,
+        created_at=timestamp,
+    )
+    store.add_interaction(duplicate_like)
+    store.add_interaction(duplicate_like)
+
+    recommendation = MostPopularRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=1,
+    ).recommend("user-1", limit=1, now=timestamp)
+
+    assert recommendation[0].score == pytest.approx(
+        InteractionType.LIKE.weight * (1 + ARTIST_PREFERENCE_FACTOR)
+    )
+
+
 def test_save_increases_recommendation_score(store):
     InteractionService(store).record(
         user_id="user-1",

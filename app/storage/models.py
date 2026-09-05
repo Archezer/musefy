@@ -88,6 +88,20 @@ class TrackRecord(Base):
         Float,
         nullable=True,
     )
+    mood_tags_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        nullable=False,
+    )
+    mood_profiles_json: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        nullable=False,
+    )
+    mood_analysis_version: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
     duration_ms: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
@@ -150,6 +164,10 @@ class InteractionRecord(Base):
     interaction_type: Mapped[str] = mapped_column(String(20))
     mood_context: Mapped[str | None] = mapped_column(
         String(50),
+        nullable=True,
+    )
+    recommendation_session_id: Mapped[str | None] = mapped_column(
+        String(100),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(

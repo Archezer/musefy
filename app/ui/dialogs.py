@@ -2633,7 +2633,7 @@ class ListeningStatisticsDialog(QDialog):
 
 
 class LibraryMaintenanceDialog(QDialog):
-    """One place for non-destructive library checks and data portability."""
+    """One place for library checks, cleanup and data portability."""
 
     scan_requested = Signal()
     zip_backup_requested = Signal()
@@ -2643,6 +2643,7 @@ class LibraryMaintenanceDialog(QDialog):
     watch_sync_requested = Signal()
     watch_disable_requested = Signal()
     watch_update_metadata_toggled = Signal(bool)
+    compact_preferences_requested = Signal()
 
     def __init__(
         self,
@@ -2702,6 +2703,26 @@ class LibraryMaintenanceDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.issues_table, 1)
+
+        history_frame = QFrame()
+        history_frame.setObjectName("libraryMaintenanceBackup")
+        history_layout = QHBoxLayout(history_frame)
+        history_layout.setContentsMargins(12, 8, 12, 8)
+        history_layout.setSpacing(8)
+        history_label = QLabel(
+            "Remove duplicate like/save/dislike records while keeping the "
+            "latest state. Playback history is preserved."
+        )
+        history_label.setWordWrap(True)
+        history_layout.addWidget(history_label, 1)
+        self.compact_preferences_button = QPushButton(
+            "Clean duplicate preferences"
+        )
+        self.compact_preferences_button.clicked.connect(
+            self.compact_preferences_requested
+        )
+        history_layout.addWidget(self.compact_preferences_button)
+        layout.addWidget(history_frame)
 
         watch_frame = QFrame()
         watch_frame.setObjectName("libraryMaintenanceBackup")
@@ -2766,6 +2787,7 @@ class LibraryMaintenanceDialog(QDialog):
 
     def set_scanning(self, active: bool) -> None:
         self.scan_button.setEnabled(not active)
+        self.compact_preferences_button.setEnabled(not active)
         self.zip_backup_button.setEnabled(not active)
         self.json_export_button.setEnabled(not active)
         self.restore_button.setEnabled(not active)

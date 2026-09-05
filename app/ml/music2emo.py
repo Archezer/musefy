@@ -31,6 +31,7 @@ CHORD_SAMPLE_RATE = 22_050
 MERT_WINDOW_SECONDS = 30
 CHORD_INSTANCE_SECONDS = 10
 CHORD_TIMESTEP = 108
+MUSIC2EMO_ANALYSIS_VERSION = "music2emo-v1"
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class Music2EmoAnalysisResult:
     profiles: tuple[MoodProfilePrediction, ...]
     valence: float
     arousal: float
+    analysis_version: str = MUSIC2EMO_ANALYSIS_VERSION
 
 
 class _Music2EmoHead(nn.Module):

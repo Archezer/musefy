@@ -21,7 +21,10 @@ from app.domain.models import (
 from app.recommenders.feedback import COMPLETION_INTERACTION_TYPES
 from app.storage.protocols import MusicStore
 
-DEFAULT_ATTRIBUTION_DAYS = 7
+# A recommendation should only claim a later playback when the user acted
+# shortly after seeing it.  A long window makes an unrelated manual playback
+# look like recommendation success.
+DEFAULT_ATTRIBUTION_DAYS = 1
 POSITIVE_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE,
@@ -82,6 +85,7 @@ class RecommendationAnalyticsService:
         recommendations: list[Recommendation] | tuple[Recommendation, ...],
         *,
         session_id: str | None = None,
+        position_offset: int = 0,
         shown_at: datetime | None = None,
     ) -> str:
         """Persist one ordered recommendation batch and return its batch id."""
@@ -89,10 +93,15 @@ class RecommendationAnalyticsService:
         normalized_user_id = user_id.strip()
         if not normalized_user_id:
             raise ValueError("User ID must not be empty")
+        if position_offset < 0:
+            raise ValueError("Position offset must not be negative")
 
         batch_id = session_id or uuid4().hex
         timestamp = self._as_utc(shown_at or datetime.now(UTC))
-        for position, recommendation in enumerate(recommendations, start=1):
+        for position, recommendation in enumerate(
+            recommendations,
+            start=position_offset + 1,
+        ):
             self.store.add_recommendation_impression(
                 RecommendationImpression(
                     user_id=normalized_user_id,
@@ -207,6 +216,11 @@ class RecommendationAnalyticsService:
                 for index, impression in enumerate(impressions)
                 if (
                     impression.track_id == interaction.track_id
+                    and (
+                        interaction.recommendation_session_id is None
+                        or impression.session_id
+                        == interaction.recommendation_session_id
+                    )
                     and self._as_utc(impression.shown_at) <= event_time
                     <= self._as_utc(impression.shown_at)
                     + self.attribution_window

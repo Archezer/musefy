@@ -8,6 +8,10 @@ from app.domain.models import (
     Track,
     User,
 )
+from app.recommenders.feedback import (
+    PREFERENCE_STATE_TYPES,
+    latest_preference_state_indices,
+)
 
 
 @dataclass
@@ -247,6 +251,23 @@ class InMemoryMusicStore:
             )
         ]
         return before_count - len(self.interactions)
+
+    def compact_preference_interactions(self) -> int:
+        latest_indices = latest_preference_state_indices(
+            self.interactions
+        )
+        kept: list[Interaction] = []
+        for index, interaction in enumerate(self.interactions):
+            if interaction.interaction_type not in PREFERENCE_STATE_TYPES:
+                kept.append(interaction)
+                continue
+            state_key = (interaction.user_id, interaction.track_id)
+            if latest_indices.get(state_key) == index:
+                kept.append(interaction)
+
+        removed_count = len(self.interactions) - len(kept)
+        self.interactions = kept
+        return removed_count
 
     def list_tracks(self) -> list[Track]:
         return list(self.tracks.values())

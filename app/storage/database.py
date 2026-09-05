@@ -86,6 +86,30 @@ def create_database() -> None:
                 )
             )
 
+        if "mood_tags_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN mood_tags_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            )
+
+        if "mood_profiles_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN mood_profiles_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            )
+
+        if "mood_analysis_version" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN mood_analysis_version VARCHAR(50)"
+                )
+            )
+
         columns = {
             column["name"]
             for column in inspect(connection).get_columns(
@@ -158,6 +182,14 @@ def create_database() -> None:
                 text(
                     "ALTER TABLE interactions "
                     "ADD COLUMN mood_context VARCHAR(50)"
+                )
+            )
+
+        if "recommendation_session_id" not in interaction_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE interactions "
+                    "ADD COLUMN recommendation_session_id VARCHAR(100)"
                 )
             )
 

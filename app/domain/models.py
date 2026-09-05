@@ -81,6 +81,9 @@ class Track:
     local_path: str | None = None
     cover_path: str | None = None
     mood: MoodVector | None = None
+    mood_tags: tuple[tuple[str, float], ...] = ()
+    mood_profiles: tuple[tuple[str, float], ...] = ()
+    mood_analysis_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,7 @@ class Interaction:
         default_factory=lambda: datetime.now(UTC)
     )
     mood_context: str | None = None
+    recommendation_session_id: str | None = None
 
 
 @dataclass(frozen=True)

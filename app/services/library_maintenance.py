@@ -395,6 +395,9 @@ class LibraryBackupService:
                 if track.mood is not None
                 else None
             ),
+            "mood_tags": [list(item) for item in track.mood_tags],
+            "mood_profiles": [list(item) for item in track.mood_profiles],
+            "mood_analysis_version": track.mood_analysis_version,
             "duration_ms": track.duration_ms,
             "source": track.source,
             "source_id": track.source_id,
@@ -431,5 +434,8 @@ class LibraryBackupService:
             "track_id": interaction.track_id,
             "interaction_type": interaction.interaction_type.value,
             "mood_context": interaction.mood_context,
+            "recommendation_session_id": (
+                interaction.recommendation_session_id
+            ),
             "created_at": cls._timestamp(interaction.created_at),
         }

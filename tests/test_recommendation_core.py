@@ -1,12 +1,19 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from app.domain.models import (
+    Interaction,
     InteractionType,
     Track,
     User,
 )
 from app.domain.mood import MOOD_PRESETS
 from app.domain.recommendations import RecommendationContext
+from app.recommenders.feedback import (
+    aggregate_playback_weights,
+    latest_user_preference_states,
+)
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import (
     MostPopularRecommender,
@@ -405,8 +412,118 @@ def test_my_wave_uses_positive_user_history() -> None:
     )
 
     assert [item.track.id for item in recommendations] == [
+        "favorite",
         "similar",
-        "different",
     ]
     assert recommendations[0].mode.value == "my_wave"
     assert recommendations[0].reason == "Based on your listening history"
+
+
+def test_duplicate_preference_rows_are_collapsed_to_one_latest_state() -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    interactions = [
+        Interaction(
+            user_id="user-1",
+            track_id="track-1",
+            interaction_type=InteractionType.SAVE,
+            created_at=now,
+            mood_context=f"legacy-{index}",
+        )
+        for index in range(29)
+    ]
+
+    states = latest_user_preference_states("user-1", interactions)
+
+    assert list(states) == ["track-1"]
+    assert states["track-1"].interaction_type == InteractionType.SAVE
+
+
+def test_repeated_playback_weight_is_capped_per_track() -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    interactions = [
+        Interaction(
+            user_id="user-1",
+            track_id="track-1",
+            interaction_type=InteractionType.COMPLETED_80,
+            created_at=now,
+        )
+        for _ in range(10)
+    ]
+
+    weights = aggregate_playback_weights(
+        "user-1",
+        interactions,
+        now=now,
+    )
+
+    assert weights["track-1"] == 6.0
+
+
+def test_my_wave_dislike_lowers_a_track_score() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="anchor",
+            title="Anchor",
+            artist="Artist One",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    store.add_track(
+        Track(
+            id="disliked",
+            title="Disliked",
+            artist="Artist Two",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    interaction_service = InteractionService(store)
+    interaction_service.record(
+        user_id="user-1",
+        track_id="anchor",
+        interaction_type=InteractionType.LIKE,
+    )
+    interaction_service.record(
+        user_id="user-1",
+        track_id="disliked",
+        interaction_type=InteractionType.DISLIKE,
+    )
+
+    recommendations = MoodRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=1,
+    ).recommend_my_wave(
+        user_id="user-1",
+        limit=2,
+    )
+    scores = {item.track.id: item.score for item in recommendations}
+
+    assert scores["disliked"] < scores["anchor"]
+
+
+def test_my_wave_fallback_keeps_active_snooze_out() -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(Track(id="snoozed", title="Snoozed", artist="Artist"))
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="snoozed",
+            interaction_type=InteractionType.SNOOZE,
+            created_at=now,
+        )
+    )
+
+    recommendations = MoodRecommender(
+        store,
+        replay_cooldown=0,
+    ).recommend_my_wave(
+        user_id="user-1",
+        limit=1,
+        now=now,
+    )
+
+    assert recommendations == []

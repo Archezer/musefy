@@ -108,6 +108,9 @@ class TrackManagementService:
         detected_genres: tuple[DetectedGenre, ...],
         track_embedding: tuple[float, ...] | None = None,
         mood: MoodVector | None = None,
+        mood_tags: tuple[tuple[str, float], ...] | None = None,
+        mood_profiles: tuple[tuple[str, float], ...] | None = None,
+        mood_analysis_version: str | None = None,
     ) -> Track:
         current_track = self.store.get_track(track_id)
 
@@ -137,6 +140,21 @@ class TrackManagementService:
                 mood
                 if mood is not None
                 else current_track.mood
+            ),
+            mood_tags=(
+                mood_tags
+                if mood_tags is not None
+                else current_track.mood_tags
+            ),
+            mood_profiles=(
+                mood_profiles
+                if mood_profiles is not None
+                else current_track.mood_profiles
+            ),
+            mood_analysis_version=(
+                mood_analysis_version
+                if mood_analysis_version is not None
+                else current_track.mood_analysis_version
             ),
         )
 
