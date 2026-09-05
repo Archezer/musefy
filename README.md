@@ -164,8 +164,9 @@ release. The downloaded package is verified with SHA-256 and launched
 automatically. The user does not manually handle the package parts.
 
 The selected package contains the Musefy runtime, the desktop application, all
-local ML models including MERT, and the shared FFmpeg files. Python, `uv`, Git,
-the repository and manual model downloads are not required on the user's PC.
+local ML models including MERT, the shared FFmpeg files, and the browser
+extension. Python, `uv`, Git, the repository and manual model downloads are not
+required on the user's PC.
 Internet access is required during the first installation so the selector can
 download the package; after installation, local analysis does not need model
 downloads.
@@ -183,12 +184,12 @@ The release build is generated from the open source code with:
 .\build_release.bat v1.0.0
 ```
 
-The maintainer needs Python, `uv`, the model files below, a cached MERT model,
-an installed shared FFmpeg build, and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-once to build the release packages. The script builds CPU and CUDA variants,
-splits packages that exceed GitHub's per-file limit, and creates the one-file
-selector. The source code remains open in this repository; the release assets
-are only convenient distribution artifacts.
+The maintainer needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) once to
+build the release packages. `build_release.bat` uses the same source installer
+to prepare Python, `uv`, dependencies, FFmpeg and model files, then builds CPU
+and CUDA variants, splits packages that exceed GitHub's per-file limit, and
+creates the one-file selector. The source code remains open in this repository;
+the release assets are only convenient distribution artifacts.
 
 The generated `build/`, `dist/` and model binaries are intentionally ignored by
 Git. Do not commit the multi-gigabyte installers to the source repository;
@@ -207,34 +208,20 @@ The steps below install the desktop app, its local ML models and the optional
 playlist browser extension. Run the commands from the repository root unless a
 command says otherwise.
 
-##### 1. Install prerequisites
+##### 1. Check prerequisites
 
-- [Git for Windows](https://git-scm.com/download/win).
-- [Python 3.12 or 3.13 (64-bit)](https://www.python.org/downloads/windows/).
-  Python 3.14 is not supported by this project yet.
-- [uv](https://docs.astral.sh/uv/getting-started/installation/), which creates
-  and manages the project environment:
-
-  ```powershell
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-
-- A shared FFmpeg build. The easiest Windows installation is:
-
-  ```powershell
-  winget install --id Gyan.FFmpeg.Shared --exact
-  ffmpeg -version
-  ```
-
-  If `ffmpeg` is not recognised, restart the terminal and make sure the
-  package's `bin` directory is in `PATH`.
+- [Git for Windows](https://git-scm.com/download/win), if you are cloning the
+  repository. Windows 10/11 should also have the App Installer (`winget`) so
+  the BAT can install shared FFmpeg when it is missing.
 - An up-to-date NVIDIA driver is optional. A separate CUDA Toolkit is not
-  required. The included `install_musefy.bat` checks for an NVIDIA GPU before
-  installing dependencies and selects the CPU or CUDA 12.6 PyTorch profile.
-  If PyTorch cannot use CUDA after installation, the script automatically falls
-  back to the CPU profile.
+  required for running the CUDA profile.
 
-##### 2. Clone the repository and create the environment
+`install_musefy.bat` installs the managed Python 3.12 runtime and `uv` when
+needed, installs the locked dependencies, installs FFmpeg through `winget`,
+downloads all three Music2Emo/MAEST files and the MERT-v1-95M snapshot, and
+verifies PyTorch plus ONNX Runtime. Completed downloads are reused on a rerun.
+
+##### 2. Clone the repository and run the installer
 
 ```powershell
 git clone https://github.com/Archezer/musefy.git
@@ -244,78 +231,25 @@ Set-Location musefy
 
 The installer creates `.venv` in the project directory and installs the exact
 locked dependency set for one profile. It chooses `cuda` when `nvidia-smi`
-reports a working NVIDIA GPU; otherwise it chooses `cpu`. To choose manually,
-run one of these commands from the repository root (never both at once):
+reports a working NVIDIA GPU; otherwise it chooses `cpu`. It then downloads all
+required model files automatically and stores the MERT snapshot in
+`data\models\mert`.
 
-```powershell
-uv sync --locked --extra cpu
-uv sync --locked --extra cuda
-```
+If CUDA dependencies install but the verification cannot start CUDA, the BAT
+automatically switches the environment to the CPU profile. It does not install
+the full CUDA Toolkit because the packaged PyTorch CUDA runtime does not need
+it. To force a profile for troubleshooting, set `MUSEFY_FORCE_PROFILE` to
+`cpu` or `cuda` before running the BAT.
 
-Check the interpreter and GPU from the same directory:
+##### 3. Launch Musefy from source
+
+Check the interpreter and GPU from the same directory if needed:
 
 ```powershell
 .venv\Scripts\python.exe --version
 .venv\Scripts\python.exe -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 .venv\Scripts\python.exe -c "import onnxruntime as ort; print('ONNX providers:', ort.get_available_providers())"
 ```
-
-##### 3. Add the model files for a source run or release build
-
-Model binaries are deliberately excluded from Git. The metadata files
-(`data/models/maest/maest.json`, `data/models/music2emo/inference/data/`, and
-the Music2Emo utility modules) are already tracked in the repository. Download
-the three binary files to these exact paths:
-
-```powershell
-New-Item -ItemType Directory -Force `
-  data\models\maest, `
-  data\models\music2emo\saved_models, `
-  data\models\music2emo\inference\data | Out-Null
-
-$music2emo = "https://huggingface.co/amaai-lab/music2emo/resolve/main"
-
-# MAEST genre/embedding model (about 348 MB)
-Invoke-WebRequest `
-  -Uri "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx" `
-  -OutFile "data\models\maest\maest.onnx"
-
-# Music2Emo chord model and checkpoint
-Invoke-WebRequest `
-  -Uri "$music2emo/inference/data/btc_model_large_voca.pt?download=true" `
-  -OutFile "data\models\music2emo\inference\data\btc_model_large_voca.pt"
-Invoke-WebRequest `
-  -Uri "$music2emo/saved_models/J_all.ckpt?download=true" `
-  -OutFile "data\models\music2emo\saved_models\J_all.ckpt"
-```
-
-Verify the files before starting the app:
-
-```powershell
-Get-Item `
-  data\models\maest\maest.onnx, `
-  data\models\music2emo\inference\data\btc_model_large_voca.pt, `
-  data\models\music2emo\saved_models\J_all.ckpt |
-  Select-Object FullName, Length
-```
-
-Music2Emo also uses the `m-a-p/MERT-v1-95M` transformer. Source runs download
-it automatically from Hugging Face the first time analysis runs. A release
-build copies the cached snapshot into the installer, so the installed app does
-not download MERT on first launch. To cache it before building, run:
-
-```powershell
-.venv\Scripts\python.exe -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; n='m-a-p/MERT-v1-95M'; Wav2Vec2FeatureExtractor.from_pretrained(n, trust_remote_code=True); AutoModel.from_pretrained(n, trust_remote_code=True); print('MERT cached')"
-```
-
-To put that cache on another drive, set `HF_HOME` before the command (and before
-the first analysis):
-
-```powershell
-$env:HF_HOME = "D:\Musefy\huggingface-cache"
-```
-
-##### 4. Choose data paths and launch Musefy from source
 
 With no extra configuration, source runs keep the database and library under
 the repository's `data\` directory:
@@ -442,9 +376,10 @@ The development extension in
 [`extensions/vk-spotify-playlist-exporter`](extensions/vk-spotify-playlist-exporter) exports
 the visible metadata of the currently open VK Music, Spotify or Yandex Music playlist to a
 JSON file. When the desktop app is running, the extension sends the export to a
-localhost bridge and saves it under `playlist_exports/<source>` next to the
-`extensions` folder. If the app is not
-running, it falls back to the browser's Downloads folder. It collects only track order, artist, title and duration; it does not
+localhost bridge and saves it under `playlist_exports/<source>`. In a source
+checkout this is next to the `extensions` folder; in an installed build it is
+under `%LOCALAPPDATA%\Musefy\playlist_exports`. If the app is not running, it
+falls back to the browser's Downloads folder. It collects only track order, artist, title and duration; it does not
 read cookies, tokens, audio URLs or audio files.
 
 In the desktop app, click **Import exported playlist** and select one of these
@@ -463,23 +398,20 @@ online store account.
 
 - **Chrome or Edge:** open `chrome://extensions` or `edge://extensions`, enable
   **Developer mode**, click **Load unpacked**, and select the folder
-  `extensions/vk-spotify-playlist-exporter`. Pin **Playlist Exporter** to keep
-  its button visible.
+  `extensions/vk-spotify-playlist-exporter` in a source checkout, or
+  `%LOCALAPPDATA%\Programs\Musefy\extensions\vk-spotify-playlist-exporter` in
+  the default installed build. Pin **Playlist Exporter** to keep its button
+  visible.
 - **Firefox:** open `about:debugging#/runtime/this-firefox`, click **Load
-  Temporary Add-on**, and select
-  `extensions/vk-spotify-playlist-exporter/manifest.json`. Firefox removes a
-  temporary add-on after a browser restart, so load it again when needed.
+  Temporary Add-on**, and select the `manifest.json` inside the same source or
+  installed extension folder. Firefox removes a temporary add-on after a
+  browser restart, so load it again when needed.
 
 #### Use the extension
 
-1. Start Musefy first if you want exports to be copied directly into the
-   project:
-
-   ```powershell
-   .venv\Scripts\python.exe -m app.desktop
-   ```
-
-   The local bridge listens on `http://127.0.0.1:8765`.
+1. Start Musefy first. The installed app can be launched from its Start Menu or
+   desktop shortcut; a source checkout uses `.venv\Scripts\python.exe -m
+   app.desktop`. The local bridge listens on `http://127.0.0.1:8765`.
 2. In the same browser, open a playlist in VK Music, Spotify Web Player or
    Yandex Music. The extension works only on these HTTPS hosts and reads the
    playlist that is currently open in the active tab.
@@ -487,10 +419,10 @@ online store account.
    playlist rows are visible, then click the extension icon and choose
    **Export current playlist**. The extension scrolls the list until the number
    of tracks stops increasing and shows progress in the popup.
-4. When Musefy is running, the JSON is saved to
-   `playlist_exports\<source>\` next to the project. If the app is closed or the
-   bridge is unavailable, the extension saves the same JSON through the
-   browser's Downloads dialog instead.
+4. When Musefy is running, the JSON is saved to `playlist_exports\<source>\` in
+   a source checkout or `%LOCALAPPDATA%\Musefy\playlist_exports\<source>\` in
+   the installed build. If the app is closed or the bridge is unavailable, the
+   extension saves the same JSON through the browser's Downloads dialog instead.
 5. In Musefy choose **Import exported playlist** and select the JSON file. The
    app searches YouTube for each `artist — title` pair, lets you review matches,
    then downloads and analyses the selected tracks into a local playlist.
@@ -581,10 +513,11 @@ slower.
 
 ### A model file is missing
 
-Run the download block in [Add the model files](#add-the-model-files). The
-required artifacts are the [MAEST ONNX file](https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx)
-and the [Music2Emo chord model](https://huggingface.co/amaai-lab/music2emo/resolve/main/inference/data/btc_model_large_voca.pt?download=true).
-They are intentionally not stored in Git because of their size.
+Run `.\install_musefy.bat` again. It checks the known model paths and
+re-downloads incomplete files, including the [MAEST ONNX
+file](https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx)
+and the Music2Emo files from Hugging Face. They are intentionally not stored in
+Git because of their size.
 
 ## Privacy and responsible use
 

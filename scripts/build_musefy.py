@@ -18,6 +18,7 @@ if TOOLS_DIR.is_dir():
     sys.path.insert(0, str(TOOLS_DIR))
 
 MODEL_ROOT = ROOT / "data" / "models"
+EXTENSION_ROOT = ROOT / "extensions" / "vk-spotify-playlist-exporter"
 BUILD_NAME = os.environ.get("MUSEFY_BUILD_NAME", "Musefy")
 DEMO_TRACK_PATH = (
     ROOT
@@ -25,10 +26,21 @@ DEMO_TRACK_PATH = (
     / "library"
     / "Rick Astley — Rick Astley - Never Gonna Give You Up.m4a"
 )
+MERT_REQUIRED_FILES = (
+    "config.json",
+    "configuration_MERT.py",
+    "modeling_MERT.py",
+    "preprocessor_config.json",
+    "pytorch_model.bin",
+)
 
 
 def _find_mert_snapshot() -> Path:
     """Find a downloaded MERT snapshot without relying on a live user cache."""
+
+    local_snapshot = MODEL_ROOT / "mert"
+    if all((local_snapshot / filename).is_file() for filename in MERT_REQUIRED_FILES):
+        return local_snapshot
 
     cache_roots: list[Path] = []
     hf_home = os.environ.get("HF_HOME")
@@ -56,14 +68,7 @@ def _find_mert_snapshot() -> Path:
             reverse=True,
         )
         for snapshot in snapshots:
-            required = (
-                "config.json",
-                "configuration_MERT.py",
-                "modeling_MERT.py",
-                "preprocessor_config.json",
-                "pytorch_model.bin",
-            )
-            if all((snapshot / filename).is_file() for filename in required):
+            if all((snapshot / filename).is_file() for filename in MERT_REQUIRED_FILES):
                 return snapshot
 
     raise SystemExit(
@@ -204,6 +209,21 @@ def _make_windows_icon() -> Path:
     return ico_path
 
 
+def _copy_browser_extension(bundle_root: Path) -> None:
+    """Include the unpacked browser extension in the portable bundle."""
+
+    if not EXTENSION_ROOT.is_dir():
+        raise SystemExit(f"Browser extension is missing: {EXTENSION_ROOT}")
+
+    destination = bundle_root / "extensions" / EXTENSION_ROOT.name
+    shutil.copytree(
+        EXTENSION_ROOT,
+        destination,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+
+
 def main() -> None:
     if not BUILD_NAME or any(character in BUILD_NAME for character in '\\/:*?"<>|'):
         raise SystemExit(f"Invalid MUSEFY_BUILD_NAME: {BUILD_NAME!r}")
@@ -241,12 +261,16 @@ def main() -> None:
         if conflicting_path.exists():
             conflicting_path.unlink()
 
+    _copy_browser_extension(bundle_root)
+
     bundle_root.joinpath("README.txt").write_text(
         "Musefy application bundle\n"
         "======================\n\n"
         "ML models are included in this installation.\n"
         "User data is stored in %LOCALAPPDATA%\\Musefy\\data.\n"
         "Set MUSEFY_DATA_DIR to use another location.\n\n"
+        "Browser extension: extensions\\vk-spotify-playlist-exporter.\n"
+        "Load this folder as an unpacked extension in Chrome or Edge.\n\n"
         "To pin Musefy: right-click Musefy.exe, choose Show more options,\n"
         "then Pin to taskbar (or Create shortcut).\n",
         encoding="utf-8",

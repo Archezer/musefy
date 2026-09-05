@@ -44,8 +44,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "..\dist\{#BundleName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Musefy"; Filename: "{app}\Musefy.exe"; WorkingDir: "{app}"
-Name: "{commondesktop}\Musefy"; Filename: "{app}\Musefy.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\Musefy"; Filename: "{app}\Musefy.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Musefy"; Filename: "{app}\Musefy.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Musefy.exe"; Description: "Launch Musefy"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent

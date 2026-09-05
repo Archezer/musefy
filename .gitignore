@@ -104,6 +104,7 @@ data/models/**/*.pth
 data/models/**/*.ckpt
 data/models/**/*.bin
 data/models/**/*.safetensors
+data/models/mert/
 
 # Local temporary data
 data/temp/
