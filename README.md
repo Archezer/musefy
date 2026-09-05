@@ -180,11 +180,12 @@ The generated `build/`, `dist/` and model binaries are intentionally ignored by
 Git. Do not commit the multi-gigabyte installer to the source repository; publish
 `dist/Musefy-Setup.exe` as a release artifact or through external file storage.
 
-The release build can also include the optional Rick Astley Easter egg. Keep
-the legally obtained audio file at
+The release build includes the preinstalled Rick Astley demo track. Keep the
+legally obtained audio file at
 `data/library/Rick Astley — Rick Astley - Never Gonna Give You Up.m4a` on the
-builder's machine. It is ignored by Git, but the build copies it into the
-installer and imports it into a new user's library on first launch.
+builder's machine. This single file is explicitly tracked; all other files in
+`data/library/` remain ignored. The build copies the track into the installer
+and imports it into a new user's library on first launch.
 
 #### Complete source installation (Windows)
 

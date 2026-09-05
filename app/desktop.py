@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from app.domain.models import User
+from app.domain.models import Track, User
 from app.ingestion.audio import AudioIngestionService
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
@@ -24,11 +24,15 @@ from app.storage.database import (
     create_database,
     create_session,
 )
+from app.storage.paths import BUNDLED_DATA_DIR
 from app.storage.repository import SQLAlchemyMusicStore
 from app.ui.components import MUSEFY_ICON_SVG, svg_icon
 from app.ui.main_window import MainWindow
 
 CURRENT_USER_ID = "user-1"
+DEMO_TRACK_SOURCE = "musefy_easter_egg"
+DEMO_TRACK_SOURCE_ID = "never-gonna-give-you-up"
+DEMO_TRACK_FILENAME = "Rick Astley — Rick Astley - Never Gonna Give You Up.m4a"
 _NATIVE_MUSEFY_ICON_HANDLE = None
 
 
@@ -39,6 +43,7 @@ def main() -> None:
     _ensure_current_user(store)
 
     ingestion_service = AudioIngestionService(store)
+    demo_track = _ensure_demo_track(ingestion_service, store)
     interaction_service = InteractionService(store)
     playback_queue_service = PlaybackQueueService()
     playlist_management_service = PlaylistManagementService(store)
@@ -102,6 +107,8 @@ def main() -> None:
     window.setWindowIcon(musefy_icon)
     window.show()
     _apply_windows_taskbar_icon(window)
+    if demo_track is not None:
+        window._enqueue_genre_analysis(demo_track)
 
     sys.exit(qt_application.exec())
 
@@ -138,11 +145,41 @@ def _find_musefy_asset(filename: str) -> Path | None:
         Path(getattr(sys, "_MEIPASS", "")),
         Path(sys.executable).resolve().parent / "_internal",
     )
+
     for root in roots:
         candidate = root / "assets" / filename
         if candidate.is_file():
             return candidate
     return None
+
+
+def _ensure_demo_track(
+    ingestion_service: AudioIngestionService,
+    store: SQLAlchemyMusicStore,
+) -> Track | None:
+    """Install the bundled test track into the user's library once."""
+
+    if BUNDLED_DATA_DIR is None:
+        return None
+
+    existing_track = store.get_track_by_source(
+        DEMO_TRACK_SOURCE,
+        DEMO_TRACK_SOURCE_ID,
+    )
+    if existing_track is not None:
+        return None
+
+    bundled_track_path = BUNDLED_DATA_DIR / "demo" / DEMO_TRACK_FILENAME
+    if not bundled_track_path.is_file():
+        return None
+
+    return ingestion_service.ingest(
+        bundled_track_path,
+        title="Never Gonna Give You Up",
+        artist="Rick Astley",
+        source=DEMO_TRACK_SOURCE,
+        source_id=DEMO_TRACK_SOURCE_ID,
+    )
 
 
 def _apply_windows_taskbar_icon(window: MainWindow) -> None:

@@ -151,18 +151,18 @@ def _model_data_arguments() -> list[str]:
     )
     _add_data_files(arguments, _find_mert_snapshot(), "data/models/mert")
     _add_data_files(arguments, _find_ffmpeg_bin(), "data/ffmpeg")
-    if DEMO_TRACK_PATH.is_file():
-        arguments.extend(
-            [
-                "--add-data",
-                f"{DEMO_TRACK_PATH}{os.pathsep}data/demo",
-            ]
+    if not DEMO_TRACK_PATH.is_file():
+        raise SystemExit(
+            "The preinstalled demo track is missing:\n"
+            f"  - {DEMO_TRACK_PATH}"
         )
-    else:
-        print(
-            "Demo track not found; building without the optional Easter egg: "
-            f"{DEMO_TRACK_PATH}"
-        )
+
+    arguments.extend(
+        [
+            "--add-data",
+            f"{DEMO_TRACK_PATH}{os.pathsep}data/demo",
+        ]
+    )
     return arguments
 
 

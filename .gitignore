@@ -92,7 +92,8 @@ target/
 
 
 data/inbox/
-data/library/
+data/library/*
+!data/library/Rick Astley — Rick Astley - Never Gonna Give You Up.m4a
 data/playlist_covers/
 data/track_covers/
 
