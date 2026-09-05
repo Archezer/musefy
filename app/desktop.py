@@ -39,6 +39,7 @@ _NATIVE_MUSEFY_ICON_HANDLE = None
 
 
 def main() -> None:
+    _set_windows_app_user_model_id()
     create_database()
 
     store = SQLAlchemyMusicStore(create_session)
@@ -82,7 +83,6 @@ def main() -> None:
         track_radio=track_radio,
     )
 
-    _set_windows_app_user_model_id()
     qt_application = QApplication(sys.argv)
     qt_application.setApplicationName("Musefy")
     qt_application.setApplicationDisplayName("Musefy")
