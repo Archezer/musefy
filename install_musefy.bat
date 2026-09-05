@@ -23,11 +23,19 @@ echo              Musefy setup
 echo ========================================
 echo.
 
-set "MUSEFY_INSTALL_PROFILE=cpu"
-where nvidia-smi >nul 2>nul
-if not errorlevel 1 (
-    nvidia-smi -L >nul 2>&1
-    if not errorlevel 1 set "MUSEFY_INSTALL_PROFILE=cuda"
+if defined MUSEFY_FORCE_PROFILE (
+    set "MUSEFY_INSTALL_PROFILE=%MUSEFY_FORCE_PROFILE%"
+    if /I not "%MUSEFY_INSTALL_PROFILE%"=="cpu" if /I not "%MUSEFY_INSTALL_PROFILE%"=="cuda" (
+        echo [ERROR] MUSEFY_FORCE_PROFILE must be cpu or cuda.
+        exit /b 1
+    )
+) else (
+    set "MUSEFY_INSTALL_PROFILE=cpu"
+    where nvidia-smi >nul 2>nul
+    if not errorlevel 1 (
+        nvidia-smi -L >nul 2>&1
+        if not errorlevel 1 set "MUSEFY_INSTALL_PROFILE=cuda"
+    )
 )
 
 echo Hardware profile: %MUSEFY_INSTALL_PROFILE%

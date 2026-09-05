@@ -154,31 +154,42 @@ send them to another person, or use cookies from an account you do not control.
 
 #### Ready-to-use Windows installer
 
-For a normal user, distribute `dist/Musefy-Setup.exe`. The installer contains
-the Musefy runtime, the desktop application and all local ML models, including
-MERT. The user only runs the setup file, chooses an installation directory and
-then starts Musefy from the desktop or Start menu shortcut. Python, `uv`, Git,
+For a normal user, download the small `Musefy-Setup.exe` from GitHub Releases
+and run it. This profile selector checks whether `nvidia-smi` can see a working
+NVIDIA driver, then downloads the matching CPU or CUDA package from the same
+release. The downloaded package is verified with SHA-256 and launched
+automatically. The user does not manually handle the package parts.
+
+The selected package contains the Musefy runtime, the desktop application, all
+local ML models including MERT, and the shared FFmpeg files. Python, `uv`, Git,
 the repository and manual model downloads are not required on the user's PC.
+Internet access is required during the first installation so the selector can
+download the package; after installation, local analysis does not need model
+downloads.
 
-An NVIDIA driver is optional: the packaged application uses CUDA when the
-driver and GPU are available and falls back to CPU otherwise. A separate CUDA
-Toolkit is not required. The release installer also includes the shared FFmpeg
-files needed for audio decoding and YouTube imports.
+An NVIDIA driver is optional. The selector uses the CUDA package when a working
+NVIDIA driver is detected, while the application performs the final
+`torch.cuda.is_available()` check and falls back to CPU if CUDA cannot start. A
+separate CUDA Toolkit is not required. The release also provides the complete
+CPU installer directly and the CUDA installer as automatically joined parts for
+manual or scripted downloads.
 
-The installer is generated from the open source code with:
+The release build is generated from the open source code with:
 
 ```powershell
-.\build_installer.bat
+.\build_release.bat v1.0.0
 ```
 
 The maintainer needs Python, `uv`, the model files below, a cached MERT model,
 an installed shared FFmpeg build, and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-once to build the release installer. The source code remains open in this
-repository; the installer is only the convenient distribution artifact.
+once to build the release packages. The script builds CPU and CUDA variants,
+splits packages that exceed GitHub's per-file limit, and creates the one-file
+selector. The source code remains open in this repository; the release assets
+are only convenient distribution artifacts.
 
 The generated `build/`, `dist/` and model binaries are intentionally ignored by
-Git. Do not commit the multi-gigabyte installer to the source repository; publish
-`dist/Musefy-Setup.exe` as a release artifact or through external file storage.
+Git. Do not commit the multi-gigabyte installers to the source repository;
+publish the selector and profile assets as a GitHub Release.
 
 The release build includes the preinstalled Rick Astley demo track. Keep the
 legally obtained audio file at

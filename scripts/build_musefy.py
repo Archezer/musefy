@@ -18,6 +18,7 @@ if TOOLS_DIR.is_dir():
     sys.path.insert(0, str(TOOLS_DIR))
 
 MODEL_ROOT = ROOT / "data" / "models"
+BUILD_NAME = os.environ.get("MUSEFY_BUILD_NAME", "Musefy")
 DEMO_TRACK_PATH = (
     ROOT
     / "data"
@@ -204,6 +205,9 @@ def _make_windows_icon() -> Path:
 
 
 def main() -> None:
+    if not BUILD_NAME or any(character in BUILD_NAME for character in '\\/:*?"<>|'):
+        raise SystemExit(f"Invalid MUSEFY_BUILD_NAME: {BUILD_NAME!r}")
+
     ico_path = _make_windows_icon()
     from PyInstaller.__main__ import run
 
@@ -216,7 +220,7 @@ def main() -> None:
             "--onedir",
             "--windowed",
             "--name",
-            "Musefy",
+            BUILD_NAME,
             "--icon",
             str(ico_path),
             "--add-data",
@@ -228,7 +232,7 @@ def main() -> None:
         ]
     )
 
-    bundle_root = ROOT / "dist" / "Musefy"
+    bundle_root = ROOT / "dist" / BUILD_NAME
     # PyInstaller can pick up ICU DLLs from optional packages. They shadow
     # Qt's bundled ICU data on Windows and make QtWidgets fail with WinError
     # 127; Musefy uses Qt's own icudtl.dat instead.

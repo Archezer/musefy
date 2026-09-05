@@ -2,6 +2,8 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Archezer"
 #define MyAppURL "https://github.com/Archezer/musefy"
+#define BundleName "Musefy"
+#define OutputName "Musefy-Setup"
 
 [Setup]
 AppId={{A0B5D258-0D37-4CF4-A4F3-7E3CF2E6A861}
@@ -18,7 +20,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
-OutputBaseFilename=Musefy-Setup
+OutputBaseFilename={#OutputName}
 SetupIconFile=..\assets\musefy-mark.ico
 UninstallDisplayIcon={app}\Musefy.exe
 Compression=lzma2/fast
@@ -35,7 +37,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
-Source: "..\dist\Musefy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\{#BundleName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Musefy"; Filename: "{app}\Musefy.exe"; WorkingDir: "{app}"
