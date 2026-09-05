@@ -248,9 +248,11 @@ it. To force a profile for troubleshooting, set `MUSEFY_FORCE_PROFILE` to
 ##### 3. Launch Musefy from source
 
 The installer creates Musefy shortcuts in the Start Menu and on the desktop.
-It also builds a small open-source native `Musefy.exe` launcher with the Musefy
-icon. The launcher starts the windowed Python runtime, so no console window
-appears. Its shortcuts carry the same AppUserModelID as the application, so
+It also builds a small open-source native `Musefy.exe` host with the Musefy
+icon. The host embeds the managed Python runtime in the same Windows process,
+so the taskbar sees `Musefy.exe` instead of a generic Python process and no
+console window appears. Its shortcuts carry the same AppUserModelID as the
+application, so
 Windows can group the running window with the pinned button and relaunch it
 after a restart. If an older Python shortcut is already pinned, unpin it and
 pin the new Musefy shortcut once. The terminal command remains available for

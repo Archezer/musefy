@@ -1,7 +1,8 @@
 using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 internal static class MusefyLauncher
@@ -23,7 +24,7 @@ internal static class MusefyLauncher
     {
         void GetPath(
             [Out, MarshalAs(UnmanagedType.LPWStr)]
-            System.Text.StringBuilder path,
+            StringBuilder path,
             int maxPath,
             IntPtr fileData,
             int flags
@@ -35,7 +36,7 @@ internal static class MusefyLauncher
 
         void GetDescription(
             [Out, MarshalAs(UnmanagedType.LPWStr)]
-            System.Text.StringBuilder description,
+            StringBuilder description,
             int maxDescription
         );
 
@@ -43,7 +44,7 @@ internal static class MusefyLauncher
 
         void GetWorkingDirectory(
             [Out, MarshalAs(UnmanagedType.LPWStr)]
-            System.Text.StringBuilder directory,
+            StringBuilder directory,
             int maxDirectory
         );
 
@@ -51,7 +52,7 @@ internal static class MusefyLauncher
 
         void GetArguments(
             [Out, MarshalAs(UnmanagedType.LPWStr)]
-            System.Text.StringBuilder arguments,
+            StringBuilder arguments,
             int maxArguments
         );
 
@@ -67,7 +68,7 @@ internal static class MusefyLauncher
 
         void GetIconLocation(
             [Out, MarshalAs(UnmanagedType.LPWStr)]
-            System.Text.StringBuilder iconPath,
+            StringBuilder iconPath,
             int maxIconPath,
             out int iconIndex
         );
@@ -145,6 +146,24 @@ internal static class MusefyLauncher
         public long ForceSize;
     }
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void PySetWideStringDelegate(IntPtr value);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void PyInitializeDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int PyFinalizeExDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int PyRunSimpleStringFlagsDelegate(
+        IntPtr code,
+        IntPtr flags
+    );
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void PyErrPrintDelegate();
+
     [DllImport(
         "shell32.dll",
         CharSet = CharSet.Unicode,
@@ -156,6 +175,18 @@ internal static class MusefyLauncher
 
     [DllImport("ole32.dll")]
     private static extern int PropVariantClear(ref PropVariant value);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibrary(string fileName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr GetProcAddress(IntPtr module, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeLibrary(IntPtr module);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetDllDirectory(string path);
 
     [STAThread]
     private static int Main(string[] args)
@@ -178,41 +209,237 @@ internal static class MusefyLauncher
             }
         }
 
-        string pythonw = Path.Combine(root, ".venv", "Scripts", "pythonw.exe");
-        if (!File.Exists(pythonw))
+        try
+        {
+            return RunEmbeddedPython(root);
+        }
+        catch (Exception error)
+        {
+            return ShowError("Musefy could not be started:\n" + error.Message);
+        }
+    }
+
+    private static int RunEmbeddedPython(string root)
+    {
+        string virtualEnvironment = Path.Combine(root, ".venv");
+        string configPath = Path.Combine(virtualEnvironment, "pyvenv.cfg");
+        if (!File.Exists(configPath))
         {
             return ShowError(
                 "Musefy is not installed correctly. Run install_musefy.bat again."
             );
         }
 
-        ProcessStartInfo startInfo = new ProcessStartInfo
+        string pythonHome = ReadPythonHome(configPath);
+        string pythonDllPath = Path.Combine(pythonHome, "python312.dll");
+        if (!File.Exists(pythonDllPath))
         {
-            FileName = pythonw,
-            Arguments = "-m app.desktop",
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+            return ShowError(
+                "The managed Python runtime is incomplete. Run install_musefy.bat again."
+            );
+        }
+
+        string sitePackages = Path.Combine(
+            virtualEnvironment,
+            "Lib",
+            "site-packages"
+        );
+        string scripts = Path.Combine(virtualEnvironment, "Scripts");
+        string oldPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+        Environment.SetEnvironmentVariable(
+            "PATH",
+            string.Join(
+                Path.PathSeparator.ToString(),
+                new[] { scripts, pythonHome, Path.Combine(pythonHome, "DLLs"), oldPath }
+            )
+        );
+        Environment.SetEnvironmentVariable("VIRTUAL_ENV", virtualEnvironment);
+
+        if (!SetDllDirectory(pythonHome))
+        {
+            throw new InvalidOperationException(
+                "Could not configure the managed Python runtime directory."
+            );
+        }
+
+        IntPtr pythonModule = LoadLibrary(pythonDllPath);
+        if (pythonModule == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "Could not load python312.dll."
+            );
+        }
 
         try
         {
-            using (Process process = Process.Start(startInfo))
-            {
-                if (process == null)
-                {
-                    return ShowError("Musefy could not be started.");
-                }
+            PySetWideStringDelegate setPath = LoadPythonFunction<PySetWideStringDelegate>(
+                pythonModule,
+                "Py_SetPath"
+            );
+            PySetWideStringDelegate setProgramName = LoadPythonFunction<PySetWideStringDelegate>(
+                pythonModule,
+                "Py_SetProgramName"
+            );
+            PyInitializeDelegate initialize = LoadPythonFunction<PyInitializeDelegate>(
+                pythonModule,
+                "Py_Initialize"
+            );
+            PyFinalizeExDelegate finalize = LoadPythonFunction<PyFinalizeExDelegate>(
+                pythonModule,
+                "Py_FinalizeEx"
+            );
+            PyRunSimpleStringFlagsDelegate runSimpleString = LoadPythonFunction<PyRunSimpleStringFlagsDelegate>(
+                pythonModule,
+                "PyRun_SimpleStringFlags"
+            );
+            PyErrPrintDelegate printError = LoadPythonFunction<PyErrPrintDelegate>(
+                pythonModule,
+                "PyErr_Print"
+            );
 
-                process.WaitForExit();
+            IntPtr programName = Marshal.StringToCoTaskMemUni(
+                Path.Combine(root, "Musefy.exe")
+            );
+            IntPtr pythonPath = Marshal.StringToCoTaskMemUni(
+                BuildPythonPath(root, pythonHome, sitePackages)
+            );
+            try
+            {
+                // CPython keeps these pointers until initialization, so retain
+                // the unmanaged strings through the whole interpreter session.
+                setProgramName(programName);
+                setPath(pythonPath);
+                initialize();
+
+                try
+                {
+                    string code = BuildPythonBootstrap(root, sitePackages);
+                    int result = RunUtf8PythonCode(runSimpleString, code);
+                    if (result != 0)
+                    {
+                        printError();
+                        return ShowError(
+                            "Musefy stopped because its Python application failed."
+                        );
+                    }
+                }
+                finally
+                {
+                    finalize();
+                }
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(programName);
+                Marshal.FreeCoTaskMem(pythonPath);
             }
         }
-        catch (Exception error)
+        finally
         {
-            return ShowError("Musefy could not be started:\n" + error.Message);
+            FreeLibrary(pythonModule);
+            SetDllDirectory(null);
         }
 
         return 0;
+    }
+
+    private static string ReadPythonHome(string configPath)
+    {
+        foreach (string line in File.ReadAllLines(configPath))
+        {
+            const string prefix = "home = ";
+            if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string home = line.Substring(prefix.Length).Trim();
+                if (Directory.Exists(home))
+                {
+                    return home;
+                }
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Python home was not found in .venv\\pyvenv.cfg."
+        );
+    }
+
+    private static string BuildPythonPath(
+        string root,
+        string pythonHome,
+        string sitePackages
+    )
+    {
+        List<string> paths = new List<string>
+        {
+            root,
+            sitePackages,
+            Path.Combine(pythonHome, "python312.zip"),
+            Path.Combine(pythonHome, "Lib"),
+            Path.Combine(pythonHome, "DLLs"),
+            pythonHome,
+        };
+        return string.Join(Path.PathSeparator.ToString(), paths);
+    }
+
+    private static string BuildPythonBootstrap(string root, string sitePackages)
+    {
+        string rootLiteral = PythonStringLiteral(root);
+        string sitePackagesLiteral = PythonStringLiteral(sitePackages);
+        return string.Join(
+            "\n",
+            new[]
+            {
+                "import os, runpy, site, sys",
+                "root = " + rootLiteral,
+                "site_packages = " + sitePackagesLiteral,
+                "os.chdir(root)",
+                "sys.path.insert(0, root)",
+                "site.addsitedir(site_packages)",
+                "try:",
+                "    runpy.run_module('app.desktop', run_name='__main__')",
+                "except SystemExit:",
+                "    pass",
+                "",
+            }
+        );
+    }
+
+    private static string PythonStringLiteral(string value)
+    {
+        return "'"
+            + value.Replace("\\", "\\\\").Replace("'", "\\'")
+            + "'";
+    }
+
+    private static int RunUtf8PythonCode(
+        PyRunSimpleStringFlagsDelegate runSimpleString,
+        string code
+    )
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(code + "\0");
+        GCHandle handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+        try
+        {
+            return runSimpleString(handle.AddrOfPinnedObject(), IntPtr.Zero);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    private static T LoadPythonFunction<T>(IntPtr module, string name)
+        where T : class
+    {
+        IntPtr address = GetProcAddress(module, name);
+        if (address == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "Python function was not found: " + name
+            );
+        }
+
+        return Marshal.GetDelegateForFunctionPointer(address, typeof(T)) as T;
     }
 
     private static void CreateShortcuts(string root)
@@ -256,29 +483,8 @@ internal static class MusefyLauncher
             link.SetDescription("Musefy music recommendation app");
             link.SetIconLocation(icon, 0);
             link.SetShowCmd(1);
-            try
-            {
-                SetShortcutAppUserModelId(link);
-            }
-            catch (Exception error)
-            {
-                throw new InvalidOperationException(
-                    "Could not set shortcut AppUserModelID: " + error.Message,
-                    error
-                );
-            }
-
-            try
-            {
-                ((IPersistFile)link).Save(location, true);
-            }
-            catch (Exception error)
-            {
-                throw new InvalidOperationException(
-                    "Could not save shortcut: " + error.Message,
-                    error
-                );
-            }
+            SetShortcutAppUserModelId(link);
+            ((IPersistFile)link).Save(location, true);
         }
         finally
         {

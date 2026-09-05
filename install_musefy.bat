@@ -110,8 +110,9 @@ if errorlevel 1 (
 echo [6/7] Building the Musefy Windows launcher...
 call :build_source_launcher
 if errorlevel 1 (
-    echo [WARNING] Native launcher could not be built.
-    echo Falling back to the windowed Python launcher.
+    echo [ERROR] Native Musefy.exe host could not be built.
+    echo Close any running Musefy window and run this installer again.
+    goto :failure
 )
 
 echo [7/7] Creating Start Menu and desktop shortcuts...
@@ -165,13 +166,12 @@ if not defined MUSEFY_UV_EXE if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "MUS
 exit /b 0
 
 :create_shortcuts
-if "%MUSEFY_LAUNCHER%"=="1" (
-    "%MUSEFY_ROOT%\Musefy.exe" --create-shortcuts
-    exit /b %errorlevel%
+if not "%MUSEFY_LAUNCHER%"=="1" (
+    echo [ERROR] Native Musefy.exe host is not available.
+    exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; if ($env:MUSEFY_LAUNCHER -eq '1') { $target = Join-Path $root 'Musefy.exe'; $arguments = '' } else { $target = Join-Path $root '.venv\Scripts\pythonw.exe'; $arguments = '-m app.desktop' }; if (-not (Test-Path $target)) { throw 'Musefy launcher was not found.' }; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = $arguments; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
+"%MUSEFY_ROOT%\Musefy.exe" --create-shortcuts
 exit /b %errorlevel%
 
 :build_source_launcher
