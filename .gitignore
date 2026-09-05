@@ -11,6 +11,8 @@ env/
 build/
 develop-eggs/
 dist/
+.musefy-launcher/
+Musefy.exe
 downloads/
 eggs/
 .eggs/

@@ -248,13 +248,13 @@ it. To force a profile for troubleshooting, set `MUSEFY_FORCE_PROFILE` to
 ##### 3. Launch Musefy from source
 
 The installer creates Musefy shortcuts in the Start Menu and on the desktop.
-These shortcuts use the windowed `pythonw.exe` launcher, so no console window
-appears and the Musefy icon is used instead of the Python icon. Open Musefy from
-either shortcut, then right-click it and choose **Pin to taskbar** if you want a
-permanent taskbar button. If an older Python shortcut is already pinned, unpin
-it and pin the new Musefy shortcut once. The pinned shortcut remains available
-after a Windows restart. The terminal command remains available for
-troubleshooting:
+It also builds a small open-source native `Musefy.exe` launcher with the Musefy
+icon. The launcher starts the windowed Python runtime, so no console window
+appears. Open Musefy from either shortcut, then right-click it and choose **Pin
+to taskbar** if you want a permanent taskbar button. If an older Python shortcut
+is already pinned, unpin it and pin the new Musefy shortcut once. The pinned
+shortcut remains available after a Windows restart. The terminal command remains
+available for troubleshooting:
 
 ```powershell
 .venv\Scripts\python.exe -m app.desktop

@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+set "MUSEFY_ROOT=%CD%"
 
 title Musefy setup
 
@@ -106,7 +107,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [6/6] Creating Start Menu and desktop shortcuts...
+echo [6/7] Building the Musefy Windows launcher...
+call :build_source_launcher
+if errorlevel 1 (
+    echo [WARNING] Native launcher could not be built.
+    echo Falling back to the windowed Python launcher.
+)
+
+echo [7/7] Creating Start Menu and desktop shortcuts...
 call :create_shortcuts
 if errorlevel 1 (
     echo [WARNING] Could not create shortcuts automatically.
@@ -157,10 +165,22 @@ if not defined MUSEFY_UV_EXE if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "MUS
 exit /b 0
 
 :create_shortcuts
-set "MUSEFY_ROOT=%CD%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; $target = Join-Path $root '.venv\Scripts\pythonw.exe'; if (-not (Test-Path $target)) { throw 'pythonw.exe was not found in the project environment.' }; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = '-m app.desktop'; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
+    "$ErrorActionPreference = 'Stop'; $root = $env:MUSEFY_ROOT; if ($env:MUSEFY_LAUNCHER -eq '1') { $target = Join-Path $root 'Musefy.exe'; $arguments = '' } else { $target = Join-Path $root '.venv\Scripts\pythonw.exe'; $arguments = '-m app.desktop' }; if (-not (Test-Path $target)) { throw 'Musefy launcher was not found.' }; $icon = Join-Path $root 'assets\musefy-mark.ico'; $shell = New-Object -ComObject WScript.Shell; $locations = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Musefy.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Musefy.lnk')); foreach ($location in $locations) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $location) | Out-Null; $shortcut = $shell.CreateShortcut($location); $shortcut.TargetPath = $target; $shortcut.Arguments = $arguments; $shortcut.WorkingDirectory = $root; if (Test-Path $icon) { $shortcut.IconLocation = $icon }; $shortcut.Save() }"
 exit /b %errorlevel%
+
+:build_source_launcher
+set "MUSEFY_LAUNCHER="
+set "MUSEFY_CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not exist "%MUSEFY_CSC%" set "MUSEFY_CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+if not exist "%MUSEFY_CSC%" exit /b 1
+if not exist "%MUSEFY_ROOT%\launcher\MusefyLauncher.cs" exit /b 1
+if not exist "%MUSEFY_ROOT%\assets\musefy-mark.ico" exit /b 1
+
+"%MUSEFY_CSC%" /nologo /target:winexe /platform:x64 /optimize+ /r:System.Windows.Forms.dll /out:"%MUSEFY_ROOT%\Musefy.exe" /win32icon:"%MUSEFY_ROOT%\assets\musefy-mark.ico" "%MUSEFY_ROOT%\launcher\MusefyLauncher.cs"
+if errorlevel 1 exit /b 1
+set "MUSEFY_LAUNCHER=1"
+exit /b 0
 
 :failure
 echo [ERROR] Musefy environment verification failed.
