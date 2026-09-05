@@ -113,6 +113,9 @@ data/cache/
 data/logs/
 
 # Runtime files
+data/music_map_snapshot.json
+data/music_map_snapshot.png
+.pytest-run/
 *.log
 *.part
 *.ytdl
