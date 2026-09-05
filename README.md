@@ -5,6 +5,9 @@ from files, YouTube, Spotify and SoundCloud links, analyses each track locally, 
 recommendations without uploading the library or listening history to a cloud
 service.
 
+<img width="1229" height="822" alt="image" src="https://github.com/user-attachments/assets/f9c8ac76-fcca-49f5-9705-f86f1fd736e0" />
+
+
 The app is designed around three complementary signals:
 
 - **MAEST** generates genre predictions and a 768-dimensional musical embedding
