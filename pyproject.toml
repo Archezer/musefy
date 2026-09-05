@@ -9,7 +9,7 @@ dependencies = [
     "librosa>=1.0.0",
     "mutagen>=1.48.1",
     "numpy>=2.5.2",
-    "onnxruntime-gpu==1.26.0",
+    "torchcodec>=0.16.0",
     "pandas>=3.0.5",
     "pyside6>=6.11.2",
     "pytest>=9.1.1",
@@ -18,18 +18,45 @@ dependencies = [
     "scikit-learn>=1.9.0",
     "sqlalchemy>=2.0.52",
     "telethon>=1.44.0",
-    "torch>=2.13.0",
-    "torchaudio>=2.11.0",
-    "torchcodec>=0.16.0",
-    "torchvision>=0.28.0",
     "transformers>=4.40,<5",
     "yt-dlp[default]>=2026.8.19",
 ]
 
+[project.optional-dependencies]
+cpu = [
+    "onnxruntime==1.26.0",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.28.0",
+]
+cuda = [
+    "onnxruntime-gpu==1.26.0",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.28.0",
+]
+
 [tool.uv.sources]
-torch = { index = "pytorch-cuda" }
-torchvision = { index = "pytorch-cuda" }
-torchaudio = { index = "pytorch-cuda" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cuda", extra = "cuda" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cuda", extra = "cuda" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cuda", extra = "cuda" },
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cuda" },
+    ],
+]
 
 [dependency-groups]
 dev = [
@@ -40,6 +67,11 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cuda"

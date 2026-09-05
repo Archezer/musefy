@@ -198,10 +198,144 @@ def _apply_windows_taskbar_icon(window: MainWindow) -> None:
             set_class_long_ptr.restype = ctypes.c_void_p
             set_class_long_ptr(hwnd, -14, handle)  # GCLP_HICON
             set_class_long_ptr(hwnd, -34, handle)  # GCLP_HICONSM
+        _set_windows_taskbar_properties(hwnd, icon_path)
         _NATIVE_MUSEFY_ICON_HANDLE = handle
-    except (AttributeError, OSError, TypeError, ValueError):
+    except (AttributeError, OSError, TypeError, ValueError, ctypes.ArgumentError):
         # Qt's icon remains active if the optional native shell call fails.
         return
+
+
+def _set_windows_taskbar_properties(hwnd: int, icon_path: Path) -> None:
+    """Tell the shell which icon belongs to an explicit taskbar identity.
+
+    A source launch is hosted by ``uv``/Python, whose executable has a generic
+    icon.  ``WM_SETICON`` updates the title bar, but Windows can still use the
+    host executable for an unpinned taskbar button when an explicit
+    AppUserModelID is present.  The shell property store lets us provide the
+    same icon resource for that AppUserModelID without adding a Windows-only
+    dependency such as pywin32.
+    """
+
+    class _Guid(ctypes.Structure):
+        _fields_ = [
+            ("data1", ctypes.c_ulong),
+            ("data2", ctypes.c_ushort),
+            ("data3", ctypes.c_ushort),
+            ("data4", ctypes.c_ubyte * 8),
+        ]
+
+    class _PropertyKey(ctypes.Structure):
+        _fields_ = [("fmtid", _Guid), ("pid", ctypes.c_ulong)]
+
+    class _PropVariantValue(ctypes.Union):
+        _fields_ = [("pwsz_val", ctypes.c_wchar_p)]
+
+    class _PropVariant(ctypes.Structure):
+        _anonymous_ = ("value",)
+        _fields_ = [
+            ("vt", ctypes.c_ushort),
+            ("reserved1", ctypes.c_ushort),
+            ("reserved2", ctypes.c_ushort),
+            ("reserved3", ctypes.c_ushort),
+            ("value", _PropVariantValue),
+        ]
+
+    def _guid(
+        data1: int,
+        data2: int,
+        data3: int,
+        data4: tuple[int, ...],
+    ) -> _Guid:
+        value = _Guid()
+        value.data1 = data1
+        value.data2 = data2
+        value.data3 = data3
+        value.data4[:] = data4
+        return value
+
+    # GUID used by PKEY_AppUserModel_ID and PKEY_AppUserModel_RelaunchIconResource.
+    app_user_model_fmtid = _guid(
+        0x9F4C2855,
+        0x9F79,
+        0x4B39,
+        (0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3),
+    )
+    property_store_iid = _guid(
+        0x886D8EEB,
+        0x8CF2,
+        0x4446,
+        (0x8D, 0x02, 0xCD, 0xBA, 0x1D, 0xBD, 0xCF, 0x99),
+    )
+    app_id_key = _PropertyKey(app_user_model_fmtid, 5)
+    relaunch_icon_key = _PropertyKey(app_user_model_fmtid, 3)
+    app_id_value = _PropVariant(vt=31, pwsz_val="Archzer.Musefy")
+    icon_value = _PropVariant(
+        vt=31,
+        pwsz_val=f"{icon_path},0",
+    )
+
+    ole32 = ctypes.windll.ole32
+    shell32 = ctypes.windll.shell32
+    ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+    ole32.CoInitialize.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    shell32.SHGetPropertyStoreForWindow.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(_Guid),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetPropertyStoreForWindow.restype = ctypes.c_long
+
+    initialized = ole32.CoInitialize(None)
+    try:
+        store = ctypes.c_void_p()
+        result = shell32.SHGetPropertyStoreForWindow(
+            hwnd,
+            ctypes.byref(property_store_iid),
+            ctypes.byref(store),
+        )
+        if result != 0 or not store.value:
+            return
+
+        vtable = ctypes.cast(
+            store,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
+        ).contents
+        set_value = ctypes.WINFUNCTYPE(
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.POINTER(_PropertyKey),
+            ctypes.POINTER(_PropVariant),
+        )(vtable[6])
+        commit = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vtable[7])
+        release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+
+        try:
+            if (
+                set_value(
+                    store,
+                    ctypes.byref(app_id_key),
+                    ctypes.byref(app_id_value),
+                )
+                != 0
+            ):
+                return
+            if (
+                set_value(
+                    store,
+                    ctypes.byref(relaunch_icon_key),
+                    ctypes.byref(icon_value),
+                )
+                != 0
+            ):
+                return
+            commit(store)
+        finally:
+            release(store)
+    finally:
+        if initialized in (0, 1):
+            ole32.CoUninitialize()
 
 
 def _set_windows_app_user_model_id() -> None:

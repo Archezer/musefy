@@ -179,26 +179,36 @@ command says otherwise.
 
   If `ffmpeg` is not recognised, restart the terminal and make sure the
   package's `bin` directory is in `PATH`.
-- An up-to-date NVIDIA driver is optional. `uv` installs the CUDA 12.6 PyTorch
-  wheels declared by this project; a separate CUDA Toolkit is not required.
-  CPU mode remains available when no compatible GPU is present.
+- An up-to-date NVIDIA driver is optional. A separate CUDA Toolkit is not
+  required. The included `install_musefy.bat` checks for an NVIDIA GPU before
+  installing dependencies and selects the CPU or CUDA 12.6 PyTorch profile.
+  If PyTorch cannot use CUDA after installation, the script automatically falls
+  back to the CPU profile.
 
 ##### 2. Clone the repository and create the environment
 
 ```powershell
 git clone https://github.com/Archezer/musefy.git
 Set-Location musefy
-uv sync --locked
+.\install_musefy.bat
 ```
 
-`uv sync` creates `.venv` in the project directory and installs the exact
-locked dependency set. Check the interpreter and (if applicable) GPU from the
-same directory:
+The installer creates `.venv` in the project directory and installs the exact
+locked dependency set for one profile. It chooses `cuda` when `nvidia-smi`
+reports a working NVIDIA GPU; otherwise it chooses `cpu`. To choose manually,
+run one of these commands from the repository root (never both at once):
 
 ```powershell
-uv run python --version
-uv run python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
-uv run python -c "import onnxruntime as ort; print('ONNX providers:', ort.get_available_providers())"
+uv sync --locked --extra cpu
+uv sync --locked --extra cuda
+```
+
+Check the interpreter and GPU from the same directory:
+
+```powershell
+.venv\Scripts\python.exe --version
+.venv\Scripts\python.exe -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+.venv\Scripts\python.exe -c "import onnxruntime as ort; print('ONNX providers:', ort.get_available_providers())"
 ```
 
 ##### 3. Add the model files
@@ -245,7 +255,7 @@ automatically from Hugging Face the first time analysis runs and then reused
 from the local Hugging Face cache. To pre-download it while online, run:
 
 ```powershell
-uv run python -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; n='m-a-p/MERT-v1-95M'; Wav2Vec2FeatureExtractor.from_pretrained(n, trust_remote_code=True); AutoModel.from_pretrained(n, trust_remote_code=True); print('MERT cached')"
+.venv\Scripts\python.exe -c "from transformers import AutoModel, Wav2Vec2FeatureExtractor; n='m-a-p/MERT-v1-95M'; Wav2Vec2FeatureExtractor.from_pretrained(n, trust_remote_code=True); AutoModel.from_pretrained(n, trust_remote_code=True); print('MERT cached')"
 ```
 
 To put that cache on another drive, set `HF_HOME` before the command (and before
@@ -272,7 +282,7 @@ playlist_exports\                browser-extension exports
 Start the app from the repository root:
 
 ```powershell
-uv run python -m app.desktop
+.venv\Scripts\python.exe -m app.desktop
 ```
 
 To keep the database, library and models elsewhere, set `MUSEFY_DATA_DIR`
@@ -280,7 +290,7 @@ before launching. The directory is created automatically:
 
 ```powershell
 $env:MUSEFY_DATA_DIR = "D:\Musefy\data"
-uv run python -m app.desktop
+.venv\Scripts\python.exe -m app.desktop
 ```
 
 `MUSEFY_DATA_DIR` affects `music.db`, `library`, `models`, covers and cookies;
@@ -414,7 +424,7 @@ online store account.
    project:
 
    ```powershell
-   uv run python -m app.desktop
+   .venv\Scripts\python.exe -m app.desktop
    ```
 
    The local bridge listens on `http://127.0.0.1:8765`.
@@ -472,12 +482,12 @@ open [notebooks/maest_pipeline.ipynb](notebooks/maest_pipeline.ipynb).
 Run these from the project root:
 
 ```powershell
-uv run pytest -q
-uv run ruff check app tests
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\ruff.exe check app tests
 ```
 
-If imports fail only in a direct `pytest` invocation, use `uv run pytest` from
-the repository root so the project environment and package path are active.
+Run these commands after `install_musefy.bat` from the repository root so the
+selected PyTorch profile is active.
 
 ## Troubleshooting
 
@@ -488,7 +498,7 @@ restart the terminal or VS Code. Then run `ffmpeg -version` again.
 
 ### `TorchCodec is required` or a TorchCodec DLL cannot load
 
-Run `uv sync --locked`, install the FFmpeg shared build, and restart the
+Run `.\install_musefy.bat`, install the FFmpeg shared build, and restart the
 terminal. Verify `ffmpeg -version` before retrying the app.
 
 ### YouTube says that sign-in or cookies are required
