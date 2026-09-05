@@ -1,4 +1,4 @@
-"""Build CPU/CUDA release installers and the one-file profile selector."""
+"""Build CPU/CUDA release installers and the one-file release checker."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def _build_bootstrap(manifest: dict) -> Path:
     )
     bootstrap = DIST_DIR / "Musefy-Setup.exe"
     if not bootstrap.is_file():
-        raise SystemExit(f"Bootstrap installer was not created: {bootstrap}")
+        raise SystemExit(f"Release checker was not created: {bootstrap}")
     return bootstrap
 
 
