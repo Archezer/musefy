@@ -7,6 +7,7 @@ from app.domain.mood import MoodVector
 class RecommendationMode(str, Enum):
     POPULARITY = "popularity"
     MOOD = "mood"
+    GENRE = "genre"
     MY_WAVE = "my_wave"
     TRACK_RADIO = "track_radio"
 
@@ -17,6 +18,7 @@ class RecommendationContext:
     seed_track_id: str | None = None
     target_mood: MoodVector | None = None
     mood_name: str | None = None
+    genre_name: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -25,6 +27,7 @@ class RecommendationContext:
                 self.seed_track_id is not None
                 or self.target_mood is not None
                 or self.mood_name is not None
+                or self.genre_name is not None
             )
         ):
             raise ValueError(
@@ -40,15 +43,34 @@ class RecommendationContext:
                 raise ValueError(
                     "Mood context must not contain a seed track."
                 )
+            if self.genre_name is not None:
+                raise ValueError(
+                    "Mood context must not contain a genre filter."
+                )
             if self.mood_name is not None and not self.mood_name.strip():
                 raise ValueError(
                     "Mood context name must not be empty."
+                )
+
+        if self.mode == RecommendationMode.GENRE:
+            if self.genre_name is None or not self.genre_name.strip():
+                raise ValueError(
+                    "Genre recommendation context needs a genre name."
+                )
+            if (
+                self.seed_track_id is not None
+                or self.target_mood is not None
+                or self.mood_name is not None
+            ):
+                raise ValueError(
+                    "Genre context must not contain extra filters."
                 )
 
         if self.mode == RecommendationMode.MY_WAVE and (
             self.seed_track_id is not None
             or self.target_mood is not None
             or self.mood_name is not None
+            or self.genre_name is not None
         ):
             raise ValueError(
                 "My Wave context must not contain extra filters."
@@ -60,6 +82,7 @@ class RecommendationContext:
                 not self.seed_track_id
                 or self.target_mood is not None
                 or self.mood_name is not None
+                or self.genre_name is not None
             )
         ):
             raise ValueError(
@@ -83,6 +106,13 @@ class RecommendationContext:
         return cls(
             mode=RecommendationMode.TRACK_RADIO,
             seed_track_id=seed_track_id,
+        )
+
+    @classmethod
+    def genre(cls, genre_name: str) -> "RecommendationContext":
+        return cls(
+            mode=RecommendationMode.GENRE,
+            genre_name=genre_name,
         )
 
     @classmethod

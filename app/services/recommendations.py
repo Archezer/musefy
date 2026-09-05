@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from app.domain.models import Recommendation, Track
 from app.domain.mood import MoodVector
@@ -24,7 +24,10 @@ class RecommendationService:
 
     def refresh(self) -> None:
         if self.track_radio is not None:
-            self.track_radio.rebuild()
+            # Track radio performs a cheap seed-to-library search on demand.
+            # Rebuilding the complete all-pairs index here made refreshes
+            # block the UI even though radio does not need that index.
+            self.track_radio.invalidate()
 
     def update_track(self, track: Track) -> None:
         if self.track_radio is not None:
@@ -41,6 +44,7 @@ class RecommendationService:
         context: RecommendationContext | None = None,
         target_mood: MoodVector | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        excluded_track_ids: Collection[str] | None = None,
     ) -> list[Recommendation]:
         normalized_user_id = user_id.strip()
 
@@ -92,6 +96,22 @@ class RecommendationService:
                 should_cancel=should_cancel,
             )
 
+        if context.mode == RecommendationMode.GENRE:
+            genre_recommender = getattr(
+                self.recommender,
+                "recommend_genre",
+                None,
+            )
+            if genre_recommender is None:
+                raise RuntimeError("Genre recommender is not configured.")
+            assert context.genre_name is not None
+            return genre_recommender(
+                user_id=normalized_user_id,
+                genre_name=context.genre_name,
+                limit=limit,
+                should_cancel=should_cancel,
+            )
+
         if context.mode == RecommendationMode.TRACK_RADIO:
             if self.track_radio is None:
                 raise RuntimeError("Track radio is not configured.")
@@ -100,6 +120,8 @@ class RecommendationService:
                 context.seed_track_id,
                 limit=limit,
                 user_id=normalized_user_id,
+                excluded_track_ids=excluded_track_ids,
+                should_cancel=should_cancel,
             )
 
         return self.recommender.recommend(

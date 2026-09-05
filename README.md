@@ -24,8 +24,9 @@ rules when importing content.
 - Search ***YouTube***, import a direct ***YouTube*** link, or load a ***YouTube playlist***.
 - Import a ***Spotify track***, ***album*** or ***playlist***: Spotify supplies metadata, then
   the app searches YouTube for matching audio candidates.
-- Sync newly saved ***Spotify favorites*** at startup and every five minutes, with
-  a playlist-style review flow for selecting the tracks to download.
+- Sync ***Spotify favorites*** incrementally with Sync Last or load the complete
+  saved-track library in Spotify order with Sync All, then review tracks before
+  downloading.
 - Search ***SoundCloud***, load a ***direct track URL***, or load a ***SoundCloud set*** and
   choose which tracks to import through `yt-dlp`.
 - Search ***MP3Party***, choose a result, or load a direct ***MP3Party track URL***.
@@ -35,9 +36,35 @@ rules when importing content.
   track in a local SQLite database.
 - Browse the library, create playlists, delete tracks, and manage a separate
   playback queue.
-- Play normally, shuffle, smart shuffle, or start a mood session.
-- Get four recommendation styles: global recommendations, track radio,
-  mood-first recommendations, and the personalized **My Wave** session.
+- Preserve the current track, playback position, queue and repeat mode when
+  the application is closed and opened again.
+- Stop queued and running track-analysis work during shutdown so the process
+  does not remain in the background consuming CPU.
+- Play normally, shuffle, smart shuffle, or start a mood/genre session.
+- Get five recommendation styles: global recommendations, track radio,
+  mood-first recommendations, genre sessions, and the personalized
+  **My Wave** session.
+
+## Quick start (Windows)
+
+The simplest source-based installation is to download the repository and run
+the included installer. From PowerShell:
+
+```powershell
+git clone https://github.com/Archezer/musefy.git
+Set-Location musefy
+.\install_musefy.bat
+```
+
+The BAT file creates the managed Python environment, installs the locked
+dependencies, installs shared FFmpeg when needed, downloads the local ML
+models, and creates the Musefy shortcuts. It automatically selects the CUDA
+profile when `nvidia-smi` detects a working NVIDIA driver; otherwise it uses
+the CPU profile. A separate CUDA Toolkit is not required.
+
+After installation, launch Musefy from the Start Menu or desktop shortcut.
+The repository is only needed for this source installation; users who prefer
+not to clone it can use the ready-to-use installer from GitHub Releases.
 
 ## How the recommendation system works
 
@@ -52,7 +79,7 @@ audio file
                          ↓
                   local SQLite database
                          ↓
-playback / likes / skips / playlists / selected mood / My Wave
+playback / likes / skips / playlists / selected mood or genre / My Wave
                          ↓
                      ranked queue
 ```
@@ -78,11 +105,14 @@ include melancholic, calm, happy, energetic, dark, romantic, focus and party.
 Mood/My Wave scoring and session refill run in a background worker, with
 cooperative cancellation when the user starts another queue or closes the app.
 
-The **My Wave** entry in the Mood card builds a local profile from positive
-listening signals, combining the user's mood centroid with audio similarity and
-artist/genre affinity. Its recommendation impressions and subsequent playback
-events are stored locally, and the Listening statistics window reports
-the regular listening dashboard while the recommendation metrics remain
+The **Wave** card exposes mood sessions, the user's strongest genres, and a
+**My Wave** entry. Genre labels prefer stored MAEST predictions and fall back to
+imported metadata. Selecting a genre starts a local genre session; My Wave
+builds a local profile from positive listening signals, combining the user's
+mood centroid with audio similarity and artist/genre affinity. Its
+recommendation impressions and subsequent playback events are stored locally,
+and the Listening statistics window reports the regular listening dashboard
+while the recommendation metrics remain
 available locally for analysis (completion rate, skip rate, Recall@10,
 NDCG@10 and artist diversity).
 
@@ -349,13 +379,17 @@ Development Mode, add the Spotify account as a test user in the Developer
 Dashboard. Never commit `.env` or `data/spotify_token.json`. The sync
 checkpoint is also local runtime data and should not be shared.
 
-#### Spotify Sync Last
+#### Spotify saved-track sync
 
-After OAuth, press **Sync Last** either in the import dialog or in Spotify
-settings. Musefy makes one explicit request, reads tracks saved since the
-previous **Sync Last** click, searches YouTube for matching audio, and opens
-the normal playlist-style selection screen. Nothing is downloaded until you
-select the tracks and confirm.
+After OAuth, use either sync button in the import dialog or Spotify settings:
+
+- **Sync Last** makes one explicit request, reads tracks saved since the
+  previous **Sync Last** click, and searches YouTube for matching audio.
+- **Sync All** reads the complete saved-track library in the order returned by
+  Spotify, then searches YouTube for every track.
+
+Both modes open the normal playlist-style selection screen. Nothing is
+downloaded until you select the tracks and confirm.
 
 The last successful Spotify cursor and already-seen track IDs are stored in
 `data/spotify_fav_sync.json`, so restarting Musefy keeps the same incremental
@@ -480,6 +514,13 @@ open [notebooks/maest_pipeline.ipynb](notebooks/maest_pipeline.ipynb).
   session, manually queued tracks play next after the current item.
 - Use **Reanalyze all** after replacing models or changing analysis logic.
 
+When the main window is closed, Musefy first saves the current track, its
+position, the remaining queue, manually queued tracks and the repeat mode.
+Track analysis is cancelled cooperatively and the analysis worker pool is
+drained before the process exits. On the next launch, the saved track and
+queue are restored at the saved position; playback remains paused until the
+user presses Play.
+
 ## Development checks
 
 Run these from the project root:
@@ -526,9 +567,21 @@ ensure port `8888` is free while authentication is running.
 
 ### Genre analysis runs on CPU
 
-Run the CUDA check above. Update the NVIDIA driver if `torch.cuda.is_available()`
-is `False` or `CUDAExecutionProvider` is absent. CPU mode is supported but
-slower.
+Run the CUDA check above. A working CUDA installation should report a PyTorch
+build with a CUDA suffix such as `+cu126`, `CUDA available: True`, and an ONNX
+provider list containing `CUDAExecutionProvider`. If PyTorch reports a `+cpu`
+build, or CUDA is unavailable, run `.\install_musefy.bat` again from the
+repository root. Update the NVIDIA driver if needed. CPU mode is supported but
+slower; audio decoding and some feature extraction steps still use the CPU
+even when neural-network inference runs on the GPU.
+
+### The process remains after closing the window
+
+The current application cancels track analysis and waits for its worker pool
+before exiting. If an older build remains in the background, terminate that
+old process once and relaunch the current `Musefy.exe` shortcut. Do not start
+both the old Python shortcut and the native `Musefy.exe` shortcut at the same
+time.
 
 ### A model file is missing
 

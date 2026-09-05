@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QPushButton,
     QScrollBar,
     QSizePolicy,
     QSlider,
@@ -55,6 +56,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from app.ui.dialog_style import prepare_dialog
@@ -488,6 +490,24 @@ class HoverTableWidget(QTableWidget):
             self._row_widgets[child] = row_index
             child.installEventFilter(self)
 
+    def clear_row_widgets(self) -> None:
+        """Forget embedded row controls before the table is rebuilt.
+
+        QTableWidget destroys cell widgets when its row count is reset, but
+        the hover table's event-filter registry otherwise keeps references to
+        every old control.  Playlist switches and sorting would therefore
+        make each later rebuild more expensive than the previous one.
+        """
+
+        for child in tuple(self._row_widgets):
+            try:
+                child.removeEventFilter(self)
+            except RuntimeError:
+                # Qt may already have deleted a cell widget while the table
+                # was being cleared.
+                pass
+        self._row_widgets.clear()
+
     def eventFilter(self, watched: object, event: object) -> bool:
         if watched is self.viewport():
             event_type = event.type()
@@ -519,6 +539,7 @@ class HoverTableWidget(QTableWidget):
                     not in {
                         "playlistTrackCheck",
                         "playlistRemoveButton",
+                        "trackQueueButton",
                     }
                 ):
                     self._queue_row_click(self._row_widgets[watched])
@@ -816,6 +837,7 @@ class MarqueeLabel(QLabel):
         self._timer = QTimer(self)
         self._timer.setInterval(72)
         self._timer.timeout.connect(self._advance_marquee)
+        self._underline_on_hover = False
         self.setWordWrap(False)
         self.setMinimumWidth(0)
         self.setSizePolicy(
@@ -840,7 +862,9 @@ class MarqueeLabel(QLabel):
     def paintEvent(self, _event: object) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        painter.setFont(self.font())
+        font = self.font()
+        font.setUnderline(self._underline_on_hover and self.underMouse())
+        painter.setFont(font)
         painter.setPen(self.palette().color(self.foregroundRole()))
         painter.setClipRect(self.rect())
 
@@ -863,6 +887,14 @@ class MarqueeLabel(QLabel):
             baseline,
             self._full_text,
         )
+
+    def enterEvent(self, event: object) -> None:
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event: object) -> None:
+        super().leaveEvent(event)
+        self.update()
 
     def _update_timer_state(self) -> None:
         metrics = QFontMetrics(self.font())
@@ -905,6 +937,7 @@ class ClickableMarqueeLabel(MarqueeLabel):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(text, parent=parent)
+        self._underline_on_hover = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mouseReleaseEvent(self, event: object) -> None:
@@ -1088,7 +1121,7 @@ JSON_ICON = """
 </svg>
 """
 def _cover_palette(pixmap: QPixmap) -> tuple[QColor, QColor, QColor]:
-    """Extract three bright, distinct colors from a playlist cover."""
+    """Build a same-hue surface palette from the cover's dominant color."""
 
     image = pixmap.toImage()
     buckets: dict[tuple[int, int, int], int] = {}
@@ -1108,42 +1141,43 @@ def _cover_palette(pixmap: QPixmap) -> tuple[QColor, QColor, QColor]:
                 )
                 buckets[bucket] = buckets.get(bucket, 0) + 1
 
-    candidates = sorted(
-        buckets,
-        key=lambda rgb: (
-            buckets[rgb]
-            * (1.0 + max(rgb) / 255.0)
-        ),
-        reverse=True,
-    )
-    selected: list[QColor] = []
-    for red, green, blue in candidates:
-        color = QColor(red, green, blue)
-        if any(
-            abs(color.red() - current.red())
-            + abs(color.green() - current.green())
-            + abs(color.blue() - current.blue())
-            < 72
-            for current in selected
-        ):
-            continue
-        selected.append(color)
-        if len(selected) == 3:
-            break
-
-    if not selected:
-        # This is only used for a missing/transparent cover.  Real covers
-        # keep their own sampled hues rather than receiving unrelated accent
-        # colors from the application theme.
-        selected.append(QColor("#4EA98C"))
-
-    while len(selected) < 3:
-        source = selected[-1]
-        selected.append(
-            source.darker(118 if len(selected) == 1 else 132)
+    if buckets:
+        dominant_rgb = max(
+            buckets,
+            key=lambda rgb: (
+                buckets[rgb]
+                * (1.0 + QColor(*rgb).saturation() / 255.0 * 0.75)
+                * (0.65 + QColor(*rgb).value() / 255.0)
+            ),
         )
+        dominant = QColor(*dominant_rgb)
+    else:
+        # Only used for a missing or fully transparent cover.
+        dominant = QColor("#4EA98C")
 
-    return tuple(selected[:3])  # type: ignore[return-value]
+    hue = dominant.hue()
+    if hue < 0:
+        hue = 164
+    saturation = max(84, min(232, dominant.saturation()))
+    value = max(72, min(188, dominant.value()))
+
+    return (
+        QColor.fromHsv(
+            hue,
+            saturation,
+            min(255, value + 24),
+        ),
+        QColor.fromHsv(
+            hue,
+            max(72, saturation - 18),
+            min(255, value + 58),
+        ),
+        QColor.fromHsv(
+            (hue + 8) % 360,
+            max(60, saturation - 34),
+            min(255, value + 92),
+        ),
+    )
 
 
 class PlaylistGradientSurface(QFrame):
@@ -1202,7 +1236,7 @@ class PlaylistGradientSurface(QFrame):
         rect = self.rect().adjusted(0, 0, -1, -1)
         radius = 12.0
 
-        base_alpha = 22 if self._selected else 9
+        base_alpha = 14 if self._selected else 6
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(255, 255, 255, base_alpha))
         painter.drawRoundedRect(rect, radius, radius)
@@ -1210,8 +1244,8 @@ class PlaylistGradientSurface(QFrame):
         # Keep the selected playlist visibly "lit" after the pointer leaves
         # it; hovering raises the same gradient to full intensity.
         gradient_opacity = max(
-            self._hover_opacity,
-            0.68 if self._selected else 0.0,
+            self._hover_opacity * 0.72,
+            0.42 if self._selected else 0.0,
         )
         if gradient_opacity <= 0.0:
             painter.end()
@@ -1221,15 +1255,15 @@ class PlaylistGradientSurface(QFrame):
         gradient = QLinearGradient(0, 0, self.width(), self.height())
         gradient.setColorAt(
             0.0,
-            self._tinted(primary.lighter(132), 168 * gradient_opacity),
+            self._tinted(primary.lighter(116), 142 * gradient_opacity),
         )
         gradient.setColorAt(
             0.46,
-            self._tinted(secondary.lighter(105), 150 * gradient_opacity),
+            self._tinted(secondary.lighter(102), 126 * gradient_opacity),
         )
         gradient.setColorAt(
             1.0,
-            self._tinted(accent.lighter(108), 160 * gradient_opacity),
+            self._tinted(accent.lighter(104), 132 * gradient_opacity),
         )
         painter.setBrush(gradient)
         painter.drawRoundedRect(rect, radius, radius)
@@ -1286,18 +1320,50 @@ class _PlaylistHoverMixin:
 
 _PLAYLIST_ARTWORK_RANDOM = SystemRandom()
 _PLAYLIST_ARTWORK_PALETTES = (
-    # Cool aurora and ocean families.
-    ("#55F6C4", "#39D8D0", "#438BFF", "#765CFF", "#EF8DFF"),
-    ("#A0F7B8", "#35D5C0", "#4C9CFF", "#8B63FF", "#F58BE8"),
-    ("#55E7B2", "#26C8E8", "#5577FF", "#A05BFF", "#F68CDB"),
-    ("#7FF0C0", "#41D4CF", "#4380F0", "#805BFF", "#ECA0FF"),
-    ("#B4F0FF", "#5ED9E9", "#4F9EFF", "#7A73F0", "#C18BFF"),
-    # Warm sunset, citrus, and berry families.
-    ("#FFE38A", "#FFB36B", "#FF7C7C", "#E667B7", "#9E70FF"),
-    ("#FFF275", "#FFD166", "#FF975E", "#F2647F", "#C457C9"),
-    ("#F4F77A", "#BCE86B", "#61D99B", "#35C8C9", "#5B8DFF"),
-    ("#FFB6E1", "#F783AC", "#C56CCF", "#8468E6", "#5DA9FF"),
-    ("#FFB38A", "#F47A61", "#D95776", "#A54FB7", "#665AD9"),
+    # Each artwork chooses one narrow background family and one contrasting
+    # family for its graph.  The colors deliberately do not span the whole
+    # green-to-purple spectrum in a single cover, and avoid muddy olive or
+    # yellow-green backgrounds.
+    (
+        ("#16805D", "#35C596", "#8DEFC0"),
+        ("#8C70F5", "#C7A6FF", "#E58BFF"),
+        ("#08251F", "#0E4A38", "#171D3A"),
+    ),
+    (
+        ("#24966F", "#55D5AA", "#AEF5D2"),
+        ("#7664E8", "#BBA0FF", "#ED9BFF"),
+        ("#092B25", "#145541", "#1A2040"),
+    ),
+    (
+        ("#167986", "#25C9C5", "#8BF2DF"),
+        ("#7A68F0", "#BDA4FF", "#E6A0FF"),
+        ("#061F2B", "#0D4650", "#182044"),
+    ),
+    (
+        ("#218AA5", "#39BDD0", "#A0F0EB"),
+        ("#6DE0C0", "#A78BFF", "#E0B0FF"),
+        ("#082331", "#10465B", "#1B2147"),
+    ),
+    (
+        ("#2450A0", "#4B82E8", "#9ABEFF"),
+        ("#59E7C4", "#8DF0DC", "#C5B3FF"),
+        ("#0A1B3C", "#173B70", "#251B50"),
+    ),
+    (
+        ("#3D4DB2", "#6377E4", "#AAB8FF"),
+        ("#60E8C5", "#8DEFD9", "#D1B8FF"),
+        ("#101A43", "#253A70", "#2B1D55"),
+    ),
+    (
+        ("#4B2A82", "#7658D4", "#B99AFF"),
+        ("#68E6BF", "#9BEBD6", "#C6B3FF"),
+        ("#1B1038", "#34205C", "#20204A"),
+    ),
+    (
+        ("#6D3C91", "#A766C2", "#D3A8F0"),
+        ("#67DFC0", "#9DEBD8", "#9EDBFF"),
+        ("#24123D", "#45235D", "#24214B"),
+    ),
 )
 
 
@@ -1324,17 +1390,11 @@ def _random_playlist_artwork_svg() -> str:
     """Build a fresh graph artwork with a varied color family."""
 
     rng = _PLAYLIST_ARTWORK_RANDOM
-    spectrum = rng.choice(_PLAYLIST_ARTWORK_PALETTES)
-    range_start = rng.randrange(len(spectrum) - 2)
-    local_range = spectrum[range_start:range_start + 3]
-    dark_a, dark_b = rng.choice(
-        (
-            ("#0B2428", "#1A1632"),
-            ("#0C2230", "#201735"),
-            ("#17242E", "#221A34"),
-            ("#0B2926", "#1D1732"),
-        )
+    background_range, node_range, dark_range = rng.choice(
+        _PLAYLIST_ARTWORK_PALETTES
     )
+    background_a, _background_mid, _background_b = background_range
+    dark_a, dark_mid, dark_b = dark_range
 
     clip_id = f"artwork-clip-{rng.randrange(1_000_000)}"
     background_id = f"background-{rng.randrange(1_000_000)}"
@@ -1344,7 +1404,7 @@ def _random_playlist_artwork_svg() -> str:
     <linearGradient id="{background_id}" x1="0" y1="0" x2="1" y2="1"
                     gradientTransform="rotate({background_angle} .5 .5)">
       <stop stop-color="{dark_a}"/>
-      <stop offset=".48" stop-color="#153A44"/>
+      <stop offset=".48" stop-color="{dark_mid}"/>
       <stop offset="1" stop-color="{dark_b}"/>
     </linearGradient>
     """
@@ -1353,7 +1413,7 @@ def _random_playlist_artwork_svg() -> str:
         (
             rng.randrange(18, 168),
             rng.randrange(16, 86),
-            rng.choice(local_range),
+            rng.choice(node_range),
             rng.choice((1.5, 1.8, 2.1)),
         )
         for _ in range(rng.randrange(6, 10))
@@ -1370,15 +1430,16 @@ def _random_playlist_artwork_svg() -> str:
     edges = "".join(
         f'<path d="M {nodes[first][0]} {nodes[first][1]} '
         f'L {nodes[second][0]} {nodes[second][1]}" '
-        f'stroke="{rng.choice(local_range)}" '
+        f'stroke="{rng.choice(node_range)}" '
         f'stroke-opacity=".{rng.randrange(18, 42)}" '
         f'stroke-width="{rng.choice((.7, .9, 1.1))}"/>'
         for first, second in edge_pairs
     )
     node_marks = "".join(
         f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{color}" '
-        f'fill-opacity=".{rng.randrange(48, 88)}" stroke="#E8FFF8" '
-        f'stroke-opacity=".{rng.randrange(26, 62)}" stroke-width=".7"/>'
+        f'fill-opacity=".{rng.randrange(48, 88)}" '
+        f'stroke="{rng.choice(node_range)}" '
+        f'stroke-opacity=".{rng.randrange(42, 78)}" stroke-width=".7"/>'
         for x, y, color, radius in nodes
     )
 
@@ -1393,13 +1454,17 @@ def _random_playlist_artwork_svg() -> str:
       <rect width="184" height="100" rx="17" fill="url(#{background_id})"/>
       <g clip-path="url(#{clip_id})">
         <path d="M 8 28 C 48 4 91 18 125 9 C 151 3 171 14 184 28"
-              stroke="#DFFFF5" stroke-opacity=".13" stroke-width="1.4"/>
+              stroke="{background_a}" stroke-opacity=".24" stroke-width="1.4"/>
         <g>{edges}{node_marks}</g>
-        <ellipse cx="61" cy="22" rx="48" ry="13" fill="#FFFFFF" fill-opacity=".07"
-                 transform="rotate(-14 61 22)"/>
       </g>
     </svg>
     """
+
+
+def generate_playlist_artwork_svg() -> str:
+    """Return a new generated artwork for a playlist."""
+
+    return _random_playlist_artwork_svg()
 
 
 class PlaylistCard(_PlaylistHoverMixin, QFrame):
@@ -1435,8 +1500,20 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         layout.setSpacing(3)
 
         cover_size = QSize(92, 50)
-        source_cover = QPixmap(str(Path(cover_path))) if cover_path else QPixmap()
-        if not source_cover.isNull():
+        stored_svg = None
+        if cover_path and Path(cover_path).suffix.lower() == ".svg":
+            try:
+                stored_svg = Path(cover_path).read_text(encoding="utf-8")
+            except OSError:
+                stored_svg = None
+
+        source_cover = QPixmap()
+        if cover_path and not stored_svg:
+            source_cover = QPixmap(str(Path(cover_path)))
+        if stored_svg:
+            cover = _svg_cover_pixmap(stored_svg, cover_size)
+            self.cover_label = SvgArtworkWidget(stored_svg)
+        elif not source_cover.isNull():
             scaled_cover = source_cover.scaled(
                 cover_size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -1451,7 +1528,7 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
             self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.cover_label.setPixmap(cover)
         else:
-            cover_svg = _random_playlist_artwork_svg()
+            cover_svg = generate_playlist_artwork_svg()
             cover = _svg_cover_pixmap(cover_svg, cover_size)
             self.cover_label = SvgArtworkWidget(cover_svg)
         self.cover_label.setFixedSize(cover_size)
@@ -1514,26 +1591,31 @@ MAIN_LIBRARY_SVG = """
 """
 
 CREATE_PLAYLIST_SVG = """
-<svg viewBox="0 0 160 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 160 100" fill="none" xmlns="http://www.w3.org/2000/svg"
+     shape-rendering="geometricPrecision">
   <defs>
     <linearGradient id="createPlaylistBackground" x1="14" y1="8" x2="146" y2="94" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#3A4E63"/>
-      <stop offset=".52" stop-color="#202C3D"/>
-      <stop offset="1" stop-color="#171C2B"/>
+      <stop stop-color="#214A43"/>
+      <stop offset=".55" stop-color="#102A2A"/>
+      <stop offset="1" stop-color="#071316"/>
     </linearGradient>
     <linearGradient id="createPlaylistAccent" x1="55" y1="25" x2="115" y2="80" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#D8F7EB"/>
-      <stop offset=".5" stop-color="#78DABD"/>
-      <stop offset="1" stop-color="#8797E8"/>
+      <stop stop-color="#B5FBE0"/>
+      <stop offset=".52" stop-color="#5DD8B7"/>
+      <stop offset="1" stop-color="#32877C"/>
     </linearGradient>
     <radialGradient id="createPlaylistGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(82 48) rotate(90) scale(54 74)">
-      <stop stop-color="#78DABD" stop-opacity=".25"/>
-      <stop offset="1" stop-color="#8797E8" stop-opacity="0"/>
+      <stop stop-color="#5DD8B7" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#5DD8B7" stop-opacity="0"/>
     </radialGradient>
   </defs>
   <rect width="160" height="100" rx="17" fill="url(#createPlaylistBackground)"/>
   <ellipse cx="82" cy="48" rx="74" ry="52" fill="url(#createPlaylistGlow)"/>
-  <path d="M80 25v50M55 50h50" stroke="url(#createPlaylistAccent)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M80 28v44M58 50h44"
+        stroke="url(#createPlaylistAccent)"
+        stroke-width="2.8"
+        stroke-linecap="round"
+        vector-effect="non-scaling-stroke"/>
 </svg>
 """
 
@@ -1687,19 +1769,25 @@ CALM_MOOD_SVG = """
 """
 
 
-class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
-    """The first, calm entry point for an ad-hoc mood session."""
+WAVE_SVG = CALM_MOOD_SVG
+
+
+class WavePlaylistCard(_PlaylistHoverMixin, QFrame):
+    """The compact entry point for mood, genre and My Wave sessions."""
 
     mood_selected = Signal(str)
+    genre_selected = Signal(str)
     my_wave_selected = Signal()
 
     def __init__(
         self,
         mood_names: tuple[str, ...],
+        genre_names: tuple[str, ...] = (),
         parent: QFrame | None = None,
     ) -> None:
         super().__init__(parent)
         self._mood_names = mood_names
+        self._genre_names = genre_names
         self.setObjectName("playlistCardWrapper")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(126, 104)
@@ -1715,33 +1803,107 @@ class MoodPlaylistCard(_PlaylistHoverMixin, QFrame):
         layout.setContentsMargins(6, 5, 6, 4)
         layout.setSpacing(3)
 
-        cover = SvgArtworkWidget(CALM_MOOD_SVG)
+        cover = SvgArtworkWidget(WAVE_SVG)
         cover.setFixedSize(92, 50)
-        cover_pixmap = _svg_cover_pixmap(CALM_MOOD_SVG, cover.size())
+        cover_pixmap = _svg_cover_pixmap(WAVE_SVG, cover.size())
         self._setup_playlist_hover(cover_pixmap)
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(cover)
 
-        title = QLabel("Mood")
+        title = QLabel("Wave")
         title.setObjectName("playlistCardName")
         title.setFixedHeight(16)
         layout.addWidget(title)
 
+    def set_selected(self, selected: bool) -> None:
+        self._card_surface.set_selected(selected)
+
     def mouseReleaseEvent(self, event: object) -> None:
         super().mouseReleaseEvent(event)
-        menu = QMenu(self)
-        menu.setTitle("Mood & My Wave")
-        my_wave_action = menu.addAction("My Wave")
-        my_wave_action.triggered.connect(
-            lambda checked=False: self.my_wave_selected.emit()
-        )
-        menu.addSeparator()
-        for mood_name in self._mood_names:
-            action = menu.addAction(mood_name.title())
-            action.triggered.connect(
-                lambda checked=False, value=mood_name: self.mood_selected.emit(value)
-            )
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        menu = self._build_wave_menu()
         menu.exec(self.mapToGlobal(event.position().toPoint()))
+
+    def _build_wave_menu(self) -> QMenu:
+        """Build the two-column picker used by the Wave card."""
+
+        menu = QMenu(self)
+        menu.setObjectName("waveMenu")
+        menu_widget = QWidget(menu)
+        menu_widget.setMinimumWidth(350)
+        menu_layout = QVBoxLayout(menu_widget)
+        menu_layout.setContentsMargins(10, 10, 10, 10)
+        menu_layout.setSpacing(8)
+
+        my_wave_button = QPushButton("My Wave", menu_widget)
+        my_wave_button.setObjectName("wavePrimaryButton")
+        my_wave_button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        def select_my_wave() -> None:
+            menu.close()
+            self.my_wave_selected.emit()
+
+        my_wave_button.clicked.connect(select_my_wave)
+        menu_layout.addWidget(my_wave_button)
+
+        columns = QHBoxLayout()
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(10)
+        menu_layout.addLayout(columns)
+
+        def add_column(
+            heading: str,
+            values: tuple[str, ...],
+            selected: Signal,
+        ) -> None:
+            column = QWidget(menu_widget)
+            column_layout = QVBoxLayout(column)
+            column_layout.setContentsMargins(0, 0, 0, 0)
+            column_layout.setSpacing(2)
+
+            heading_label = QLabel(heading, column)
+            heading_label.setObjectName("waveMenuHeading")
+            column_layout.addWidget(heading_label)
+            for value in values:
+                display_value = (
+                    value.title()
+                    if heading == "Mood"
+                    else value
+                )
+                button = QPushButton(display_value, column)
+                button.setObjectName("waveMenuItem")
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
+                button.setToolTip(display_value)
+
+                def select_value(
+                    checked: bool = False,
+                    *,
+                    selected_value: str = value,
+                ) -> None:
+                    del checked
+                    menu.close()
+                    selected.emit(selected_value)
+
+                button.clicked.connect(select_value)
+                column_layout.addWidget(button)
+            column_layout.addStretch(1)
+            columns.addWidget(column, 1)
+
+        add_column("Mood", self._mood_names, self.mood_selected)
+        add_column("Genres", self._genre_names, self.genre_selected)
+
+        menu_action = QWidgetAction(menu)
+        menu_action.setDefaultWidget(menu_widget)
+        menu.addAction(menu_action)
+        return menu
+
+
+# Keep the old import name working for extensions that imported the card
+# before it became the combined Wave picker.
+MoodPlaylistCard = WavePlaylistCard
+
 
 class TrackNumberPlayWidget(QWidget):
     """A table-row index that turns into the row's play action."""
@@ -2089,6 +2251,15 @@ HEART_LIKED_ICON = """
 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
   <defs><linearGradient id="accent" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse"><stop stop-color="#C0FFE6"/><stop offset=".48" stop-color="#61E0BC"/><stop offset="1" stop-color="#2D9684"/></linearGradient></defs>
   <path fill="url(#accent)" d="M12 20.1 4.8 13C2.4 10.6 2.6 6.7 5.2 4.7A5.1 5.1 0 0 1 12 5.3a5.1 5.1 0 0 1 6.8-.6c2.6 2 2.8 5.9.4 8.3L12 20.1Z"/>
+</svg>
+"""
+
+ADD_TO_QUEUE_ICON = """
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M4 6.5h10M4 11h10M4 15.5h7"
+        stroke="#D8D8D8" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M18 5v6M15 8h6"
+        stroke="#D8D8D8" stroke-width="1.6" stroke-linecap="round"/>
 </svg>
 """
 

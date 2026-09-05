@@ -6,6 +6,10 @@ from pathlib import Path
 from threading import RLock
 
 from app.ml.audio_features import AudioWindowLoader
+from app.ml.cancellation import (
+    CancellationCheck,
+    raise_if_cancelled,
+)
 from app.ml.maest import (
     GenrePrediction,
     MaestAnalysisResult,
@@ -61,12 +65,17 @@ class GenreAnalysisService:
     def analyze_result(
         self,
         audio_path: Path,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> MaestAnalysisResult:
+        raise_if_cancelled(is_cancelled)
         windows = self.loader.load(audio_path)
+        raise_if_cancelled(is_cancelled)
 
         mel_batch = self.loader.to_mel_batch(
             windows
         )
+        raise_if_cancelled(is_cancelled)
 
         mel_array = (
             mel_batch.detach()
@@ -80,6 +89,7 @@ class GenreAnalysisService:
                 mel_array,
                 top_k=self.top_k,
                 min_score=self.min_score,
+                is_cancelled=is_cancelled,
             )
             self._classifier_last_used_at = time.monotonic()
         return result
@@ -95,8 +105,14 @@ class GenreAnalysisService:
     def analyze_track_result(
         self,
         audio_path: Path,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> TrackAnalysisResult:
-        genre_result = self.analyze_result(audio_path)
+        genre_result = self.analyze_result(
+            audio_path,
+            is_cancelled=is_cancelled,
+        )
+        raise_if_cancelled(is_cancelled)
         genre_evidence = tuple(
             (prediction.genre, prediction.weighted_score)
             for prediction in genre_result.genres
@@ -106,6 +122,7 @@ class GenreAnalysisService:
             mood_result=self.mood_analyzer.analyze(
                 audio_path,
                 genres=genre_evidence,
+                is_cancelled=is_cancelled,
             ),
         )
 

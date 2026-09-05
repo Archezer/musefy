@@ -175,3 +175,94 @@ def test_playlist_artwork_can_be_downloaded_from_export_url(
     assert Path(updated_playlist.cover_path).read_bytes().startswith(
         b"\x89PNG"
     )
+
+
+def test_generated_playlist_artwork_is_persisted_and_reused(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = make_service()
+    playlist = service.create_playlist("Generated artwork")
+    covers_directory = tmp_path / "playlist_covers"
+    monkeypatch.setattr(
+        playlist_service_module,
+        "PLAYLIST_COVERS_DIR",
+        covers_directory,
+    )
+
+    generated = service.ensure_generated_cover(
+        playlist.id,
+        lambda: "<svg>first</svg>",
+    )
+    reused = service.ensure_generated_cover(
+        playlist.id,
+        lambda: "<svg>second</svg>",
+    )
+
+    assert generated.cover_path == reused.cover_path
+    assert Path(reused.cover_path).read_text(encoding="utf-8") == (
+        "<svg>first</svg>"
+    )
+
+
+def test_generated_playlist_artwork_can_be_regenerated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = make_service()
+    playlist = service.create_playlist("Regenerated artwork")
+    covers_directory = tmp_path / "playlist_covers"
+    monkeypatch.setattr(
+        playlist_service_module,
+        "PLAYLIST_COVERS_DIR",
+        covers_directory,
+    )
+
+    first = service.set_generated_cover(
+        playlist.id,
+        "<svg>first</svg>",
+    )
+    second = service.set_generated_cover(
+        playlist.id,
+        "<svg>second</svg>",
+    )
+
+    assert first.cover_path == second.cover_path
+    assert Path(second.cover_path).read_text(encoding="utf-8") == (
+        "<svg>second</svg>"
+    )
+
+
+def test_merging_playlists_appends_only_different_tracks_by_default() -> None:
+    service = make_service()
+    target = service.create_playlist("Target")
+    source = service.create_playlist("Source")
+    service.replace_tracks(target.id, ("track-1",))
+    service.replace_tracks(source.id, ("track-2", "track-1"))
+
+    merged = service.merge_playlists(target.id, source.id)
+
+    assert [track.id for track in merged] == ["track-1", "track-2"]
+    assert [
+        track.id for track in service.get_playlist_tracks(source.id)
+    ] == ["track-2", "track-1"]
+
+
+def test_merging_playlists_can_keep_duplicate_tracks() -> None:
+    service = make_service()
+    target = service.create_playlist("Target")
+    source = service.create_playlist("Source")
+    service.replace_tracks(target.id, ("track-1",))
+    service.replace_tracks(source.id, ("track-2", "track-1"))
+
+    merged = service.merge_playlists(
+        target.id,
+        source.id,
+        include_duplicates=True,
+    )
+
+    assert [track.id for track in merged] == [
+        "track-1",
+        "track-2",
+        "track-1",
+    ]

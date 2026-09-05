@@ -102,6 +102,61 @@ QDialog {
 QDialog QLabel {
     background: transparent;
 }
+QDialog#playlistDuplicateDialog {
+    background-color: #111416;
+    border: 1px solid rgba(181, 251, 224, 68);
+    border-radius: 16px;
+}
+QLabel#duplicateDialogEyebrow {
+    color: #8ACAB5;
+    font-size: 10px;
+    font-weight: 750;
+}
+QLabel#duplicateDialogTitle {
+    color: #F1F5F3;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#duplicateDialogDescription {
+    color: #AAB4B1;
+    font-size: 12px;
+}
+QPushButton#playlistChoiceAll, QPushButton#playlistChoiceNew {
+    min-width: 190px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+}
+QPushButton#playlistChoiceAll {
+    background-color: rgba(255, 255, 255, 13);
+    border-color: rgba(255, 255, 255, 42);
+    color: #F0F3F1;
+}
+QPushButton#playlistChoiceAll:hover {
+    background-color: rgba(255, 255, 255, 25);
+    border-color: rgba(255, 255, 255, 72);
+}
+QPushButton#playlistChoiceNew {
+    background-color: rgba(112, 224, 190, 24);
+    border-color: rgba(181, 251, 224, 90);
+    color: #C9FBE9;
+}
+QPushButton#playlistChoiceNew:hover {
+    background-color: rgba(112, 224, 190, 42);
+    border-color: #B5FBE0;
+}
+QPushButton#playlistChoiceCancel {
+    background: transparent;
+    border-color: transparent;
+    color: #929B98;
+    padding: 5px 8px;
+}
+QPushButton#playlistChoiceCancel:hover {
+    background: rgba(255, 255, 255, 14);
+    border-color: rgba(255, 255, 255, 28);
+    color: #E8EEEB;
+}
 QFrame#listeningTotal {
     background-color: rgba(255, 255, 255, 8);
     border: 1px solid rgba(181, 251, 224, 42);
@@ -164,14 +219,16 @@ QDialog QListWidget {
     border-color: rgba(181, 251, 224, 34);
     border-radius: 12px;
 }
-QProgressBar#searchProgressBar {
+QProgressBar#searchProgressBar,
+QProgressBar#analysisProgressBar {
     background-color: rgba(255, 255, 255, 12);
     border: none;
     border-radius: 3px;
     min-height: 6px;
     max-height: 6px;
 }
-QProgressBar#searchProgressBar::chunk {
+QProgressBar#searchProgressBar::chunk,
+QProgressBar#analysisProgressBar::chunk {
     background-color: #5DD8B7;
     border-radius: 3px;
 }
@@ -238,13 +295,15 @@ QCheckBox#spotifyFavSyncCheck::indicator:checked {
     border-color: #B5FBE0;
     background: #4D9F8A;
 }
-QPushButton#spotifyOAuthButton, QPushButton#spotifySyncLastButton {
+QPushButton#spotifyOAuthButton, QPushButton#spotifySyncLastButton,
+QPushButton#spotifySyncAllButton {
     background-color: rgba(112, 224, 190, 18);
     border-color: rgba(181, 251, 224, 66);
     color: #C9FBE9;
     font-weight: 650;
 }
-QPushButton#spotifyOAuthButton:hover, QPushButton#spotifySyncLastButton:hover {
+QPushButton#spotifyOAuthButton:hover, QPushButton#spotifySyncLastButton:hover,
+QPushButton#spotifySyncAllButton:hover {
     background-color: rgba(112, 224, 190, 32);
     border-color: #B5FBE0;
 }
@@ -328,6 +387,28 @@ QToolButton#playlistRemoveButton:pressed {
     color: #FFD5D9;
     border-radius: 15px;
 }
+QToolButton#trackQueueButton {
+    background: transparent;
+    border: none;
+    color: #9AA8A3;
+    font-size: 18px;
+    font-weight: 600;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0;
+}
+QToolButton#trackQueueButton:hover {
+    background: rgba(112, 224, 190, 32);
+    color: #B5FBE0;
+    border-radius: 15px;
+}
+QToolButton#trackQueueButton:pressed {
+    background: rgba(112, 224, 190, 52);
+    color: #F1FFF8;
+    border-radius: 15px;
+}
 QPushButton, QComboBox {
     background-color: rgba(255, 255, 255, 10);
     border: 1px solid rgba(255, 255, 255, 25);
@@ -400,8 +481,8 @@ QToolButton#auxiliaryMinimizedButton {
     border: 1px solid rgba(181, 251, 224, 74);
     border-radius: 13px;
     color: #B5FBE0;
-    padding: 4px 10px;
-    min-height: 26px;
+    padding: 0 10px;
+    min-height: 30px;
     max-height: 30px;
     font-size: 12px;
 }
@@ -413,6 +494,23 @@ QToolButton#auxiliaryMinimizedButton:hover {
 QToolButton#auxiliaryMinimizedButton:pressed {
     background: rgba(112, 197, 171, 230);
     color: #07100F;
+}
+QToolButton#auxiliaryScrollButton {
+    background: rgba(24, 57, 54, 180);
+    border: 1px solid rgba(181, 251, 224, 52);
+    border-radius: 10px;
+    padding: 0;
+}
+QToolButton#auxiliaryScrollButton:hover {
+    background: rgba(74, 141, 119, 220);
+    border-color: rgba(181, 251, 224, 145);
+}
+QToolButton#auxiliaryScrollButton:pressed {
+    background: rgba(112, 197, 171, 230);
+}
+QToolButton#auxiliaryScrollButton:disabled {
+    background: rgba(24, 57, 54, 72);
+    border-color: rgba(181, 251, 224, 28);
 }
 QToolButton#plainActionButton:pressed {
     background: rgba(112, 224, 190, 42);
@@ -704,6 +802,46 @@ QFrame#playlistCard {
     background: transparent;
     border: none;
     border-radius: 12px;
+}
+QMenu#waveMenu {
+    padding: 0;
+}
+QPushButton#wavePrimaryButton {
+    background-color: rgba(112, 224, 190, 24);
+    border: 1px solid rgba(181, 251, 224, 86);
+    border-radius: 8px;
+    color: #D8FFF0;
+    font-weight: 700;
+    padding: 7px 12px;
+}
+QPushButton#wavePrimaryButton:hover {
+    background-color: rgba(112, 224, 190, 42);
+    border-color: #B5FBE0;
+}
+QPushButton#wavePrimaryButton:pressed {
+    background-color: rgba(112, 224, 190, 64);
+}
+QLabel#waveMenuHeading {
+    color: #B5FBE0;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 5px 4px;
+}
+QPushButton#waveMenuItem {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #E8EEEB;
+    padding: 6px 8px;
+    text-align: left;
+}
+QPushButton#waveMenuItem:hover {
+    background-color: rgba(181, 251, 224, 18);
+    border-color: rgba(181, 251, 224, 40);
+    color: #F4FFF9;
+}
+QPushButton#waveMenuItem:pressed {
+    background-color: rgba(181, 251, 224, 34);
 }
 QMenu {
     background-color: #29292D;

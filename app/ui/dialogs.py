@@ -62,6 +62,14 @@ SearchCandidate = (
     | Mp3PartyCandidate
 )
 
+# The graph may still draw weaker nearest-neighbour links as context, but a
+# layout community must be backed by high-confidence links.  A lower value
+# turns bridge tracks into one giant connected component and makes unrelated
+# genres appear in the same visual group.
+LISTENING_GRAPH_CLUSTER_EDGE_THRESHOLD = 0.75
+LISTENING_GRAPH_MAX_NEIGHBORS = 3
+LISTENING_GRAPH_MIN_EDGE_THRESHOLD = 0.40
+
 
 def _format_elapsed(milliseconds: int) -> str:
     """Format an operation duration compactly for the dialog header."""
@@ -80,6 +88,7 @@ class SpotifySyncRow(QFrame):
 
     settings_requested = Signal()
     sync_requested = Signal()
+    sync_all_requested = Signal()
 
     def __init__(
         self,
@@ -101,10 +110,10 @@ class SpotifySyncRow(QFrame):
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(1)
 
-        self.title_label = QLabel("Sync latest Spotify tracks")
+        self.title_label = QLabel("Sync Spotify favorites")
         self.title_label.setObjectName("spotifySyncTitle")
         self.subtitle_label = QLabel(
-            "Find tracks added since the previous Sync Last click"
+            "Sync the latest additions or the complete library in Spotify order"
         )
         self.subtitle_label.setObjectName("spotifySyncSubtitle")
         text_layout.addWidget(self.title_label)
@@ -118,6 +127,14 @@ class SpotifySyncRow(QFrame):
         )
         self.sync_button.clicked.connect(self.sync_requested)
         layout.addWidget(self.sync_button)
+
+        self.sync_all_button = QPushButton("Sync All")
+        self.sync_all_button.setObjectName("spotifySyncAllButton")
+        self.sync_all_button.setToolTip(
+            "Read all Spotify saved tracks in their Spotify order."
+        )
+        self.sync_all_button.clicked.connect(self.sync_all_requested)
+        layout.addWidget(self.sync_all_button)
 
         self.auth_status_label = QLabel()
         self.auth_status_label.setObjectName("spotifyAuthStatus")
@@ -177,6 +194,12 @@ class SpotifySyncRow(QFrame):
             if authenticated
             else "Connect Spotify with OAuth before using Sync Last."
         )
+        self.sync_all_button.setEnabled(authenticated)
+        self.sync_all_button.setToolTip(
+            "Read all Spotify saved tracks in their Spotify order."
+            if authenticated
+            else "Connect Spotify with OAuth before using Sync All."
+        )
         self.auth_status_label.setProperty("connected", authenticated)
         self.auth_status_label.setText(
             "✓ Connected" if authenticated else "Connect in settings"
@@ -186,6 +209,7 @@ class SpotifySyncRow(QFrame):
 
     def set_busy(self, busy: bool) -> None:
         self.sync_button.setEnabled(not busy and self._is_authenticated())
+        self.sync_all_button.setEnabled(not busy and self._is_authenticated())
 
     def _is_authenticated(self) -> bool:
         return bool(self.auth_status_label.property("connected"))
@@ -202,6 +226,7 @@ class SpotifySettingsDialog(QDialog):
     closed = Signal()
     authenticate_requested = Signal()
     sync_requested = Signal()
+    sync_all_requested = Signal()
 
     def __init__(
         self,
@@ -259,12 +284,15 @@ class SpotifySettingsDialog(QDialog):
         sync_layout.setSpacing(5)
 
         sync_description = QLabel(
-            "Sync Last checks Spotify once and offers tracks saved since the "
-            "previous manual sync."
+            "Sync Last reads additions since the previous manual sync. "
+            "Sync All reads the complete saved-track library in Spotify order."
         )
         sync_description.setObjectName("spotifySettingsDescription")
         sync_description.setWordWrap(True)
         sync_layout.addWidget(sync_description)
+
+        sync_buttons_layout = QHBoxLayout()
+        sync_buttons_layout.setSpacing(8)
 
         self.sync_now_button = QPushButton("Sync Last")
         self.sync_now_button.setObjectName("spotifySyncLastButton")
@@ -272,11 +300,24 @@ class SpotifySettingsDialog(QDialog):
             "Read tracks added since the previous manual sync."
         )
         self.sync_now_button.clicked.connect(self.sync_requested)
-        sync_layout.addWidget(
+        sync_buttons_layout.addWidget(
             self.sync_now_button,
             0,
             Qt.AlignmentFlag.AlignLeft,
         )
+        self.sync_all_button = QPushButton("Sync All")
+        self.sync_all_button.setObjectName("spotifySyncAllButton")
+        self.sync_all_button.setToolTip(
+            "Read all Spotify saved tracks in their Spotify order."
+        )
+        self.sync_all_button.clicked.connect(self.sync_all_requested)
+        sync_buttons_layout.addWidget(
+            self.sync_all_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+        sync_buttons_layout.addStretch()
+        sync_layout.addLayout(sync_buttons_layout)
         layout.addWidget(sync_frame)
 
         self.status_label = QLabel()
@@ -335,6 +376,7 @@ class SpotifySettingsDialog(QDialog):
             else "Connect Spotify (OAuth)"
         )
         self.sync_now_button.setEnabled(authenticated)
+        self.sync_all_button.setEnabled(authenticated)
         self.auth_status_label.style().unpolish(self.auth_status_label)
         self.auth_status_label.style().polish(self.auth_status_label)
 
@@ -346,6 +388,9 @@ class SpotifySettingsDialog(QDialog):
     def set_busy(self, busy: bool, message: str) -> None:
         self.authenticate_button.setEnabled(not busy)
         self.sync_now_button.setEnabled(
+            not busy and self._is_authenticated()
+        )
+        self.sync_all_button.setEnabled(
             not busy and self._is_authenticated()
         )
         if message:
@@ -522,6 +567,177 @@ class TrackMetadataDialog(QDialog):
         super().accept()
 
 
+class PlaylistDuplicateChoiceDialog(QDialog):
+    """Choose whether a bulk playlist add should keep duplicate entries."""
+
+    ADD_ALL = "all"
+    ADD_ONLY_NEW = "only_new"
+
+    def __init__(
+        self,
+        *,
+        playlist_name: str,
+        selected_count: int,
+        duplicate_count: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+
+        self.choice: str | None = None
+        self.setObjectName("playlistDuplicateDialog")
+        self.setWindowTitle("Choose how to add tracks")
+        self.setMinimumWidth(510)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(10)
+
+        eyebrow = QLabel("PLAYLIST UPDATE")
+        eyebrow.setObjectName("duplicateDialogEyebrow")
+        layout.addWidget(eyebrow)
+
+        title = QLabel("Some selected tracks are already here")
+        title.setObjectName("duplicateDialogTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = QLabel(
+            f"{duplicate_count} of {selected_count} selected tracks "
+            f"already appear in “{playlist_name}”. Choose whether to "
+            "append another copy or keep only new tracks."
+        )
+        description.setObjectName("duplicateDialogDescription")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        choices_layout = QHBoxLayout()
+        choices_layout.setSpacing(10)
+
+        add_all_button = QPushButton("Add all\n(including duplicates)")
+        add_all_button.setObjectName("playlistChoiceAll")
+        add_all_button.setMinimumHeight(62)
+        add_all_button.setToolTip(
+            "Append every selected track, including tracks already in the playlist."
+        )
+        add_all_button.clicked.connect(
+            lambda: self._choose(self.ADD_ALL)
+        )
+        choices_layout.addWidget(add_all_button)
+
+        new_only_button = QPushButton("Add only new\n(skip duplicates)")
+        new_only_button.setObjectName("playlistChoiceNew")
+        new_only_button.setMinimumHeight(62)
+        new_only_button.setDefault(True)
+        new_only_button.setToolTip(
+            "Append only selected tracks that are not in the playlist yet."
+        )
+        new_only_button.clicked.connect(
+            lambda: self._choose(self.ADD_ONLY_NEW)
+        )
+        choices_layout.addWidget(new_only_button)
+        layout.addLayout(choices_layout)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setObjectName("playlistChoiceCancel")
+        cancel_button.clicked.connect(self.reject)
+        layout.addWidget(
+            cancel_button,
+            alignment=Qt.AlignmentFlag.AlignRight,
+        )
+
+    def _choose(self, choice: str) -> None:
+        self.choice = choice
+        self.accept()
+
+
+class PlaylistMergeChoiceDialog(QDialog):
+    """Choose whether a playlist merge should keep duplicate tracks."""
+
+    MERGE_ALL = "all"
+    MERGE_ONLY_DIFFERENT = "only_different"
+
+    def __init__(
+        self,
+        *,
+        target_name: str,
+        source_name: str,
+        source_count: int,
+        duplicate_count: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+
+        self.choice: str | None = None
+        self.setObjectName("playlistMergeDialog")
+        self.setWindowTitle("Merge playlists")
+        self.setMinimumWidth(540)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(10)
+
+        eyebrow = QLabel("PLAYLIST MERGE")
+        eyebrow.setObjectName("duplicateDialogEyebrow")
+        layout.addWidget(eyebrow)
+
+        title = QLabel("Some tracks already exist in the target playlist")
+        title.setObjectName("duplicateDialogTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = QLabel(
+            f"Merge “{source_name}” ({source_count} tracks) into "
+            f"“{target_name}”. {duplicate_count} track(s) already exist "
+            "in the target."
+        )
+        description.setObjectName("duplicateDialogDescription")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        choices_layout = QHBoxLayout()
+        choices_layout.setSpacing(10)
+
+        merge_all_button = QPushButton("Merge all\n(keep duplicates)")
+        merge_all_button.setObjectName("playlistChoiceAll")
+        merge_all_button.setMinimumHeight(62)
+        merge_all_button.setToolTip(
+            "Append every source track, including duplicate tracks."
+        )
+        merge_all_button.clicked.connect(
+            lambda: self._choose(self.MERGE_ALL)
+        )
+        choices_layout.addWidget(merge_all_button)
+
+        different_button = QPushButton(
+            "Merge only different\n(skip duplicates)"
+        )
+        different_button.setObjectName("playlistChoiceNew")
+        different_button.setMinimumHeight(62)
+        different_button.setDefault(True)
+        different_button.setToolTip(
+            "Append only tracks that are not already in the merged playlist."
+        )
+        different_button.clicked.connect(
+            lambda: self._choose(self.MERGE_ONLY_DIFFERENT)
+        )
+        choices_layout.addWidget(different_button)
+        layout.addLayout(choices_layout)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setObjectName("playlistChoiceCancel")
+        cancel_button.clicked.connect(self.reject)
+        layout.addWidget(
+            cancel_button,
+            alignment=Qt.AlignmentFlag.AlignRight,
+        )
+
+    def _choose(self, choice: str) -> None:
+        self.choice = choice
+        self.accept()
+
+
 class YouTubeSearchDialog(QDialog):
     closed = Signal()
     source_requested = Signal(str)
@@ -539,6 +755,7 @@ class YouTubeSearchDialog(QDialog):
     import_requested = Signal(object)
     playlist_import_requested = Signal(object)
     spotify_sync_requested = Signal()
+    spotify_sync_all_requested = Signal()
 
     def __init__(
         self,
@@ -645,6 +862,9 @@ class YouTubeSearchDialog(QDialog):
         )
         self.spotify_sync_row.sync_requested.connect(
             self.spotify_sync_requested
+        )
+        self.spotify_sync_row.sync_all_requested.connect(
+            self.spotify_sync_all_requested
         )
         layout.addWidget(self.spotify_sync_row)
 
@@ -1371,6 +1591,74 @@ class PlaylistImportResultDialog(QDialog):
         self.accept()
 
 
+class AnalysisProgressDialog(QDialog):
+    """Modeless progress window for the library genre and mood analysis."""
+
+    closed = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        prepare_dialog(self)
+        self._close_notified = False
+        self.setWindowTitle("Track analysis")
+        self.resize(430, 170)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        self.status_label = QLabel("Preparing analysis…")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("analysisProgressBar")
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(7)
+        layout.addWidget(self.progress_bar)
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+        self.cancel_button = QPushButton("Cancel all analysis")
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        buttons_layout.addWidget(self.cancel_button)
+        layout.addLayout(buttons_layout)
+
+    def update_progress(
+        self,
+        completed: int,
+        total: int,
+        pending: int,
+    ) -> None:
+        """Render the current completed and remaining analysis counts."""
+
+        total = max(total, 1)
+        completed = min(max(completed, 0), total)
+        self.setWindowTitle(f"Analysis {completed}/{total}")
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(completed)
+        self.status_label.setText(
+            f"Analyzing tracks: {completed}/{total} completed · "
+            f"{max(pending, 0)} remaining"
+        )
+
+    def _notify_closed(self) -> None:
+        if not self._close_notified:
+            self._close_notified = True
+            self.closed.emit()
+
+    def reject(self) -> None:
+        self._notify_closed()
+        super().reject()
+
+    def closeEvent(self, event: object) -> None:
+        self._notify_closed()
+        super().closeEvent(event)
+
+
 class ListeningBarChart(QWidget):
     """Minimal native Qt bar chart with precise click targets."""
 
@@ -1858,10 +2146,13 @@ class ListeningGraph(QWidget):
             if left_root != right_root:
                 parents[right_root] = left_root
 
-        # Use the links shown on screen as the primary community definition.
-        # Same-artist tracks are joined even when an embedding is unavailable.
+        # Use only high-confidence links for the community definition.  Using
+        # every nearest-neighbour link here creates a transitive chain where a
+        # mixed track joins otherwise unrelated communities (for example DSBM
+        # and ambient).  Same-artist tracks are joined even when an embedding
+        # is unavailable.
         for left, right, strength in edges:
-            if strength >= 0.48:
+            if strength >= LISTENING_GRAPH_CLUSTER_EDGE_THRESHOLD:
                 union(left, right)
         for left_index, left in enumerate(tracks):
             for right_index in range(left_index + 1, count):
@@ -1905,8 +2196,8 @@ class ListeningGraph(QWidget):
                 for right_index, right_track in enumerate(tracks)
                 if right_index != left_index
             )
-            for strength, right_index in neighbors[-3:]:
-                if strength < 0.40:
+            for strength, right_index in neighbors[-LISTENING_GRAPH_MAX_NEIGHBORS:]:
+                if strength < LISTENING_GRAPH_MIN_EDGE_THRESHOLD:
                     continue
                 first, second = sorted((left_index, right_index))
                 pairs = {
@@ -2914,7 +3205,7 @@ class ImportLogDialog(QDialog):
         "soundcloud_import": "SoundCloud",
         "mp3party": "MP3Party",
         "spotify": "Spotify",
-        "spotify_favorite": "Spotify Sync Last",
+        "spotify_favorite": "Spotify Favorites",
         "watch_folder": "Watch folder",
     }
 

@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, QRunnable, QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 from app.domain.models import Track
+from app.ml.cancellation import AnalysisCancelled
 from app.ml.genre_analysis import GenreAnalysisService
 from app.services.library_maintenance import LibraryHealthService
 from app.services.mp3party_import import Mp3PartyCandidate
@@ -23,6 +24,7 @@ from app.services.soundcloud_import import SoundCloudCandidate
 from app.services.youtube_import import OperationCancelled
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
+from app.ui.music_map import MapBuildResult, MusicMapWidget
 
 
 @dataclass(frozen=True)
@@ -131,6 +133,7 @@ class WatchFolderTaskThread(QThread):
 class GenreAnalysisSignals(QObject):
     result_ready = Signal(str, object)
     error_occurred = Signal(str, str)
+    finished = Signal()
 
 
 class GenreAnalysisTask(QRunnable):
@@ -147,11 +150,25 @@ class GenreAnalysisTask(QRunnable):
         self.service = service
         self.track_id = track_id
         self.audio_path = audio_path
+        self.cancel_requested = Event()
         self.signals = GenreAnalysisSignals()
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+
+    def is_cancelled(self) -> bool:
+        return self.cancel_requested.is_set()
 
     def run(self) -> None:
         try:
-            analysis_result = self.service.analyze_track_result(self.audio_path)
+            if self.is_cancelled():
+                return
+            analysis_result = self.service.analyze_track_result(
+                self.audio_path,
+                is_cancelled=self.is_cancelled,
+            )
+        except AnalysisCancelled:
+            return
         except (
             FileNotFoundError,
             OSError,
@@ -162,61 +179,60 @@ class GenreAnalysisTask(QRunnable):
                 self.track_id,
                 str(error),
             )
-        else:
-            self.signals.result_ready.emit(
+        # Keep the UI state recoverable even for an unexpected model/library
+        # exception: an unhandled QRunnable error would leave the track pending.
+        except Exception as error:  # noqa: BLE001
+            self.signals.error_occurred.emit(
                 self.track_id,
-                analysis_result,
+                str(error) or error.__class__.__name__,
             )
+        else:
+            if not self.is_cancelled():
+                self.signals.result_ready.emit(
+                    self.track_id,
+                    analysis_result,
+                )
+        finally:
+            self.signals.finished.emit()
 
 
-class TrackBatchSignals(QObject):
-    batch_ready = Signal(int, int, object)
+class MusicMapSignals(QObject):
+    """Signals emitted by the background music-map builder."""
+
+    result_ready = Signal(int, object)
+    error_occurred = Signal(int, str)
     finished = Signal(int)
 
 
-class TrackBatchTask(QRunnable):
-    """Prepare deferred table batches without blocking the UI thread."""
+class MusicMapTask(QRunnable):
+    """Build the expensive similarity map without blocking the UI thread."""
 
-    def __init__(
-        self,
-        tracks: list[Track],
-        start_index: int,
-        generation: int,
-        batch_size: int,
-    ) -> None:
+    def __init__(self, tracks: list[Track], generation: int) -> None:
         super().__init__()
         self.tracks = tuple(tracks)
-        self.start_index = start_index
         self.generation = generation
-        self.batch_size = batch_size
-        self.cancel_requested = Event()
-        self.signals = TrackBatchSignals()
-
-    def cancel(self) -> None:
-        self.cancel_requested.set()
+        self.signals = MusicMapSignals()
 
     def run(self) -> None:
-        for start in range(
-            self.start_index,
-            len(self.tracks),
-            self.batch_size,
-        ):
-            if self.cancel_requested.is_set():
-                return
-
-            batch = self.tracks[start : start + self.batch_size]
-            self.signals.batch_ready.emit(
-                self.generation,
-                start,
-                batch,
+        try:
+            result: MapBuildResult = MusicMapWidget.build_map_data(
+                list(self.tracks)
             )
-            # Let the main thread paint between batches so long libraries
-            # appear progressively instead of freezing the window.
-            # Leave a short frame-sized gap so the table paints each small
-            # batch instead of receiving the whole library at once.
-            QThread.msleep(12)
-
-        self.signals.finished.emit(self.generation)
+        except (
+            MemoryError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            self.signals.error_occurred.emit(
+                self.generation,
+                str(error) or error.__class__.__name__,
+            )
+        else:
+            self.signals.result_ready.emit(self.generation, result)
+        finally:
+            self.signals.finished.emit(self.generation)
 
 
 class RecommendationSignals(QObject):

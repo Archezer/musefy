@@ -6,6 +6,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
+from app.ml.cancellation import CancellationCheck, raise_if_cancelled
 from app.storage.paths import BUNDLED_DATA_DIR, DATA_DIR
 
 
@@ -134,7 +135,10 @@ class MaestClassifier:
     def _run_inference(
         self,
         mel_batch: np.ndarray,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        raise_if_cancelled(is_cancelled)
         prepared_batch = mel_batch.astype(
             np.float32,
             copy=False,
@@ -155,6 +159,7 @@ class MaestClassifier:
             window_embeddings = []
 
             for window in prepared_batch:
+                raise_if_cancelled(is_cancelled)
                 scores, token_embeddings = self.session.run(
                     output_names,
                     {
@@ -174,6 +179,7 @@ class MaestClassifier:
                 np.asarray(window_embeddings),
             )
 
+        raise_if_cancelled(is_cancelled)
         scores, token_embeddings = self.session.run(
             output_names,
             {self.input_name: prepared_batch},
@@ -286,6 +292,8 @@ class MaestClassifier:
         mel_batch: np.ndarray,
         top_k: int = 10,
         min_score: float = 0.1,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> MaestAnalysisResult:
         if mel_batch.ndim != 3:
             raise ValueError(
@@ -294,8 +302,12 @@ class MaestClassifier:
             )
 
         scores, window_embeddings = (
-            self._run_inference(mel_batch)
+            self._run_inference(
+                mel_batch,
+                is_cancelled=is_cancelled,
+            )
         )
+        raise_if_cancelled(is_cancelled)
 
         genres = self._rank_predictions(
             mean_predictions=scores.mean(axis=0),

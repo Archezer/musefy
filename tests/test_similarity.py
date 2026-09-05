@@ -137,6 +137,46 @@ def test_similarity_service_returns_recommendations_for_seed() -> None:
     )
 
 
+def test_track_radio_search_is_lazy_and_skips_occupied_tracks() -> None:
+    store = InMemoryMusicStore()
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="closest",
+            title="Closest",
+            artist="Artist",
+            track_embedding=(0.99, 0.1),
+        )
+    )
+    store.add_track(
+        Track(
+            id="next",
+            title="Next",
+            artist="Artist",
+            track_embedding=(0.8, 0.6),
+        )
+    )
+
+    service = TrackSimilarityService(store)
+    first_batch = service.recommendations_for("seed", limit=1)
+    second_batch = service.recommendations_for(
+        "seed",
+        limit=1,
+        excluded_track_ids={"closest"},
+    )
+
+    assert service._index is None
+    assert [item.track.id for item in first_batch] == ["closest"]
+    assert [item.track.id for item in second_batch] == ["next"]
+
+
 def test_similarity_service_removes_deleted_track_from_index() -> None:
     store = InMemoryMusicStore()
     store.add_track(

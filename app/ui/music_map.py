@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
 from app.domain.models import Track
@@ -39,6 +41,24 @@ class _MapEdge:
     strength: float
 
 
+@dataclass(frozen=True)
+class MapBuildResult:
+    """Computed map data that can safely cross the worker/UI boundary."""
+
+    signature: tuple[tuple[str, int], ...]
+    nodes: tuple[_MapNode, ...]
+    edges: tuple[_MapEdge, ...]
+    points: np.ndarray
+
+
+# A track is connected only to genuinely similar tracks.  The cap prevents a
+# dense genre cluster from turning into a hairball, while the threshold keeps
+# sparse tracks from receiving artificial low-quality connections.
+MAP_MAX_NEIGHBOR_COUNT = 15
+MAP_SIMILARITY_THRESHOLD = 0.62
+MAP_EDGE_STRATEGY_VERSION = 2
+
+
 class MusicMapWidget(QWidget):
     """A Graphify-inspired local map of music similarity communities."""
 
@@ -49,7 +69,11 @@ class MusicMapWidget(QWidget):
         self._nodes: tuple[_MapNode, ...] = ()
         self._edges: tuple[_MapEdge, ...] = ()
         self._points = np.empty((0, 2), dtype=np.float32)
-        self._track_signature: tuple[tuple[str, tuple[float, ...] | None], ...] = ()
+        self._track_signature: tuple[tuple[str, int], ...] = ()
+        self._map_data_ready = False
+        self._snapshot: QImage | None = None
+        self._snapshot_signature: tuple[tuple[str, int], ...] = ()
+        self._is_loading = False
         self._mode = "focus"
         self._zoom = 1.0
         self._pan = QPointF()
@@ -65,32 +89,42 @@ class MusicMapWidget(QWidget):
         self.update()
 
     def set_tracks(self, tracks: list[Track]) -> None:
+        self.apply_map_data(self.build_map_data(tracks))
+
+    @staticmethod
+    def track_signature(
+        tracks: list[Track],
+    ) -> tuple[tuple[str, int], ...]:
         embedded_tracks = [
             track
             for track in tracks
             if track.track_embedding is not None
-        ][-220:]
-        signature = tuple(
-            (track.id, track.track_embedding)
-            for track in embedded_tracks
-        )
-        if signature == self._track_signature:
-            return
-        self._track_signature = signature
+        ]
+        return MusicMapWidget._signature_for_tracks(embedded_tracks)
+
+    @classmethod
+    def build_map_data(cls, tracks: list[Track]) -> MapBuildResult:
+        embedded_tracks = [
+            track
+            for track in tracks
+            if track.track_embedding is not None
+        ]
+        signature = cls._signature_for_tracks(embedded_tracks)
 
         if len(embedded_tracks) < 2:
-            self._nodes = ()
-            self._edges = ()
-            self._points = np.empty((0, 2), dtype=np.float32)
-            self.update()
-            return
+            return MapBuildResult(
+                signature=signature,
+                nodes=(),
+                edges=(),
+                points=np.empty((0, 2), dtype=np.float32),
+            )
 
         embeddings = np.asarray(
             [track.track_embedding for track in embedded_tracks],
             dtype=np.float32,
         )
-        communities = self._assign_communities(embeddings)
-        self._nodes = tuple(
+        communities = cls._assign_communities(embeddings)
+        nodes = tuple(
             _MapNode(
                 track_id=track.id,
                 title=track.title,
@@ -99,25 +133,211 @@ class MusicMapWidget(QWidget):
             )
             for index, track in enumerate(embedded_tracks)
         )
-        self._edges = self._build_edges(embeddings)
-        self._points = self._force_layout(
-            self._project_embeddings(embeddings),
-            self._edges,
+        edges = cls._build_edges(embeddings)
+        points = cls._force_layout(
+            cls._project_embeddings(embeddings),
+            edges,
             communities,
         )
+        return MapBuildResult(
+            signature=signature,
+            nodes=nodes,
+            edges=edges,
+            points=points,
+        )
+
+    @staticmethod
+    def _signature_for_tracks(
+        tracks: list[Track],
+    ) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            (
+                track.id,
+                hash(track.track_embedding or ()),
+            )
+            for track in tracks
+        )
+
+    def apply_map_data(self, result: MapBuildResult) -> None:
+        self._track_signature = result.signature
+        self._nodes = result.nodes
+        self._edges = result.edges
+        self._points = result.points.copy()
+        self._map_data_ready = True
+        self._snapshot = None
+        self._snapshot_signature = ()
+        self._is_loading = False
         self._reset_view()
+        self.update()
+
+    def has_map_data_for(
+        self,
+        signature: tuple[tuple[str, int], ...],
+    ) -> bool:
+        return self._map_data_ready and self._track_signature == signature
+
+    def set_loading(self, loading: bool) -> None:
+        self._is_loading = loading
+        self.update()
+
+    def has_snapshot(self) -> bool:
+        return self._snapshot is not None
+
+    def load_snapshot(
+        self,
+        image_path: Path,
+        metadata_path: Path,
+        signature: tuple[tuple[str, int], ...],
+    ) -> bool:
+        """Load the last rendered map as a background preview.
+
+        The snapshot may describe an older library revision.  It remains a
+        useful visual until the user explicitly opens the interactive map and
+        requests a rebuild for the current library.
+        """
+
+        if (
+            not image_path.is_file()
+            or not metadata_path.is_file()
+        ):
+            return False
+
+        try:
+            metadata = json.loads(
+                metadata_path.read_text(encoding="utf-8")
+            )
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("edge_strategy_version")
+                != MAP_EDGE_STRATEGY_VERSION
+            ):
+                return False
+            stored_signature = tuple(
+                (str(item[0]), int(item[1]))
+                for item in metadata["signature"]
+            )
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return False
+
+        if not stored_signature:
+            return False
+
+        image = QImage()
+        if not image.load(str(image_path)) or image.isNull():
+            return False
+
+        self._snapshot = image
+        self._snapshot_signature = stored_signature
+        self.update()
+        return True
+
+    def save_snapshot(
+        self,
+        image_path: Path,
+        metadata_path: Path,
+    ) -> bool:
+        """Persist the current rendered map and its track signature."""
+
+        if self._snapshot is None or not self._track_signature:
+            return False
+
+        image_tmp = image_path.with_name(
+            f".{image_path.name}.tmp"
+        )
+        metadata_tmp = metadata_path.with_name(
+            f".{metadata_path.name}.tmp"
+        )
+        try:
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._snapshot.save(str(image_tmp), "PNG"):
+                return False
+            metadata_tmp.write_text(
+                json.dumps(
+                    {
+                        "edge_strategy_version": MAP_EDGE_STRATEGY_VERSION,
+                        "signature": [
+                            [track_id, embedding_hash]
+                            for track_id, embedding_hash in self._track_signature
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            image_tmp.replace(image_path)
+            metadata_tmp.replace(metadata_path)
+        except (OSError, TypeError, ValueError):
+            image_tmp.unlink(missing_ok=True)
+            metadata_tmp.unlink(missing_ok=True)
+            return False
+
+        return True
+
+    def invalidate_snapshot(self) -> None:
+        self._snapshot = None
+        self._snapshot_signature = ()
+        self.update()
+
+    def invalidate_map_data(self) -> None:
+        """Drop cached graph data after the library signature changes."""
+
+        self._map_data_ready = False
+        self._nodes = ()
+        self._edges = ()
+        self._points = np.empty((0, 2), dtype=np.float32)
+        self.invalidate_snapshot()
+
+    def capture_snapshot(self) -> None:
+        if not self._nodes or self.width() <= 0 or self.height() <= 0:
+            self._snapshot = None
+            self._snapshot_signature = ()
+            self.update()
+            return
+
+        image = QImage(
+            self.size(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_graph(painter)
+        painter.end()
+        self._snapshot = image
+        self._snapshot_signature = self._track_signature
         self.update()
 
     def paintEvent(self, _event: object) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        if self._mode != "focus" and self._snapshot is not None:
+            painter.drawImage(self.rect(), self._snapshot)
+            return
+
+        self._paint_graph(painter)
+
+    def _paint_graph(self, painter: QPainter) -> None:
+
         if not self._nodes:
+            if self._mode != "focus":
+                return
             painter.setPen(QColor(163, 163, 170, 145))
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "The map appears after two tracks are analysed.",
+                (
+                    "Building the music map…"
+                    if self._is_loading
+                    else "Open the map to generate it."
+                ),
             )
             return
 
@@ -389,24 +609,52 @@ class MusicMapWidget(QWidget):
             1e-6,
         )
         similarities = normalized @ normalized.T
-        edges: list[_MapEdge] = []
-        seen: set[tuple[int, int]] = set()
+        candidate_edges: dict[tuple[int, int], float] = {}
 
         for index, row in enumerate(similarities):
-            neighbor_indexes = np.argsort(row)[::-1][1:4]
+            neighbor_indexes = np.flatnonzero(
+                row >= MAP_SIMILARITY_THRESHOLD
+            )
+            neighbor_indexes = neighbor_indexes[neighbor_indexes != index]
+            if len(neighbor_indexes) > MAP_MAX_NEIGHBOR_COUNT:
+                ranked_indexes = np.argsort(
+                    row[neighbor_indexes]
+                )[::-1]
+                neighbor_indexes = neighbor_indexes[
+                    ranked_indexes[:MAP_MAX_NEIGHBOR_COUNT]
+                ]
+
             for neighbor_index in neighbor_indexes:
                 strength = float(row[neighbor_index])
-                if strength < 0.55:
-                    continue
                 key = tuple(sorted((index, int(neighbor_index))))
-                if key in seen:
-                    continue
-                seen.add(key)
-                edges.append(
-                    _MapEdge(
-                        left_index=key[0],
-                        right_index=key[1],
-                        strength=strength,
-                    )
+                candidate_edges[key] = max(
+                    strength,
+                    candidate_edges.get(key, 0.0),
                 )
+
+        # A pair can be selected by both endpoints.  Keep the strongest
+        # candidate edges first and enforce the cap on the final undirected
+        # graph as well, so an active hub cannot exceed 15 visible links just
+        # because many other tracks selected it as their neighbor.
+        degrees = np.zeros(len(normalized), dtype=np.int16)
+        edges: list[_MapEdge] = []
+        ranked_edges = sorted(
+            candidate_edges.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+        for (left_index, right_index), strength in ranked_edges:
+            if (
+                degrees[left_index] >= MAP_MAX_NEIGHBOR_COUNT
+                or degrees[right_index] >= MAP_MAX_NEIGHBOR_COUNT
+            ):
+                continue
+            degrees[left_index] += 1
+            degrees[right_index] += 1
+            edges.append(
+                _MapEdge(
+                    left_index=left_index,
+                    right_index=right_index,
+                    strength=strength,
+                )
+            )
         return tuple(edges)

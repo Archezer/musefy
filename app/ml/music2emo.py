@@ -16,6 +16,7 @@ from torch.serialization import add_safe_globals
 from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
 from app.domain.mood import MoodVector
+from app.ml.cancellation import CancellationCheck, raise_if_cancelled
 from app.ml.mood_profiles import (
     MoodProfilePrediction,
     blend_mood_with_profiles,
@@ -175,15 +176,24 @@ class Music2EmoMoodAnalyzer:
         audio_path: Path,
         *,
         genres: Iterable[tuple[str, float]] = (),
+        is_cancelled: CancellationCheck | None = None,
     ) -> Music2EmoAnalysisResult:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file does not exist: {audio_path}")
 
+        raise_if_cancelled(is_cancelled)
         self._ensure_loaded()
         self._last_used_at = time.monotonic()
 
-        mert_embedding = self._extract_mert_embedding(audio_path)
-        chord_root, chord_attr, key = self._extract_chord_inputs(audio_path)
+        mert_embedding = self._extract_mert_embedding(
+            audio_path,
+            is_cancelled=is_cancelled,
+        )
+        chord_root, chord_attr, key = self._extract_chord_inputs(
+            audio_path,
+            is_cancelled=is_cancelled,
+        )
+        raise_if_cancelled(is_cancelled)
 
         assert self._mood_head is not None
         assert self._tags is not None
@@ -279,7 +289,12 @@ class Music2EmoMoodAnalyzer:
                 allow_pickle=True,
             )[127:]
 
-    def _extract_mert_embedding(self, audio_path: Path) -> torch.Tensor:
+    def _extract_mert_embedding(
+        self,
+        audio_path: Path,
+        *,
+        is_cancelled: CancellationCheck | None = None,
+    ) -> torch.Tensor:
         assert self._processor is not None
         assert self._mert is not None
         waveform, sample_rate = torchaudio.load(str(audio_path))
@@ -295,7 +310,13 @@ class Music2EmoMoodAnalyzer:
         embeddings = []
         with torch.inference_mode():
             for start in range(0, waveform.shape[0], window_size):
+                raise_if_cancelled(is_cancelled)
                 window = waveform[start : start + window_size]
+                if window.shape[0] < window_size:
+                    window = torch.nn.functional.pad(
+                        window,
+                        (0, window_size - window.shape[0]),
+                    )
                 inputs = self._processor(
                     window.numpy(),
                     sampling_rate=MERT_SAMPLE_RATE,
@@ -325,6 +346,8 @@ class Music2EmoMoodAnalyzer:
     def _extract_chord_inputs(
         self,
         audio_path: Path,
+        *,
+        is_cancelled: CancellationCheck | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         assert self._chord_model is not None
         assert self._chord_mean is not None
@@ -347,6 +370,7 @@ class Music2EmoMoodAnalyzer:
         predictions = []
         with torch.inference_mode():
             for start in range(0, features.shape[0], CHORD_TIMESTEP):
+                raise_if_cancelled(is_cancelled)
                 batch = torch.from_numpy(
                     features[start : start + CHORD_TIMESTEP]
                 ).float().unsqueeze(0).to(self.device)

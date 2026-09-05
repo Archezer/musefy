@@ -1,5 +1,5 @@
 import shutil
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -111,6 +111,44 @@ class PlaylistManagementService:
         destination.write_bytes(image_data)
         return self._update_cover_path(playlist, destination)
 
+    def ensure_generated_cover(
+        self,
+        playlist_id: str,
+        artwork_factory: Callable[[], str],
+    ) -> Playlist:
+        """Return a playlist with a persisted fallback artwork.
+
+        Generated artwork is only created when the playlist has no usable
+        cover.  Keeping this decision in the management service means UI
+        refreshes and application restarts reuse the same stored artwork.
+        """
+
+        playlist = self._get_playlist_or_raise(playlist_id)
+        if playlist.cover_path and Path(playlist.cover_path).is_file():
+            return playlist
+
+        return self.set_generated_cover(
+            playlist_id,
+            artwork_factory(),
+        )
+
+    def set_generated_cover(
+        self,
+        playlist_id: str,
+        svg: str,
+    ) -> Playlist:
+        """Persist generated SVG artwork and make it the playlist cover."""
+
+        playlist = self._get_playlist_or_raise(playlist_id)
+        normalized_svg = svg.strip()
+        if not normalized_svg:
+            raise ValueError("Generated playlist artwork must not be empty")
+
+        PLAYLIST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        destination = PLAYLIST_COVERS_DIR / f"{playlist.id}.svg"
+        destination.write_text(normalized_svg, encoding="utf-8")
+        return self._update_cover_path(playlist, destination)
+
     def list_playlists(self) -> list[Playlist]:
         return list(self.store.list_playlists())
 
@@ -198,6 +236,38 @@ class PlaylistManagementService:
         )
 
         return self.get_playlist_tracks(playlist_id)
+
+    def merge_playlists(
+        self,
+        target_playlist_id: str,
+        source_playlist_id: str,
+        *,
+        include_duplicates: bool = False,
+    ) -> list[Track]:
+        """Append one playlist to another while preserving track order."""
+
+        if target_playlist_id == source_playlist_id:
+            raise ValueError("A playlist cannot be merged with itself")
+
+        target_tracks = self.get_playlist_tracks(target_playlist_id)
+        source_tracks = self.get_playlist_tracks(source_playlist_id)
+        if include_duplicates:
+            appended_tracks = source_tracks
+        else:
+            seen_track_ids = {track.id for track in target_tracks}
+            appended_tracks = []
+            for track in source_tracks:
+                if track.id in seen_track_ids:
+                    continue
+                seen_track_ids.add(track.id)
+                appended_tracks.append(track)
+        merged_track_ids = [
+            track.id for track in (*target_tracks, *appended_tracks)
+        ]
+        return self.replace_tracks(
+            target_playlist_id,
+            merged_track_ids,
+        )
 
     def remove_track_at(
         self,

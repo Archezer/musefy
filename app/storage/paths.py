@@ -44,6 +44,8 @@ LIBRARY_DIR = DATA_DIR / "library"
 PLAYLIST_EXPORTS_DIR = _runtime_root() / "playlist_exports"
 PLAYLIST_COVERS_DIR = DATA_DIR / "playlist_covers"
 TRACK_COVERS_DIR = DATA_DIR / "track_covers"
+MUSIC_MAP_SNAPSHOT_PATH = DATA_DIR / "music_map_snapshot.png"
+MUSIC_MAP_SNAPSHOT_METADATA_PATH = DATA_DIR / "music_map_snapshot.json"
 
 
 def resolve_mert_source(model_name: str) -> str:

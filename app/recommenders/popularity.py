@@ -1,8 +1,13 @@
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from math import exp
 from random import Random
 
+from app.domain.genres import (
+    popular_user_genres,
+    track_genre_evidence,
+)
 from app.domain.models import (
     Interaction,
     InteractionType,
@@ -31,6 +36,13 @@ PARENT_GENRE_RELEVANCE = 0.5
 SUBGENRE_RECOMMENDATION_MIN_SCORE = 0.25
 
 class MostPopularRecommender(Recommender):
+    @staticmethod
+    def _check_cancelled(
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        if should_cancel is not None and should_cancel():
+            raise RuntimeError("Recommendation calculation cancelled")
+
     def __init__(
         self,
         store: MusicStore,
@@ -168,6 +180,23 @@ class MostPopularRecommender(Recommender):
 
         return genre_scores
 
+    def get_user_genre_preferences(
+        self,
+        user_id: str,
+        *,
+        limit: int = 8,
+        now: datetime | None = None,
+    ) -> tuple[str, ...]:
+        """Return display labels for the user's strongest genres."""
+
+        return popular_user_genres(
+            list(self.store.list_tracks()),
+            list(self.store.list_interactions()),
+            user_id,
+            limit=limit,
+            now=now,
+        )
+
     @staticmethod
     def _get_track_genre_features(
         track: Track,
@@ -229,6 +258,94 @@ class MostPopularRecommender(Recommender):
                 )
 
         return features
+
+    def recommend_genre(
+        self,
+        user_id: str,
+        genre_name: str,
+        limit: int = 10,
+        *,
+        now: datetime | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> list[Recommendation]:
+        """Recommend tracks matching one of the Wave genre labels."""
+
+        if limit <= 0:
+            raise ValueError("Recommendation limit must be positive")
+
+        normalized_genre = genre_name.strip().casefold()
+        if not normalized_genre:
+            raise ValueError("Genre name must not be empty")
+
+        current_time = now or datetime.now(UTC)
+        all_interactions = list(self.store.list_interactions())
+        tracks = list(self.store.list_tracks())
+        self._check_cancelled(should_cancel)
+        permanent_track_ids, temporary_track_ids = suppressed_track_ids(
+            user_id,
+            all_interactions,
+            now=current_time,
+        )
+        user_interactions = [
+            interaction
+            for interaction in all_interactions
+            if interaction.user_id == user_id
+        ]
+        cooldown_track_ids = self._get_cooldown_track_ids(
+            user_id,
+            user_interactions,
+        )
+
+        matching_tracks: list[Track] = []
+        for index, track in enumerate(tracks):
+            if index % 64 == 0:
+                self._check_cancelled(should_cancel)
+            if any(
+                label.casefold() == normalized_genre
+                for label, _relevance in track_genre_evidence(track)
+            ):
+                matching_tracks.append(track)
+        candidates = [
+            track
+            for track in matching_tracks
+            if track.id not in (
+                permanent_track_ids
+                | temporary_track_ids
+                | cooldown_track_ids
+            )
+        ]
+        if not candidates:
+            candidates = [
+                track
+                for track in matching_tracks
+                if track.id not in permanent_track_ids
+                and track.id not in temporary_track_ids
+            ]
+
+        user_track_weights = aggregate_user_track_weights(
+            user_id,
+            user_interactions,
+            now=current_time,
+        )
+        candidates.sort(
+            key=lambda track: (
+                -user_track_weights.get(track.id, 0.0),
+                track.artist.casefold(),
+                track.title.casefold(),
+            )
+        )
+        self._check_cancelled(should_cancel)
+
+        return [
+            Recommendation(
+                track=track,
+                score=user_track_weights.get(track.id, 0.0),
+                reason=f"Matches your preferred genre: {genre_name}",
+                mode=RecommendationMode.GENRE,
+                popularity_score=user_track_weights.get(track.id, 0.0),
+            )
+            for track in candidates[:limit]
+        ]
 
 
     def _get_user_artist_scores(

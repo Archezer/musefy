@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
@@ -27,6 +29,7 @@ from app.domain.models import (
 )
 from app.ingestion.metadata import read_audio_metadata
 from app.storage.paths import (
+    BUNDLED_DATA_DIR,
     DATA_DIR,
     LIBRARY_DIR,
     TRACK_COVERS_DIR,
@@ -37,6 +40,17 @@ from app.storage.protocols import MusicStore
 JSON_EXPORT_FORMAT = "musefy-library-export"
 ZIP_BACKUP_FORMAT = "musefy-library-backup"
 BACKUP_VERSION = 1
+AUDIO_FINGERPRINT_SAMPLE_RATE = 11_025
+AUDIO_FINGERPRINT_DURATION_SECONDS = 90
+AUDIO_DECODE_TIMEOUT_SECONDS = 45
+
+
+class AudioDecoderUnavailable(RuntimeError):
+    """Raised when no decoder is available for acoustic fingerprinting."""
+
+
+class AudioDecodeError(RuntimeError):
+    """Raised when a present decoder cannot decode an audio file."""
 
 
 @dataclass(frozen=True)
@@ -115,11 +129,32 @@ class LibraryHealthService:
                         f"Acoustic fingerprint unavailable: {error}",
                     )
                 )
-            except (OSError, RuntimeError, ValueError) as error:
+            except AudioDecoderUnavailable as error:
+                unavailable.append(
+                    TrackIssue(
+                        track,
+                        f"Acoustic fingerprint unavailable: {error}",
+                    )
+                )
+            except ValueError as error:
+                unavailable.append(
+                    TrackIssue(
+                        track,
+                        f"Acoustic fingerprint unavailable: {error}",
+                    )
+                )
+            except AudioDecodeError as error:
                 broken.append(
                     TrackIssue(
                         track,
                         f"Audio decode check failed: {error}",
+                    )
+                )
+            except (OSError, RuntimeError) as error:
+                unavailable.append(
+                    TrackIssue(
+                        track,
+                        f"Acoustic fingerprint unavailable: {error}",
                     )
                 )
 
@@ -247,6 +282,106 @@ class LibraryHealthService:
         return hasher.hexdigest()
 
     @staticmethod
+    def _find_ffmpeg() -> Path | None:
+        """Locate the bundled or installed FFmpeg executable."""
+
+        if BUNDLED_DATA_DIR is not None:
+            bundled = BUNDLED_DATA_DIR / "ffmpeg" / "ffmpeg.exe"
+            if bundled.is_file():
+                return bundled
+
+        system_ffmpeg = shutil.which("ffmpeg")
+        if system_ffmpeg:
+            return Path(system_ffmpeg)
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            return None
+
+        candidates = sorted(
+            Path(local_app_data).glob(
+                "Microsoft/WinGet/Packages/"
+                "Gyan.FFmpeg.Shared_*/*/bin/ffmpeg.exe"
+            )
+        )
+        return candidates[-1] if candidates else None
+
+    @classmethod
+    def _decode_audio_samples(
+        cls,
+        path: Path,
+    ) -> tuple[Any, int]:
+        """Decode a short mono PCM sample through the app's FFmpeg runtime."""
+
+        import numpy as np
+
+        ffmpeg = cls._find_ffmpeg()
+        if ffmpeg is None:
+            raise AudioDecoderUnavailable(
+                "FFmpeg is not installed or bundled."
+            )
+
+        command = [
+            str(ffmpeg),
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-t",
+            str(AUDIO_FINGERPRINT_DURATION_SECONDS),
+            "-vn",
+            "-sn",
+            "-dn",
+            "-ac",
+            "1",
+            "-ar",
+            str(AUDIO_FINGERPRINT_SAMPLE_RATE),
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]
+        creation_flags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if os.name == "nt"
+            else 0
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                creationflags=creation_flags,
+                timeout=AUDIO_DECODE_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as error:
+            raise AudioDecoderUnavailable(
+                "FFmpeg could not be started."
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise AudioDecodeError(
+                "FFmpeg timed out while decoding the file."
+            ) from error
+        except OSError as error:
+            raise AudioDecoderUnavailable(
+                f"FFmpeg could not be started: {error}"
+            ) from error
+
+        if completed.returncode != 0:
+            detail = completed.stderr.decode(
+                "utf-8",
+                errors="replace",
+            ).strip()
+            detail = detail.splitlines()[-1] if detail else "unknown FFmpeg error"
+            raise AudioDecodeError(detail)
+
+        samples = np.frombuffer(completed.stdout, dtype=np.float32)
+        if samples.size == 0:
+            raise AudioDecodeError("FFmpeg returned no decoded audio samples.")
+        return samples, AUDIO_FINGERPRINT_SAMPLE_RATE
+
+    @staticmethod
     def _acoustic_fingerprint(path: Path) -> tuple[float, ...]:
         """Return a codec-independent signature from decoded audio.
 
@@ -258,12 +393,7 @@ class LibraryHealthService:
         import librosa
         import numpy as np
 
-        samples, sample_rate = librosa.load(
-            str(path),
-            sr=11_025,
-            mono=True,
-            duration=90.0,
-        )
+        samples, sample_rate = LibraryHealthService._decode_audio_samples(path)
         if len(samples) < sample_rate * 3:
             raise ValueError("audio is shorter than three seconds")
 

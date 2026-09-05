@@ -15,6 +15,7 @@ from app.domain.models import (
 from app.ingestion.metadata import AudioMetadata
 from app.services import library_maintenance
 from app.services.library_maintenance import (
+    AudioDecodeError,
     LibraryBackupService,
     LibraryHealthService,
 )
@@ -58,6 +59,55 @@ def test_health_scan_reports_missing_broken_and_identical_files(
     assert len(report.exact_duplicates) == 1
     assert {track.id for track in report.exact_duplicates[0].tracks} == {"one", "two"}
     assert report.acoustic_duplicates == ()
+
+
+@pytest.mark.parametrize(
+    ("error", "broken_ids", "unavailable_ids"),
+    (
+        (RuntimeError("fingerprint backend failed"), (), ("track",)),
+        (AudioDecodeError("decoder rejected file"), ("track",), ()),
+    ),
+)
+def test_health_scan_separates_fingerprint_and_audio_decode_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    broken_ids: tuple[str, ...],
+    unavailable_ids: tuple[str, ...],
+) -> None:
+    audio_file = tmp_path / "track.mp3"
+    audio_file.write_bytes(b"audio")
+    store = InMemoryMusicStore()
+    store.add_track(
+        Track(
+            id="track",
+            title="Track",
+            artist="Artist",
+            local_path=str(audio_file),
+        )
+    )
+
+    monkeypatch.setattr(
+        library_maintenance,
+        "read_audio_metadata",
+        lambda _path: AudioMetadata(None, None, 120_000),
+    )
+
+    def fail_fingerprint(_path: Path) -> tuple[float, ...]:
+        raise error
+
+    monkeypatch.setattr(
+        LibraryHealthService,
+        "_acoustic_fingerprint",
+        staticmethod(fail_fingerprint),
+    )
+
+    report = LibraryHealthService(store).scan()
+
+    assert [issue.track.id for issue in report.broken_audio] == list(broken_ids)
+    assert [issue.track.id for issue in report.fingerprint_unavailable] == list(
+        unavailable_ids
+    )
 
 
 def test_remove_exact_duplicates_keeps_one_record_and_references(
