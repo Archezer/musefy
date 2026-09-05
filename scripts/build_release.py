@@ -148,9 +148,18 @@ def main() -> None:
     if not VENV_PYTHON.is_file():
         raise SystemExit(".venv is missing. Run install_musefy.bat first.")
 
-    tag = sys.argv[1] if len(sys.argv) > 1 else "v1.0.0"
-    cpu_installer = _build_profile("cpu")
-    cuda_installer = _build_profile("cuda")
+    package_existing = "--package-existing" in sys.argv[1:]
+    arguments = [argument for argument in sys.argv[1:] if argument != "--package-existing"]
+    tag = arguments[0] if arguments else "v1.0.0"
+    if package_existing:
+        cpu_installer = DIST_DIR / "Musefy-CPU-Setup.exe"
+        cuda_installer = DIST_DIR / "Musefy-CUDA-Setup.exe"
+        for installer in (cpu_installer, cuda_installer):
+            if not installer.is_file():
+                raise SystemExit(f"Existing installer is missing: {installer}")
+    else:
+        cpu_installer = _build_profile("cpu")
+        cuda_installer = _build_profile("cuda")
     cpu_assets = _release_assets(cpu_installer)
     cuda_assets = _release_assets(cuda_installer)
 

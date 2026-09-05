@@ -25,10 +25,10 @@ echo.
 
 if defined MUSEFY_FORCE_PROFILE (
     set "MUSEFY_INSTALL_PROFILE=%MUSEFY_FORCE_PROFILE%"
-    if /I not "%MUSEFY_INSTALL_PROFILE%"=="cpu" if /I not "%MUSEFY_INSTALL_PROFILE%"=="cuda" (
-        echo [ERROR] MUSEFY_FORCE_PROFILE must be cpu or cuda.
-        exit /b 1
-    )
+    if /I "%MUSEFY_FORCE_PROFILE%"=="cpu" goto :profile_selected
+    if /I "%MUSEFY_FORCE_PROFILE%"=="cuda" goto :profile_selected
+    echo [ERROR] MUSEFY_FORCE_PROFILE must be cpu or cuda.
+    exit /b 1
 ) else (
     set "MUSEFY_INSTALL_PROFILE=cpu"
     where nvidia-smi >nul 2>nul
@@ -38,6 +38,7 @@ if defined MUSEFY_FORCE_PROFILE (
     )
 )
 
+:profile_selected
 echo Hardware profile: %MUSEFY_INSTALL_PROFILE%
 echo Installing runtime dependencies...
 uv sync --locked --no-dev --extra %MUSEFY_INSTALL_PROFILE%

@@ -21,7 +21,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 set "MUSEFY_RELEASE_TAG=%MUSEFY_RELEASE_TAG%"
-".venv\Scripts\python.exe" "scripts\build_release.py" "%MUSEFY_RELEASE_TAG%"
+if /I "%~2"=="--package-existing" (
+    ".venv\Scripts\python.exe" "scripts\build_release.py" "%MUSEFY_RELEASE_TAG%" --package-existing
+) else (
+    ".venv\Scripts\python.exe" "scripts\build_release.py" "%MUSEFY_RELEASE_TAG%"
+)
 if errorlevel 1 (
     echo.
     echo [ERROR] Release build failed.

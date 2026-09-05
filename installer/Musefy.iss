@@ -2,8 +2,12 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Archezer"
 #define MyAppURL "https://github.com/Archezer/musefy"
+#ifndef BundleName
 #define BundleName "Musefy"
+#endif
+#ifndef OutputName
 #define OutputName "Musefy-Setup"
+#endif
 
 [Setup]
 AppId={{A0B5D258-0D37-4CF4-A4F3-7E3CF2E6A861}
