@@ -1,4 +1,6 @@
 import ctypes
+import os
+import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -34,11 +36,15 @@ CURRENT_USER_ID = "user-1"
 DEMO_TRACK_SOURCE = "musefy_easter_egg"
 DEMO_TRACK_SOURCE_ID = "never-gonna-give-you-up"
 DEMO_TRACK_FILENAME = "Rick Astley — Rick Astley - Never Gonna Give You Up.m4a"
-WINDOWS_APP_USER_MODEL_ID = "Archezer.Musefy"
+# Keep this distinct from the legacy Python-hosted launcher identity.  Windows
+# caches taskbar pins by AppUserModelID, so a dedicated native-app identity
+# prevents an old Python pin from being reused for Musefy.
+WINDOWS_APP_USER_MODEL_ID = "Archezer.MusefyDesktop"
 _NATIVE_MUSEFY_ICON_HANDLE = None
 
 
 def main() -> None:
+    _redirect_windows_source_launch_to_native_host()
     _set_windows_app_user_model_id()
     create_database()
 
@@ -120,6 +126,39 @@ def main() -> None:
         window._enqueue_genre_analysis(demo_track)
 
     sys.exit(qt_application.exec())
+
+
+def _redirect_windows_source_launch_to_native_host() -> None:
+    """Keep accidental Python launches out of the Windows taskbar.
+
+    The installed project contains a small native host so the taskbar can use
+    Musefy's executable identity and icon. A user may still open
+    ``desktop.py`` or an old Python shortcut, so redirect that launch before
+    creating a Qt window. The native host marks its embedded interpreter with
+    an environment flag and therefore passes through this guard.
+    """
+
+    if sys.platform != "win32" or os.environ.get("MUSEFY_NATIVE_HOST") == "1":
+        return
+
+    project_root = Path(__file__).resolve().parents[1]
+    native_host = project_root / "Musefy.exe"
+    if not native_host.is_file():
+        return
+
+    try:
+        subprocess.Popen(
+            [str(native_host)],
+            cwd=str(project_root),
+            close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        # Source development remains usable if the optional generated host is
+        # unavailable or cannot be started.
+        return
+
+    raise SystemExit(0)
 
 
 def _ensure_current_user(
@@ -364,11 +403,14 @@ def _set_windows_taskbar_properties(hwnd: int, icon_path: Path) -> None:
         release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
 
         try:
+            # Windows uses the relaunch icon for a taskbar pin.  The shell
+            # documentation requires relaunch properties to be set before the
+            # explicit AppUserModelID is assigned to the window.
             if (
                 set_value(
                     store,
-                    ctypes.byref(app_id_key),
-                    ctypes.byref(app_id_value),
+                    ctypes.byref(relaunch_icon_key),
+                    ctypes.byref(icon_value),
                 )
                 != 0
             ):
@@ -376,8 +418,8 @@ def _set_windows_taskbar_properties(hwnd: int, icon_path: Path) -> None:
             if (
                 set_value(
                     store,
-                    ctypes.byref(relaunch_icon_key),
-                    ctypes.byref(icon_value),
+                    ctypes.byref(app_id_key),
+                    ctypes.byref(app_id_value),
                 )
                 != 0
             ):

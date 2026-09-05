@@ -245,18 +245,18 @@ the full CUDA Toolkit because the packaged PyTorch CUDA runtime does not need
 it. To force a profile for troubleshooting, set `MUSEFY_FORCE_PROFILE` to
 `cpu` or `cuda` before running the BAT.
 
-##### 3. Launch Musefy from source
+##### 3. Build and launch the final Windows entrypoint
 
 The installer creates Musefy shortcuts in the Start Menu and on the desktop.
 It also builds a small open-source native `Musefy.exe` host with the Musefy
 icon. The host embeds the managed Python runtime in the same Windows process,
 so the taskbar sees `Musefy.exe` instead of a generic Python process and no
 console window appears. Its shortcuts carry the same AppUserModelID as the
-application, so
-Windows can group the running window with the pinned button and relaunch it
-after a restart. If an older Python shortcut is already pinned, unpin it and
-pin the new Musefy shortcut once. The terminal command remains available for
-troubleshooting:
+application, so Windows can group the running window with the pinned button
+and relaunch it after a restart. For normal use, launch and pin only this
+`Musefy.exe` shortcut; remove any older Python pin once if one exists. The
+terminal command below is for developer troubleshooting, not the release
+entrypoint:
 
 ```powershell
 .venv\Scripts\python.exe -m app.desktop

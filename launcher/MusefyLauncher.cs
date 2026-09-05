@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 internal static class MusefyLauncher
 {
-    private const string AppUserModelId = "Archezer.Musefy";
+    private const string AppUserModelId = "Archezer.MusefyDesktop";
     private const ushort VariantTypeWideString = 31;
 
     [ComImport]
@@ -209,8 +209,15 @@ internal static class MusefyLauncher
             }
         }
 
+        if (args.Length == 1 && args[0] == "--migrate-taskbar-pins")
+        {
+            MigrateTaskbarPins(root);
+            return 0;
+        }
+
         try
         {
+            MigrateTaskbarPins(root);
             return RunEmbeddedPython(root);
         }
         catch (Exception error)
@@ -254,6 +261,7 @@ internal static class MusefyLauncher
             )
         );
         Environment.SetEnvironmentVariable("VIRTUAL_ENV", virtualEnvironment);
+        Environment.SetEnvironmentVariable("MUSEFY_NATIVE_HOST", "1");
 
         if (!SetDllDirectory(pythonHome))
         {
@@ -483,7 +491,7 @@ internal static class MusefyLauncher
             link.SetDescription("Musefy music recommendation app");
             link.SetIconLocation(icon, 0);
             link.SetShowCmd(1);
-            SetShortcutAppUserModelId(link);
+            SetShortcutProperties(link, icon);
             ((IPersistFile)link).Save(location, true);
         }
         finally
@@ -492,15 +500,149 @@ internal static class MusefyLauncher
         }
     }
 
-    private static void SetShortcutAppUserModelId(IShellLinkW link)
+    private static void MigrateTaskbarPins(string root)
+    {
+        string taskbarDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Microsoft",
+            "Internet Explorer",
+            "Quick Launch",
+            "User Pinned",
+            "TaskBar"
+        );
+        if (!Directory.Exists(taskbarDirectory))
+        {
+            return;
+        }
+
+        string nativeHost = Path.Combine(root, "Musefy.exe");
+        string legacyPython = Path.Combine(root, ".venv", "Scripts", "python.exe");
+        string legacyPythonWindowed = Path.Combine(
+            root,
+            ".venv",
+            "Scripts",
+            "pythonw.exe"
+        );
+
+        foreach (string location in Directory.GetFiles(taskbarDirectory, "*.lnk"))
+        {
+            try
+            {
+                if (!IsMusefyPin(
+                    location,
+                    nativeHost,
+                    legacyPython,
+                    legacyPythonWindowed
+                ))
+                {
+                    continue;
+                }
+
+                RewriteShortcut(
+                    location,
+                    nativeHost,
+                    root,
+                    Path.Combine(root, "assets", "musefy-mark.ico")
+                );
+            }
+            catch
+            {
+                // A running Explorer instance can temporarily lock a pinned
+                // shortcut. The next Musefy launch will retry the migration.
+            }
+        }
+    }
+
+    private static bool IsMusefyPin(
+        string location,
+        string nativeHost,
+        string legacyPython,
+        string legacyPythonWindowed
+    )
+    {
+        IShellLinkW link = (IShellLinkW)new ShellLinkClass();
+        try
+        {
+            ((IPersistFile)link).Load(location, 0);
+            StringBuilder target = new StringBuilder(32768);
+            StringBuilder arguments = new StringBuilder(32768);
+            link.GetPath(target, target.Capacity, IntPtr.Zero, 0);
+            link.GetArguments(arguments, arguments.Capacity);
+
+            string targetPath = target.ToString();
+            if (string.Equals(targetPath, nativeHost, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            bool isLegacyPython = string.Equals(
+                    targetPath,
+                    legacyPython,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || string.Equals(
+                    targetPath,
+                    legacyPythonWindowed,
+                    StringComparison.OrdinalIgnoreCase
+                );
+            return isLegacyPython
+                && arguments.ToString().IndexOf(
+                    "app.desktop",
+                    StringComparison.OrdinalIgnoreCase
+                ) >= 0;
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(link);
+        }
+    }
+
+    private static void RewriteShortcut(
+        string location,
+        string target,
+        string workingDirectory,
+        string icon
+    )
+    {
+        IShellLinkW link = (IShellLinkW)new ShellLinkClass();
+        try
+        {
+            ((IPersistFile)link).Load(location, 0);
+            link.SetPath(target);
+            link.SetArguments("");
+            link.SetWorkingDirectory(workingDirectory);
+            link.SetDescription("Musefy music recommendation app");
+            link.SetIconLocation(icon, 0);
+            link.SetShowCmd(1);
+            SetShortcutProperties(link, icon);
+            ((IPersistFile)link).Save(location, true);
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(link);
+        }
+    }
+
+    private static void SetShortcutProperties(IShellLinkW link, string icon)
     {
         IPropertyStore propertyStore = (IPropertyStore)link;
-        PropertyKey appIdKey = new PropertyKey
+        PropertyKey iconKey = new PropertyKey
         {
             FormatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),
+            PropertyId = 3,
+        };
+        PropertyKey appIdKey = new PropertyKey
+        {
+            FormatId = iconKey.FormatId,
             PropertyId = 5,
         };
+        IntPtr iconPointer = Marshal.StringToCoTaskMemUni(icon + ",0");
         IntPtr appIdPointer = Marshal.StringToCoTaskMemUni(AppUserModelId);
+        PropVariant iconValue = new PropVariant
+        {
+            VariantType = VariantTypeWideString,
+            PointerValue = iconPointer,
+        };
         PropVariant appIdValue = new PropVariant
         {
             VariantType = VariantTypeWideString,
@@ -509,11 +651,15 @@ internal static class MusefyLauncher
 
         try
         {
+            // Set relaunch metadata before the AppUserModelID so the shell
+            // uses Musefy's icon when it creates or refreshes a taskbar pin.
+            propertyStore.SetValue(ref iconKey, ref iconValue);
             propertyStore.SetValue(ref appIdKey, ref appIdValue);
             propertyStore.Commit();
         }
         finally
         {
+            PropVariantClear(ref iconValue);
             PropVariantClear(ref appIdValue);
         }
     }

@@ -121,6 +121,7 @@ if errorlevel 1 (
     echo [WARNING] Could not create shortcuts automatically.
     echo The application is still installed and can be started manually.
 )
+"%MUSEFY_ROOT%\Musefy.exe" --migrate-taskbar-pins
 
 echo.
 echo Musefy is ready with the %MUSEFY_INSTALL_PROFILE% profile.
