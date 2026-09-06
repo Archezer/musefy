@@ -74,7 +74,9 @@ class MoodRecommender:
             should_cancel=should_cancel,
         )
         self._check_cancelled(should_cancel)
-        all_interactions = list(self.store.list_interactions())
+        all_interactions = list(
+            self.store.list_interactions(user_id=user_id)
+        )
         tracks = list(self.store.list_tracks())
         self._check_cancelled(should_cancel)
         permanent_track_ids, _ = suppressed_track_ids(
@@ -181,7 +183,7 @@ class MoodRecommender:
 
         The profile is intentionally local and explainable: positive listening
         signals form a weighted mood centroid and a small content profile from
-        the user's liked/saved/completed tracks.  A user with no history gets
+        the user's liked/completed tracks.  A user with no history gets
         a neutral cold-start wave and can immediately start teaching it.
         """
 
@@ -190,18 +192,15 @@ class MoodRecommender:
 
         self._check_cancelled(should_cancel)
         current_time = now or datetime.now(UTC)
-        all_interactions = list(self.store.list_interactions())
+        user_interactions = list(
+            self.store.list_interactions(user_id=user_id)
+        )
         self._check_cancelled(should_cancel)
-        user_interactions = [
-            interaction
-            for interaction in all_interactions
-            if interaction.user_id == user_id
-        ]
         tracks = list(self.store.list_tracks())
         self._check_cancelled(should_cancel)
         permanent_track_ids, temporary_track_ids = suppressed_track_ids(
             user_id,
-            all_interactions,
+            user_interactions,
             now=current_time,
         )
         cooldown_track_ids = self._get_cooldown_track_ids(
@@ -443,7 +442,9 @@ class MoodRecommender:
         )
 
         interactions: list[Interaction] = []
-        for index, interaction in enumerate(self.store.list_interactions()):
+        for index, interaction in enumerate(
+            self.store.list_interactions(user_id=user_id)
+        ):
             if index % 64 == 0:
                 self._check_cancelled(should_cancel)
             if (

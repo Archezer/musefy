@@ -16,12 +16,15 @@ engine = create_engine(
 )
 
 @event.listens_for(engine, "connect")
-def enable_foreign_keys(
+def configure_sqlite_connection(
     dbapi_connection,
     _connection_record,
 ) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute("PRAGMA journal_mode = WAL")
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.execute("PRAGMA busy_timeout = 5000")
     cursor.close()
 
 SessionFactory = sessionmaker(
@@ -152,6 +155,21 @@ def create_database() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
                 "uq_tracks_source_source_id "
                 "ON tracks (source, source_id)"
+            )
+        )
+
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_interactions_user_created_at "
+                "ON interactions (user_id, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_interactions_user_track_created_at "
+                "ON interactions (user_id, track_id, created_at)"
             )
         )
 

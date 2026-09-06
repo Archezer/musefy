@@ -179,31 +179,6 @@ def test_duplicate_explicit_states_do_not_multiply_artist_signal(store):
     )
 
 
-def test_save_increases_recommendation_score(store):
-    InteractionService(store).record(
-        user_id="user-1",
-        track_id="track-liked",
-        interaction_type=InteractionType.SAVE,
-    )
-
-    recommender = MostPopularRecommender(
-        store,
-        exploration_pool_size=1,
-    )
-
-    recommendations = recommender.recommend(
-        user_id="user-1",
-        limit=1,
-    )
-
-    assert recommendations[0].track.id == "track-liked"
-    assert (
-        recommendations[0].score
-        == InteractionType.SAVE.weight
-        * (1 + ARTIST_PREFERENCE_FACTOR)
-    )
-
-
 def test_play_start_is_telemetry_not_positive_signal():
     store = InMemoryMusicStore()
     store.add_user(User(id="user-1", display_name="Test User"))

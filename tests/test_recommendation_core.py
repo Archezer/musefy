@@ -425,7 +425,7 @@ def test_duplicate_preference_rows_are_collapsed_to_one_latest_state() -> None:
         Interaction(
             user_id="user-1",
             track_id="track-1",
-            interaction_type=InteractionType.SAVE,
+            interaction_type=InteractionType.LIKE,
             created_at=now,
             mood_context=f"legacy-{index}",
         )
@@ -435,7 +435,7 @@ def test_duplicate_preference_rows_are_collapsed_to_one_latest_state() -> None:
     states = latest_user_preference_states("user-1", interactions)
 
     assert list(states) == ["track-1"]
-    assert states["track-1"].interaction_type == InteractionType.SAVE
+    assert states["track-1"].interaction_type == InteractionType.LIKE
 
 
 def test_repeated_playback_weight_is_capped_per_track() -> None:

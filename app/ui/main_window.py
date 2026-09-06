@@ -549,6 +549,35 @@ class MainWindow(QMainWindow):
         )
         self._space_shortcut.setAutoRepeat(False)
         self._space_shortcut.activated.connect(self._toggle_playback)
+        self._media_play_pause_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_MediaTogglePlayPause),
+            self,
+        )
+        self._media_play_pause_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self._media_play_pause_shortcut.setAutoRepeat(False)
+        self._media_play_pause_shortcut.activated.connect(
+            self._toggle_playback
+        )
+        self._media_next_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_MediaNext),
+            self,
+        )
+        self._media_next_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self._media_next_shortcut.setAutoRepeat(False)
+        self._media_next_shortcut.activated.connect(self._go_next)
+        self._media_previous_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_MediaPrevious),
+            self,
+        )
+        self._media_previous_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self._media_previous_shortcut.setAutoRepeat(False)
+        self._media_previous_shortcut.activated.connect(self._go_previous)
         self._load_playlists()
         self._load_library(refresh_map=False)
         # Let Qt paint the main window before restoring playback.  The map is
@@ -6090,7 +6119,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 dialog,
                 "No duplicate preferences",
-                "There are no redundant like, save or dislike records.",
+                "There are no redundant like or dislike records.",
             )
             return
 
@@ -7719,7 +7748,14 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(
             0,
-            lambda: self._show_spotify_sync_results(search_result),
+            lambda: self._show_spotify_sync_results(
+                search_result,
+                dialog=(
+                    dialog
+                    if isinstance(dialog, YouTubeSearchDialog)
+                    else None
+                ),
+            ),
         )
 
     def _handle_spotify_settings_error(
@@ -7747,24 +7783,31 @@ class MainWindow(QMainWindow):
     def _show_spotify_sync_results(
         self,
         result: SpotifyPlaylistSearchResult,
+        dialog: YouTubeSearchDialog | None = None,
     ) -> None:
-        dialog = YouTubeSearchDialog(
-            self,
-            spotify_authenticated=True,
-        )
+        if dialog is None:
+            dialog = YouTubeSearchDialog(
+                self,
+                spotify_authenticated=True,
+            )
+            dialog.set_import_source("spotify_favorite")
+            dialog.playlist_import_requested.connect(
+                lambda candidates: self._start_playlist_import(
+                    dialog,
+                    candidates,
+                )
+            )
+            dialog.spotify_settings_requested.connect(
+                lambda: self._open_spotify_settings(dialog)
+            )
+            dialog.spotify_sync_requested.connect(
+                lambda: self._start_spotify_sync_last(dialog)
+            )
+            dialog.spotify_sync_all_requested.connect(
+                lambda: self._start_spotify_sync_all(dialog)
+            )
+
         dialog.set_import_source("spotify_favorite")
-        dialog.playlist_import_requested.connect(
-            lambda candidates: self._start_playlist_import(dialog, candidates)
-        )
-        dialog.spotify_settings_requested.connect(
-            lambda: self._open_spotify_settings(dialog)
-        )
-        dialog.spotify_sync_requested.connect(
-            lambda: self._start_spotify_sync_last(dialog)
-        )
-        dialog.spotify_sync_all_requested.connect(
-            lambda: self._start_spotify_sync_all(dialog)
-        )
         dialog.set_search_query(result.playlist_name)
         dialog.set_candidates(
             list(result.candidates),
@@ -9333,13 +9376,11 @@ class MainWindow(QMainWindow):
             metadata_dialog.get_values()
         )
 
-        if (
-            self.current_track_id == track.id
-            and
-            self.media_player.playbackState()
-            != QMediaPlayer.PlaybackState.StoppedState
-        ):
+        if self.current_track_id == track.id:
+            # Stopping playback is not enough on Windows: QMediaPlayer can
+            # keep the current source open until it is explicitly unloaded.
             self.media_player.stop()
+            self.media_player.setSource(QUrl())
 
         try:
             updated_track = (
@@ -9412,13 +9453,11 @@ class MainWindow(QMainWindow):
         if confirmation != QMessageBox.StandardButton.Yes:
             return
 
-        if (
-            self.current_track_id == track.id
-            and self.media_player.playbackState() != (
-            QMediaPlayer.PlaybackState.StoppedState
-            )
-        ):
+        if self.current_track_id == track.id:
+            # Unload the source before deleting the file.  Otherwise the
+            # media backend may still hold a Windows file lock after stop().
             self.media_player.stop()
+            self.media_player.setSource(QUrl())
 
         try:
             self.track_management_service.delete_track(

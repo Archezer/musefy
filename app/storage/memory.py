@@ -272,8 +272,15 @@ class InMemoryMusicStore:
     def list_tracks(self) -> list[Track]:
         return list(self.tracks.values())
 
-    def list_interactions(self) -> list[Interaction]:
-        return list(self.interactions)
+    def list_interactions(
+        self,
+        user_id: str | None = None,
+    ) -> list[Interaction]:
+        return [
+            interaction
+            for interaction in self.interactions
+            if user_id is None or interaction.user_id == user_id
+        ]
 
     def add_recommendation_impression(
         self,
@@ -291,5 +298,10 @@ class InMemoryMusicStore:
 
     def list_recommendation_impressions(
         self,
+        user_id: str | None = None,
     ) -> list[RecommendationImpression]:
-        return list(self.recommendation_impressions)
+        return [
+            impression
+            for impression in self.recommendation_impressions
+            if user_id is None or impression.user_id == user_id
+        ]

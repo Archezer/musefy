@@ -1,4 +1,4 @@
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, datetime
 from random import Random
 
@@ -26,12 +26,20 @@ class TrackSimilarityService:
         self.random = random_generator or Random()
         self._index: TrackSimilarityIndex | None = None
         self._removed_track_ids: set[str] = set()
+        self._embedding_catalog: dict[
+            int,
+            tuple[tuple[Track, ...], np.ndarray],
+        ] | None = None
+        self._seed_neighbor_cache: dict[
+            str,
+            tuple[SimilarTrack, ...],
+        ] = {}
 
     def rebuild(self) -> TrackSimilarityIndex:
         tracks = [
             track
-            for track in self.store.list_tracks()
-            if track.id not in self._removed_track_ids
+            for dimension_tracks, _matrix in self._get_embedding_catalog().values()
+            for track in dimension_tracks
         ]
         self._index = TrackSimilarityIndex(
             tracks,
@@ -44,9 +52,13 @@ class TrackSimilarityService:
 
         self._index = None
         self._removed_track_ids.clear()
+        self._embedding_catalog = None
+        self._seed_neighbor_cache.clear()
 
     def update_track(self, track: Track) -> None:
         self._removed_track_ids.discard(track.id)
+        self._embedding_catalog = None
+        self._seed_neighbor_cache.clear()
         if self._index is None:
             return
 
@@ -54,6 +66,8 @@ class TrackSimilarityService:
 
     def remove_track(self, track_id: str) -> None:
         self._removed_track_ids.add(track_id)
+        self._embedding_catalog = None
+        self._seed_neighbor_cache.clear()
         if self._index is not None:
             self._index.remove(track_id)
 
@@ -86,11 +100,12 @@ class TrackSimilarityService:
         if seed_track is None or seed_track.track_embedding is None:
             return []
 
-        tracks = [
-            track
-            for track in self.store.list_tracks()
-            if track.id not in self._removed_track_ids
-        ]
+        catalog = self._get_embedding_catalog()
+        dimension_catalog = catalog.get(len(seed_track.track_embedding))
+        if dimension_catalog is None:
+            return []
+
+        tracks, embedding_matrix = dimension_catalog
         tracks_by_id = {track.id: track for track in tracks}
         excluded_ids = set(excluded_track_ids or ())
         excluded_ids.update(self._removed_track_ids)
@@ -99,7 +114,7 @@ class TrackSimilarityService:
         if user_id is not None and user_id.strip():
             permanent, temporary = suppressed_track_ids(
                 user_id,
-                list(self.store.list_interactions()),
+                list(self.store.list_interactions(user_id=user_id)),
                 now=datetime.now(UTC),
             )
             excluded_ids.update(permanent | temporary)
@@ -111,12 +126,24 @@ class TrackSimilarityService:
         # Radio only needs one seed-to-library search.  Building the complete
         # all-pairs index here made the first radio start quadratic in the
         # library size and blocked the first visible batch for too long.
-        neighbors = self._neighbors_for_seed(
-            seed_track.track_embedding,
-            tracks,
-            excluded_ids=excluded_ids,
-            should_cancel=should_cancel,
-        )
+        neighbors = self._seed_neighbor_cache.get(track_id)
+        if neighbors is None:
+            neighbors = tuple(
+                self._neighbors_for_seed(
+                    seed_track.track_embedding,
+                    tracks,
+                    embedding_matrix=embedding_matrix,
+                    excluded_ids=set(),
+                    should_cancel=should_cancel,
+                )
+            )
+            self._seed_neighbor_cache[track_id] = neighbors
+
+        neighbors = [
+            neighbor
+            for neighbor in neighbors
+            if neighbor.track_id not in excluded_ids
+        ]
         candidate_pool = neighbors[: limit + 6]
         candidate_pool.sort(
             key=lambda neighbor: (
@@ -147,12 +174,14 @@ class TrackSimilarityService:
     @staticmethod
     def _neighbors_for_seed(
         seed_embedding: tuple[float, ...],
-        tracks: list[Track],
+        tracks: Sequence[Track],
         *,
+        embedding_matrix: np.ndarray | None = None,
         excluded_ids: set[str],
         should_cancel: Callable[[], bool] | None = None,
     ) -> list[SimilarTrack]:
         compatible_tracks: list[Track] = []
+        compatible_indexes: list[int] = []
         for index, track in enumerate(tracks):
             if index % 64 == 0 and should_cancel is not None:
                 if should_cancel():
@@ -165,14 +194,19 @@ class TrackSimilarityService:
             ):
                 continue
             compatible_tracks.append(track)
+            compatible_indexes.append(index)
 
         if not compatible_tracks:
             return []
 
         seed_vector = np.asarray(seed_embedding, dtype=np.float32)
-        candidate_matrix = np.asarray(
-            [track.track_embedding for track in compatible_tracks],
-            dtype=np.float32,
+        candidate_matrix = (
+            embedding_matrix[compatible_indexes]
+            if embedding_matrix is not None
+            else np.asarray(
+                [track.track_embedding for track in compatible_tracks],
+                dtype=np.float32,
+            )
         )
         seed_norm = float(np.linalg.norm(seed_vector))
         candidate_norms = np.linalg.norm(candidate_matrix, axis=1)
@@ -206,3 +240,33 @@ class TrackSimilarityService:
             reverse=True,
         )
         return neighbors
+
+    def _get_embedding_catalog(
+        self,
+    ) -> dict[int, tuple[tuple[Track, ...], np.ndarray]]:
+        if self._embedding_catalog is not None:
+            return self._embedding_catalog
+
+        tracks_by_dimension: dict[int, list[Track]] = {}
+        for track in self.store.list_tracks():
+            if (
+                track.id in self._removed_track_ids
+                or track.track_embedding is None
+            ):
+                continue
+            tracks_by_dimension.setdefault(
+                len(track.track_embedding),
+                [],
+            ).append(track)
+
+        self._embedding_catalog = {
+            dimension: (
+                tuple(dimension_tracks),
+                np.asarray(
+                    [track.track_embedding for track in dimension_tracks],
+                    dtype=np.float32,
+                ),
+            )
+            for dimension, dimension_tracks in tracks_by_dimension.items()
+        }
+        return self._embedding_catalog

@@ -193,11 +193,14 @@ class TrackManagementService:
 
         self.store.delete_track(normalized_track_id)
 
-        if file_path is not None and file_path.exists():
-            file_path.unlink()
+        if file_path is not None:
+            # The file can disappear between the existence check above and
+            # unlinking it (for example after an external library cleanup).
+            # Deleting the track is already idempotent in that situation.
+            file_path.unlink(missing_ok=True)
 
-        if cover_path is not None and cover_path.exists():
-            cover_path.unlink()
+        if cover_path is not None:
+            cover_path.unlink(missing_ok=True)
 
     @staticmethod
     def _get_managed_file_path(

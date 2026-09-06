@@ -28,7 +28,6 @@ DEFAULT_ATTRIBUTION_DAYS = 1
 POSITIVE_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE,
-        InteractionType.SAVE,
         InteractionType.PLAYED_30S,
         InteractionType.COMPLETED_80,
         InteractionType.LISTEN,
@@ -133,10 +132,11 @@ class RecommendationAnalyticsService:
         period_start = period_end - timedelta(days=max(1, days) - 1)
         impressions = [
             impression
-            for impression in self.store.list_recommendation_impressions()
+            for impression in self.store.list_recommendation_impressions(
+                user_id=normalized_user_id,
+            )
             if (
-                impression.user_id == normalized_user_id
-                and period_start
+                period_start
                 <= self._as_utc(impression.shown_at)
                 <= period_end
             )
@@ -148,11 +148,9 @@ class RecommendationAnalyticsService:
                 impression.position,
             )
         )
-        interactions = [
-            interaction
-            for interaction in self.store.list_interactions()
-            if interaction.user_id == normalized_user_id
-        ]
+        interactions = list(
+            self.store.list_interactions(user_id=normalized_user_id)
+        )
         attributed = self._attribute_interactions(impressions, interactions)
 
         started_ids = {

@@ -161,43 +161,6 @@ def test_record_skip_creates_interaction():
     )
 
 
-def test_record_save_is_idempotent():
-    store = InMemoryMusicStore()
-
-    store.add_user(
-        User(
-            id="user-1",
-            display_name="Test User",
-        )
-    )
-
-    store.add_track(
-        Track(
-            id="track-1",
-            title="Test Track",
-            artist="Test Artist",
-        )
-    )
-
-    service = InteractionService(store)
-
-    first_result = service.record(
-        "user-1",
-        "track-1",
-        InteractionType.SAVE,
-    )
-
-    second_result = service.record(
-        "user-1",
-        "track-1",
-        InteractionType.SAVE,
-    )
-
-    assert first_result.created is True
-    assert second_result.created is False
-    assert len(store.list_interactions()) == 1
-
-
 def test_stateful_interactions_are_idempotent_per_mood_context():
     store = InMemoryMusicStore()
     store.add_user(

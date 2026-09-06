@@ -88,13 +88,16 @@ class MusicStore(Protocol):
         ...
 
     def compact_preference_interactions(self) -> int:
-        """Remove obsolete duplicate like/save/dislike records."""
+        """Remove obsolete duplicate like/dislike records."""
         ...
 
     def list_tracks(self) -> Iterable[Track]:
         ...
 
-    def list_interactions(self) -> Iterable[Interaction]:
+    def list_interactions(
+        self,
+        user_id: str | None = None,
+    ) -> Iterable[Interaction]:
         ...
 
     def add_recommendation_impression(
@@ -105,5 +108,6 @@ class MusicStore(Protocol):
 
     def list_recommendation_impressions(
         self,
+        user_id: str | None = None,
     ) -> Iterable[RecommendationImpression]:
         ...

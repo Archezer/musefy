@@ -3009,7 +3009,7 @@ class LibraryMaintenanceDialog(QDialog):
         history_layout.setContentsMargins(12, 8, 12, 8)
         history_layout.setSpacing(8)
         history_label = QLabel(
-            "Remove duplicate like/save/dislike records while keeping the "
+            "Remove duplicate like/dislike records while keeping the "
             "latest state. Playback history is preserved."
         )
         history_label.setWordWrap(True)

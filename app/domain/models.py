@@ -17,7 +17,6 @@ class InteractionType(str, Enum):
     COMPLETED_80 = "completed_80"
     SEEK = "seek"
     LIKE = "like"
-    SAVE = "save"
     SKIP = "skip"
     SKIP_UNDER_30S = "skip_under_30s"
     SNOOZE = "snooze"
@@ -37,7 +36,6 @@ class InteractionType(str, Enum):
             InteractionType.COMPLETED_80: 2.0,
             InteractionType.SEEK: 0.0,
             InteractionType.LIKE: 4.0,
-            InteractionType.SAVE: 5.0,
             # These are written only for explicit feedback from the playback
             # menu.  Normal next/previous navigation is intentionally neutral.
             InteractionType.SKIP: -2.0,

@@ -191,7 +191,7 @@ class MostPopularRecommender(Recommender):
 
         return popular_user_genres(
             list(self.store.list_tracks()),
-            list(self.store.list_interactions()),
+            list(self.store.list_interactions(user_id=user_id)),
             user_id,
             limit=limit,
             now=now,
@@ -278,19 +278,16 @@ class MostPopularRecommender(Recommender):
             raise ValueError("Genre name must not be empty")
 
         current_time = now or datetime.now(UTC)
-        all_interactions = list(self.store.list_interactions())
+        user_interactions = list(
+            self.store.list_interactions(user_id=user_id)
+        )
         tracks = list(self.store.list_tracks())
         self._check_cancelled(should_cancel)
         permanent_track_ids, temporary_track_ids = suppressed_track_ids(
             user_id,
-            all_interactions,
+            user_interactions,
             now=current_time,
         )
-        user_interactions = [
-            interaction
-            for interaction in all_interactions
-            if interaction.user_id == user_id
-        ]
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
             user_interactions,
@@ -435,7 +432,6 @@ class MostPopularRecommender(Recommender):
         for index, interaction in enumerate(interactions):
             if interaction.interaction_type in {
                 InteractionType.LIKE,
-                InteractionType.SAVE,
                 InteractionType.DISLIKE,
             }:
                 state_key = (interaction.user_id, interaction.track_id)

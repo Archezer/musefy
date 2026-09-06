@@ -88,11 +88,6 @@ def build_store() -> SQLAlchemyMusicStore:
             track_id="track-2",
             interaction_type=InteractionType.LIKE,
         ),
-        Interaction(
-            user_id="user-2",
-            track_id="track-3",
-            interaction_type=InteractionType.SAVE,
-        )
     ]
 
     for interaction in interactions:

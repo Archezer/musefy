@@ -41,7 +41,6 @@ PLAYBACK_SESSION_TYPES = frozenset(
 STATEFUL_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE,
-        InteractionType.SAVE,
         InteractionType.DISLIKE,
         InteractionType.DO_NOT_RECOMMEND,
         InteractionType.ALLOW_RECOMMEND,
@@ -51,9 +50,6 @@ STATEFUL_INTERACTION_TYPES = frozenset(
 POSITIVE_PREFERENCE_TYPES = frozenset(
     {
         InteractionType.LIKE,
-        # Retained for compatibility with history written before Save was
-        # removed from the player UI.
-        InteractionType.SAVE,
     }
 )
 
@@ -88,7 +84,6 @@ DECAYED_INTERACTION_TYPES = frozenset(
 PERMANENT_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE,
-        InteractionType.SAVE,
         InteractionType.DISLIKE,
         InteractionType.DO_NOT_RECOMMEND,
         InteractionType.ALLOW_RECOMMEND,
@@ -156,7 +151,7 @@ def latest_user_preference_states(
     """Return one latest explicit preference state per track.
 
     Playback milestones are events and are intentionally ignored here.  The
-    result is also used to collapse legacy duplicate like/save/dislike rows
+    result is also used to collapse legacy duplicate like/dislike rows
     before they can distort a recommendation profile.
     """
 
@@ -190,7 +185,7 @@ def latest_preference_state_indices(
 def latest_preference_states(
     interactions: list[Interaction],
 ) -> dict[tuple[str, str], Interaction]:
-    """Return the latest explicit like/save/dislike for each user and track."""
+    """Return the latest explicit like/dislike for each user and track."""
 
     return {
         state_key: interactions[index]

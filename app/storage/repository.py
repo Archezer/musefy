@@ -477,7 +477,6 @@ class SQLAlchemyMusicStore:
     def compact_preference_interactions(self) -> int:
         preference_types = {
             InteractionType.LIKE.value,
-            InteractionType.SAVE.value,
             InteractionType.DISLIKE.value,
         }
         with self.session_factory() as session:
@@ -520,10 +519,22 @@ class SQLAlchemyMusicStore:
             session.commit()
             return int(result.rowcount or 0)
 
-    def list_interactions(self) -> list[Interaction]:
+    def list_interactions(
+        self,
+        user_id: str | None = None,
+    ) -> list[Interaction]:
         statement = select(InteractionRecord).order_by(
             InteractionRecord.created_at
         )
+        # ``save`` was removed from the interaction model.  Keep old rows in
+        # existing databases intact, but do not expose them to the domain.
+        statement = statement.where(
+            InteractionRecord.interaction_type != "save"
+        )
+        if user_id is not None:
+            statement = statement.where(
+                InteractionRecord.user_id == user_id
+            )
 
         with self.session_factory() as session:
             records = session.scalars(statement).all()
@@ -565,11 +576,16 @@ class SQLAlchemyMusicStore:
 
     def list_recommendation_impressions(
         self,
+        user_id: str | None = None,
     ) -> list[RecommendationImpression]:
         statement = select(RecommendationImpressionRecord).order_by(
             RecommendationImpressionRecord.shown_at,
             RecommendationImpressionRecord.position,
         )
+        if user_id is not None:
+            statement = statement.where(
+                RecommendationImpressionRecord.user_id == user_id
+            )
         with self.session_factory() as session:
             records = session.scalars(statement).all()
 
