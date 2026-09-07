@@ -2189,6 +2189,13 @@ class MainWindow(QMainWindow):
         queue_title = QLabel("Queue")
         queue_title.setObjectName("appTitle")
         header.addWidget(queue_title)
+        self.queue_source_label = QLabel("")
+        self.queue_source_label.setObjectName("sectionCaption")
+        self.queue_source_label.setMaximumWidth(150)
+        self.queue_source_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        header.addWidget(self.queue_source_label)
         header.addStretch()
         self.queue_count_label = QLabel("0 tracks")
         self.queue_count_label.setObjectName("sectionCaption")
@@ -2218,6 +2225,59 @@ class MainWindow(QMainWindow):
         panel.setMaximumWidth(300)
 
         return panel
+
+    def _queue_source_text(self) -> str:
+        """Return a compact human-readable name for the active queue source."""
+
+        queue = self.playback_queue_service.queue
+        if queue is None:
+            return ""
+
+        if queue.source_playlist_id is not None:
+            playlist = self.store.get_playlist(queue.source_playlist_id)
+            return (
+                f"Playlist · {playlist.name}"
+                if playlist is not None
+                else "Playlist"
+            )
+
+        if queue.mode == QueueMode.RECOMMENDATIONS:
+            anchor_track_id = self._radio_anchor_track_id or queue.current_track_id
+            anchor_track = (
+                self.store.get_track(anchor_track_id)
+                if anchor_track_id is not None
+                else None
+            )
+            return (
+                f"Radio · {anchor_track.title}"
+                if anchor_track is not None
+                else "Track radio"
+            )
+
+        if queue.mode == QueueMode.SESSION:
+            if self.session_mood_name == MY_WAVE_SESSION_NAME:
+                return "My Wave"
+            if self.session_mood_name is not None:
+                return f"Wave · {self.session_mood_name}"
+            if self.session_genre_name is not None:
+                return f"Genre · {self.session_genre_name}"
+            return "Wave"
+
+        if queue.mode == QueueMode.SHUFFLE:
+            return "Library shuffle"
+        if queue.mode == QueueMode.SMART_SHUFFLE:
+            return "Smart shuffle"
+        return "Library"
+
+    def _update_queue_source_label(self) -> None:
+        if not hasattr(self, "queue_source_label"):
+            return
+
+        source = self._queue_source_text()
+        self.queue_source_label.setText(f"· {source}" if source else "")
+        self.queue_source_label.setToolTip(source)
+        if hasattr(self, "queue_dialog"):
+            self.queue_dialog.set_source(source)
 
     def _set_liquid_glass_enabled(self, enabled: bool) -> None:
         """Switch the two main panels between glass and solid backgrounds."""
@@ -4007,6 +4067,7 @@ class MainWindow(QMainWindow):
 
     def _load_queue(self) -> None:
         queue = self.playback_queue_service.queue
+        self._update_queue_source_label()
         all_track_ids = (
             tuple(self.playback_queue_service.upcoming_track_ids())
             if queue is not None
@@ -9497,6 +9558,7 @@ class MainWindow(QMainWindow):
 
     def _play_current_queue_track(self) -> None:
         queue = self.playback_queue_service.queue
+        self._update_queue_source_label()
 
         if queue is None or queue.current_track_id is None:
             self._play_next_from_queue()

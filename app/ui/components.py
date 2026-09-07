@@ -2237,11 +2237,27 @@ class QueueDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
+        header = QHBoxLayout()
+        header.setSpacing(6)
         title_label = QLabel("Queue")
         title_label.setObjectName("appTitle")
-        layout.addWidget(title_label)
+        header.addWidget(title_label)
+        self.source_label = QLabel("")
+        self.source_label.setObjectName("sectionCaption")
+        self.source_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        header.addWidget(self.source_label)
+        header.addStretch()
+        layout.addLayout(header)
         self.track_list = QListWidget()
         layout.addWidget(self.track_list)
+
+    def set_source(self, source: str) -> None:
+        """Show the playback source next to the queue title."""
+
+        self.source_label.setText(f"· {source}" if source else "")
+        self.source_label.setToolTip(source)
 
     def set_tracks(self, tracks: list[tuple[str, str]]) -> None:
         self.begin_tracks(len(tracks))
