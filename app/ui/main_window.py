@@ -656,10 +656,6 @@ class MainWindow(QMainWindow):
 
     def _finish_initial_load(self) -> None:
         self._restore_playback_state()
-        # Loudness measurement is lightweight compared with ML analysis, but
-        # still decode-bound.  Start it after the first window paint so it
-        # cannot delay the initial UI or playback restoration.
-        QTimer.singleShot(1_000, self._analyze_missing_loudness)
 
     def _build_interface(self) -> None:
         app_root = QWidget()
@@ -998,15 +994,13 @@ class MainWindow(QMainWindow):
         playlist_header.setSpacing(4)
         playlist_header.addStretch()
 
-        audio_menu_button = HoverCircleMenuButton()
-        audio_menu_button.setObjectName("plainActionButton")
-        audio_menu_button.setIcon(svg_icon(VOLUME_ICON, size=18))
-        audio_menu_button.setIconSize(QSize(18, 18))
-        audio_menu_button.setToolTip("Audio settings")
-        audio_menu_button.setPopupMode(
-            QToolButton.ToolButtonPopupMode.InstantPopup
-        )
-        audio_menu = QMenu(audio_menu_button)
+        playlist_menu_button = HoverCircleMenuButton()
+        playlist_menu_button.setObjectName("plainActionButton")
+        playlist_menu_button.setText("•••")
+        playlist_menu_button.setToolTip("Playlist actions")
+        playlist_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        playlist_menu = QMenu(playlist_menu_button)
+        audio_menu = playlist_menu.addMenu("Audio settings")
         audio_menu.addAction(
             "Analyze loudness of library",
             lambda _checked=False: self._analyze_missing_loudness(),
@@ -1048,21 +1042,6 @@ class MainWindow(QMainWindow):
         master_volume_action = QWidgetAction(master_volume_menu)
         master_volume_action.setDefaultWidget(master_volume_widget)
         master_volume_menu.addAction(master_volume_action)
-        audio_menu_button.setMenu(audio_menu)
-        audio_menu_button.setProperty("topMenu", True)
-        audio_menu_button.setFixedSize(32, 32)
-        self._search_actions_layout.addWidget(
-            audio_menu_button,
-            0,
-            Qt.AlignmentFlag.AlignVCenter,
-        )
-
-        playlist_menu_button = HoverCircleMenuButton()
-        playlist_menu_button.setObjectName("plainActionButton")
-        playlist_menu_button.setText("•••")
-        playlist_menu_button.setToolTip("Playlist actions")
-        playlist_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        playlist_menu = QMenu(playlist_menu_button)
         self.liquid_glass_action = playlist_menu.addAction(
             "Liquid glass panels",
         )
