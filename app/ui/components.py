@@ -2145,28 +2145,37 @@ class TrackIdentityWidget(QWidget):
         )
 
 
+def search_match_spans(text: str, query: str) -> tuple[tuple[int, int], ...]:
+    """Return case-insensitive, non-overlapping matches for a search query."""
+
+    normalized_query = query.strip()
+    if not normalized_query:
+        return ()
+
+    pattern = re.compile(re.escape(normalized_query), re.IGNORECASE)
+    return tuple(
+        (match.start(), match.end()) for match in pattern.finditer(text)
+    )
+
+
 def _highlight_search_text(text: str, query: str) -> str:
     """Escape row text and highlight case-insensitive query matches."""
 
     escaped_text = html.escape(text)
-    normalized_query = query.strip()
-    if not normalized_query:
+    matches = search_match_spans(text, query)
+    if not matches:
         return escaped_text
 
-    pattern = re.compile(re.escape(normalized_query), re.IGNORECASE)
     parts: list[str] = []
     cursor = 0
-    for match in pattern.finditer(text):
-        parts.append(html.escape(text[cursor : match.start()]))
+    for start, end in matches:
+        parts.append(html.escape(text[cursor:start]))
         parts.append(
             '<span style="background-color:#5DD8B7; '
             'color:#07100F; border-radius:3px; padding:0 2px;">'
-            f"{html.escape(match.group(0))}</span>"
+            f"{html.escape(text[start:end])}</span>"
         )
-        cursor = match.end()
-
-    if not parts:
-        return escaped_text
+        cursor = end
 
     parts.append(html.escape(text[cursor:]))
     return "".join(parts)

@@ -98,10 +98,17 @@ def test_mlp_artifact_round_trip_preserves_scores(tmp_path: Path) -> None:
     )
     artifact_path = tmp_path / "ranker.pt"
 
-    save_mlp_ranker(result, artifact_path)
+    save_mlp_ranker(
+        result,
+        artifact_path,
+        approved_for_activation=False,
+        approval_reason="Validation candidate",
+    )
     loaded = load_mlp_ranker(artifact_path)
 
     assert loaded.feature_names == result.feature_names
+    assert loaded.approved_for_activation is False
+    assert loaded.approval_reason == "Validation candidate"
     assert predict_scores(loaded.model, validation) == pytest.approx(
         predict_scores(result.model, validation),
         abs=1e-6,

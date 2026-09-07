@@ -138,6 +138,33 @@ def test_similarity_service_returns_recommendations_for_seed() -> None:
     )
 
 
+def test_similarity_service_neighbors_use_lazy_seed_search() -> None:
+    store = InMemoryMusicStore()
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="neighbor",
+            title="Neighbor",
+            artist="Artist",
+            track_embedding=(0.9, 0.1),
+        )
+    )
+
+    service = TrackSimilarityService(store)
+
+    neighbors = service.neighbors_for("seed", limit=1)
+
+    assert [neighbor.track_id for neighbor in neighbors] == ["neighbor"]
+    assert service._index is None
+
+
 def test_track_radio_skip_is_scoped_to_the_radio_seed() -> None:
     store = InMemoryMusicStore()
     store.add_user(User(id="user-1", display_name="Test User"))

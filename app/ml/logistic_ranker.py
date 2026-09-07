@@ -15,6 +15,8 @@ class LogisticRanker:
     model: LogisticRegression
     feature_names: tuple[str, ...]
     scaler: FeatureStandardizer | None = None
+    approved_for_activation: bool = True
+    approval_reason: str = ""
 
     def predict_scores(self, dataset: RankerDataset) -> tuple[float, ...]:
         inputs = (

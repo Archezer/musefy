@@ -7,6 +7,7 @@ from app.domain.models import Interaction, Track
 from app.recommenders.feedback import aggregate_user_track_weights
 
 SUBGENRE_RECOMMENDATION_MIN_SCORE = 0.25
+PARENT_GENRE_RELEVANCE = 0.35
 
 
 def _display_label(value: str) -> str:
@@ -30,9 +31,11 @@ def track_genre_evidence(track: Track) -> tuple[tuple[str, float], ...]:
     """Return displayable genre labels and their per-track relevance.
 
     MAEST predictions are preferred because ``Track.genres`` stores only the
-    parent labels after analysis.  Low-confidence MAEST subgenres follow the
-    same cutoff as the recommendation model and are omitted from the Wave
-    picker.  Metadata remains a useful fallback for unanalyzed imports.
+    parent labels after analysis.  A confident subgenre is returned as the
+    primary signal and its parent is retained as weaker umbrella evidence.
+    Low-confidence MAEST subgenres follow the same cutoff as the
+    recommendation model and are omitted from the Wave picker.  Metadata
+    remains a useful fallback for unanalyzed imports.
     """
 
     evidence: list[tuple[str, float]] = []
@@ -49,16 +52,29 @@ def track_genre_evidence(track: Track) -> tuple[tuple[str, float], ...]:
                 prediction.score < SUBGENRE_RECOMMENDATION_MIN_SCORE
             ):
                 continue
-            raw_label = prediction.subgenre or prediction.parent_genre
-            label = _display_label(raw_label)
-            if not label:
+            specific_label = _display_label(
+                prediction.subgenre or prediction.parent_genre
+            )
+            if not specific_label:
                 continue
             relevance = max(
                 float(prediction.weighted_score),
                 float(prediction.score),
                 0.01,
             )
-            evidence.append((label, relevance))
+            evidence.append((specific_label, relevance))
+
+            parent_label = _display_label(prediction.parent_genre)
+            if (
+                parent_label
+                and parent_label.casefold() != specific_label.casefold()
+            ):
+                evidence.append(
+                    (
+                        parent_label,
+                        relevance * PARENT_GENRE_RELEVANCE,
+                    )
+                )
         if evidence:
             return tuple(evidence)
 

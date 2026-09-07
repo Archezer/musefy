@@ -59,6 +59,8 @@ class MLPTrainingResult:
     train_losses: tuple[float, ...]
     validation_losses: tuple[float, ...]
     scaler: FeatureStandardizer | None = None
+    approved_for_activation: bool = True
+    approval_reason: str = ""
 
 
 def train_mlp_ranker(

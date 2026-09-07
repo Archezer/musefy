@@ -1,7 +1,9 @@
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
-from math import exp
+from math import exp, sqrt
 from random import Random
+
+import numpy as np
 
 from app.domain.models import (
     Interaction,
@@ -20,7 +22,6 @@ from app.recommenders.feedback import (
     latest_user_preference_states,
     suppressed_track_ids,
 )
-from app.recommenders.similarity import cosine_similarity
 from app.storage.protocols import MusicStore
 
 DEFAULT_REPLAY_COOLDOWN = 30
@@ -29,6 +30,16 @@ DEFAULT_EXPLORATION_POOL_SIZE = 8
 MOOD_EXPLORATION_TEMPERATURE = 0.05
 MOOD_RANDOM_SCORE_GAP = 0.12
 MOOD_FEEDBACK_FACTOR = 0.05
+MY_WAVE_ELITE_RATIO = 0.35
+MY_WAVE_MIDDLE_RATIO = 0.4
+MY_WAVE_MIDDLE_POOL_MULTIPLIER = 4
+MY_WAVE_MIDDLE_TEMPERATURE = 0.06
+MY_WAVE_RANDOM_TEMPERATURE = 0.18
+# Comparing every candidate with every historical embedding makes My Wave
+# quadratic in the size of a user's listening history.  The strongest recent
+# signals are enough to represent the profile while keeping the first result
+# responsive for larger local libraries.
+MAX_PROFILE_EMBEDDINGS = 32
 class MoodRecommender:
     def __init__(
         self,
@@ -180,6 +191,7 @@ class MoodRecommender:
         *,
         now: datetime | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        excluded_track_ids: Collection[str] | None = None,
     ) -> list[Recommendation]:
         """Return a personalized mood/content wave for one user.
 
@@ -223,10 +235,12 @@ class MoodRecommender:
             contextual_interactions,
             should_cancel=should_cancel,
         )
+        requested_excluded_track_ids = set(excluded_track_ids or ())
         excluded_track_ids = (
             permanent_track_ids
             | temporary_track_ids
             | cooldown_track_ids
+            | requested_excluded_track_ids
         )
         candidates = []
         for index, track in enumerate(tracks):
@@ -244,6 +258,7 @@ class MoodRecommender:
                 if (
                     track.id not in permanent_track_ids
                     and track.id not in temporary_track_ids
+                    and track.id not in requested_excluded_track_ids
                 ):
                     candidates.append(track)
 
@@ -311,6 +326,32 @@ class MoodRecommender:
                         genre_weights.get(genre_key, 0.0) + weight
                     )
 
+        if len(profile_embeddings) > MAX_PROFILE_EMBEDDINGS:
+            profile_embeddings = sorted(
+                profile_embeddings,
+                key=lambda item: item[1],
+                reverse=True,
+            )[:MAX_PROFILE_EMBEDDINGS]
+
+        normalized_profile_embeddings: list[
+            tuple[tuple[float, ...], float]
+        ] = []
+        for embedding, weight in profile_embeddings:
+            norm = sqrt(sum(value * value for value in embedding))
+            if norm > 0.0:
+                normalized_profile_embeddings.append(
+                    (
+                        tuple(value / norm for value in embedding),
+                        weight,
+                    )
+                )
+        profile_embeddings = normalized_profile_embeddings
+        embedding_similarities = self._build_embedding_similarities(
+            candidates,
+            profile_embeddings,
+            should_cancel=should_cancel,
+        )
+
         profile_mood = (
             MoodVector(
                 valence=max(
@@ -337,35 +378,7 @@ class MoodRecommender:
                 if profile_mood is not None
                 else 0.0
             )
-            embedding_similarity = 0.0
-            if track.track_embedding and profile_embeddings:
-                embedding_scores: list[tuple[float, float]] = []
-                for profile_index, (embedding, weight) in enumerate(
-                    profile_embeddings
-                ):
-                    if profile_index % 32 == 0:
-                        self._check_cancelled(should_cancel)
-                    embedding_scores.append(
-                        (
-                            (
-                                cosine_similarity(
-                                    embedding,
-                                    track.track_embedding,
-                                )
-                                + 1.0
-                            )
-                            / 2.0,
-                            weight,
-                        )
-                    )
-                embedding_scores.sort(key=lambda item: item[0], reverse=True)
-                closest_scores = embedding_scores[:5]
-                total_weight = sum(weight for _, weight in closest_scores)
-                if total_weight > 0.0:
-                    embedding_similarity = sum(
-                        similarity * weight
-                        for similarity, weight in closest_scores
-                    ) / total_weight
+            embedding_similarity = embedding_similarities.get(track.id, 0.0)
 
             artist_affinity = (
                 artist_weights.get(track.artist.strip().casefold(), 0.0)
@@ -407,7 +420,7 @@ class MoodRecommender:
                 item[0].title.casefold(),
             )
         )
-        selected = self._select_with_exploration(
+        selected = self._select_my_wave_diversified(
             [(track, score) for track, score, _, _ in scored_tracks],
             limit,
         )
@@ -435,6 +448,176 @@ class MoodRecommender:
             for track, score in selected
             if track.id in selected_ids
         ]
+
+    @staticmethod
+    def _build_embedding_similarities(
+        candidates: list[Track],
+        profile_embeddings: list[tuple[tuple[float, ...], float]],
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> dict[str, float]:
+        """Score candidate embeddings in one vectorized operation."""
+
+        if not candidates or not profile_embeddings:
+            return {}
+
+        embedding_candidates = [
+            track
+            for track in candidates
+            if track.track_embedding is not None
+        ]
+        if not embedding_candidates:
+            return {}
+
+        profile_dimension = len(profile_embeddings[0][0])
+        if profile_dimension == 0 or any(
+            len(embedding) != profile_dimension
+            for embedding, _ in profile_embeddings
+        ):
+            return {}
+        if any(
+            len(track.track_embedding or ()) != profile_dimension
+            for track in embedding_candidates
+        ):
+            return {}
+
+        MoodRecommender._check_cancelled(should_cancel)
+        profile_matrix = np.asarray(
+            [embedding for embedding, _ in profile_embeddings],
+            dtype=np.float32,
+        )
+        candidate_matrix = np.asarray(
+            [track.track_embedding for track in embedding_candidates],
+            dtype=np.float32,
+        )
+        candidate_norms = np.linalg.norm(candidate_matrix, axis=1)
+        valid_candidates = candidate_norms > 0.0
+        normalized_candidates = np.zeros_like(candidate_matrix)
+        normalized_candidates[valid_candidates] = (
+            candidate_matrix[valid_candidates]
+            / candidate_norms[valid_candidates, np.newaxis]
+        )
+        similarity_matrix = normalized_candidates @ profile_matrix.T
+        profile_weights = np.asarray(
+            [weight for _, weight in profile_embeddings],
+            dtype=np.float32,
+        )
+        MoodRecommender._check_cancelled(should_cancel)
+
+        similarities: dict[str, float] = {}
+        for index, track in enumerate(embedding_candidates):
+            if index % 64 == 0:
+                MoodRecommender._check_cancelled(should_cancel)
+            if not valid_candidates[index]:
+                continue
+
+            closest_indices = np.argsort(
+                similarity_matrix[index],
+            )[::-1][:5]
+            closest_similarities = (
+                similarity_matrix[index, closest_indices] + 1.0
+            ) / 2.0
+            closest_weights = profile_weights[closest_indices]
+            total_weight = float(closest_weights.sum())
+            if total_weight > 0.0:
+                similarities[track.id] = float(
+                    np.dot(
+                        closest_similarities,
+                        closest_weights,
+                    )
+                    / total_weight
+                )
+
+        return similarities
+
+    def _select_my_wave_diversified(
+        self,
+        scored_tracks: list[tuple[Track, float]],
+        limit: int,
+    ) -> list[tuple[Track, float]]:
+        """Mix the strongest tracks with lower-ranked and fresh choices."""
+
+        if len(scored_tracks) <= limit or limit <= 2:
+            return self._select_with_exploration(scored_tracks, limit)
+
+        elite_count = max(1, int(limit * MY_WAVE_ELITE_RATIO))
+        middle_count = max(1, int(limit * MY_WAVE_MIDDLE_RATIO))
+        selected = list(scored_tracks[:elite_count])
+        selected_ids = {track.id for track, _ in selected}
+
+        middle_start = elite_count
+        middle_end = min(
+            len(scored_tracks),
+            max(
+                middle_start + middle_count,
+                limit * MY_WAVE_MIDDLE_POOL_MULTIPLIER,
+            ),
+        )
+        middle_pool = [
+            item
+            for item in scored_tracks[middle_start:middle_end]
+            if item[0].id not in selected_ids
+        ]
+        middle_selection = self._sample_scored_tracks(
+            middle_pool,
+            min(middle_count, limit - len(selected)),
+            temperature=MY_WAVE_MIDDLE_TEMPERATURE,
+        )
+        selected.extend(middle_selection)
+        selected_ids.update(track.id for track, _ in middle_selection)
+
+        random_count = limit - len(selected)
+        random_pool = [
+            item
+            for item in scored_tracks[middle_end:]
+            if item[0].id not in selected_ids
+        ]
+        random_selection = self._sample_scored_tracks(
+            random_pool,
+            random_count,
+            temperature=MY_WAVE_RANDOM_TEMPERATURE,
+        )
+        selected.extend(random_selection)
+        selected_ids.update(track.id for track, _ in random_selection)
+
+        if len(selected) < limit:
+            selected.extend(
+                item
+                for item in scored_tracks
+                if item[0].id not in selected_ids
+            )
+
+        return selected[:limit]
+
+    def _sample_scored_tracks(
+        self,
+        candidates: list[tuple[Track, float]],
+        limit: int,
+        *,
+        temperature: float,
+    ) -> list[tuple[Track, float]]:
+        """Sample without replacement while keeping higher scores favored."""
+
+        if limit <= 0 or not candidates:
+            return []
+
+        remaining = list(candidates)
+        selected: list[tuple[Track, float]] = []
+        while remaining and len(selected) < limit:
+            minimum_score = min(score for _, score in remaining)
+            weights = [
+                exp((score - minimum_score) / temperature)
+                for _, score in remaining
+            ]
+            selected_item = self.random.choices(
+                population=remaining,
+                weights=weights,
+                k=1,
+            )[0]
+            selected.append(selected_item)
+            remaining.remove(selected_item)
+
+        return selected
 
     @staticmethod
     def _check_cancelled(

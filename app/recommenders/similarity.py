@@ -53,9 +53,14 @@ class TrackSimilarityIndex:
 
     def neighbors_for(
         self,
-        track_id: str
+        track_id: str,
+        limit: int | None = None,
     ) -> tuple[SimilarTrack, ...]:
-        return self._neighbors.get(track_id, ())
+        if limit is not None and limit <= 0:
+            raise ValueError("Limit must be positive.")
+
+        neighbors = self._neighbors.get(track_id, ())
+        return neighbors if limit is None else neighbors[:limit]
 
     def upsert(self, track: Track) -> None:
         if track.track_embedding is None:

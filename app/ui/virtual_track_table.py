@@ -9,6 +9,7 @@ from PySide6.QtCore import (
     QByteArray,
     QEvent,
     QModelIndex,
+    QPoint,
     QRect,
     QSize,
     Qt,
@@ -21,10 +22,15 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTableView
+from PySide6.QtWidgets import (
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTableView,
+    QWidget,
+)
 
 from app.domain.models import Track
-from app.ui.components import PLAY_ICON, track_cover_pixmap
+from app.ui.components import PLAY_ICON, search_match_spans, track_cover_pixmap
 
 HEADERS = ("#", "", "Title", "Genres", "Added", "Duration", "", "Analysis", "")
 
@@ -165,22 +171,28 @@ class _TrackDelegate(QStyledItemDelegate):
             title_font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(title_font)
             title_rect = rect.adjusted(left - rect.left(), 10, -8, -30)
-            painter.drawText(
+            title_text = painter.fontMetrics().elidedText(
+                track.title, Qt.TextElideMode.ElideRight, title_rect.width()
+            )
+            _draw_search_highlighted_text(
+                painter,
                 title_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                painter.fontMetrics().elidedText(
-                    track.title, Qt.TextElideMode.ElideRight, title_rect.width()
-                ),
+                title_text,
+                view.search_query,
+                QColor("#EEEEF0"),
             )
             painter.setFont(base_font)
-            painter.setPen(QColor("#96969E"))
+            artist_color = QColor("#96969E")
             artist_rect = rect.adjusted(left - rect.left(), 31, -8, -8)
-            painter.drawText(
+            artist_text = painter.fontMetrics().elidedText(
+                track.artist, Qt.TextElideMode.ElideRight, artist_rect.width()
+            )
+            _draw_search_highlighted_text(
+                painter,
                 artist_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                painter.fontMetrics().elidedText(
-                    track.artist, Qt.TextElideMode.ElideRight, artist_rect.width()
-                ),
+                artist_text,
+                view.search_query,
+                artist_color,
             )
         elif column in (3, 4, 7):
             value = view.text_for(track)[(3, 4, 7).index(column)]
@@ -246,6 +258,7 @@ class VirtualTrackTable(QTableView):
         self.add_mode = False
         self.playlist_open = False
         self.show_covers = True
+        self.search_query = ""
         self.selected_ids: set[str] = set()
         self._cover_pixmaps: dict[str, QPixmap] = {}
         self._row_text_cache: dict[str, tuple[str, str, str, str]] = {}
@@ -283,6 +296,19 @@ class VirtualTrackTable(QTableView):
         self.hovered_row = -1
         self.hovered_column = -1
         self._track_model.set_rows(tracks)
+
+    def set_search_query(self, query: str) -> None:
+        """Update the query used to highlight title and artist matches."""
+
+        self.search_query = query.strip()
+        self.viewport().update()
+
+        # Materialized rows use TrackIdentityWidget while rows outside the
+        # viewport use the delegate below. Keep both render paths in sync.
+        for widget in self.findChildren(QWidget):
+            set_query = getattr(widget, "set_search_query", None)
+            if callable(set_query):
+                set_query(self.search_query)
 
     def text_for(self, track: Track) -> tuple[str, str, str, str]:
         """Format metadata only when a row reaches the viewport."""
@@ -395,3 +421,61 @@ class VirtualTrackTable(QTableView):
             self.row_double_clicked.emit(index.row())
             return
         super().mouseDoubleClickEvent(event)
+
+
+def _draw_search_highlighted_text(
+    painter: QPainter,
+    rect: QRect,
+    text: str,
+    query: str,
+    text_color: QColor,
+) -> None:
+    """Draw left-aligned text with turquoise search-match backgrounds."""
+
+    matches = search_match_spans(text, query)
+    if not matches:
+        painter.setPen(text_color)
+        painter.drawText(
+            rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            text,
+        )
+        return
+
+    metrics = painter.fontMetrics()
+    x = rect.left()
+    baseline = (
+        rect.top()
+        + max(0, (rect.height() - metrics.height()) // 2)
+        + metrics.ascent()
+    )
+    highlight_top = rect.top() + max(0, (rect.height() - metrics.height()) // 2)
+    cursor = 0
+
+    for start, end in matches:
+        prefix = text[cursor:start]
+        if prefix:
+            painter.setPen(text_color)
+            painter.drawText(QPoint(x, baseline), prefix)
+            x += metrics.horizontalAdvance(prefix)
+
+        match = text[start:end]
+        match_width = metrics.horizontalAdvance(match)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#5DD8B7"))
+        painter.drawRoundedRect(
+            QRect(x - 2, highlight_top, match_width + 4, metrics.height()),
+            3,
+            3,
+        )
+        painter.setPen(QColor("#07100F"))
+        painter.drawText(QPoint(x, baseline), match)
+        x += match_width
+        cursor = end
+
+    suffix = text[cursor:]
+    if suffix:
+        painter.setPen(text_color)
+        painter.drawText(QPoint(x, baseline), suffix)
+
+    painter.setBrush(Qt.BrushStyle.NoBrush)

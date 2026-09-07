@@ -336,7 +336,7 @@ class RecommendationTask(QRunnable):
                 )
             else:
                 recommendations = list(self.fetcher())
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
+        except Exception as error:
             # A cancellable recommender exits through RuntimeError once it
             # observes the flag.  Cancellation is an expected outcome, not a
             # user-visible failure.

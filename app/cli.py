@@ -360,8 +360,13 @@ def train_ranker(arguments: argparse.Namespace) -> None:
         save_logistic_ranker,
         save_mlp_ranker,
     )
+    from app.ml.evaluation import decide_ranker_activation
     from app.ml.logistic_ranker import train_logistic_ranker
-    from app.ml.ranker import train_mlp_ranker, train_pairwise_mlp_ranker
+    from app.ml.ranker import (
+        predict_scores,
+        train_mlp_ranker,
+        train_pairwise_mlp_ranker,
+    )
 
     create_database()
     store = SQLAlchemyMusicStore(create_session)
@@ -392,23 +397,36 @@ def train_ranker(arguments: argparse.Namespace) -> None:
         )
 
     train, validation = split_ranker_dataset_by_time(dataset)
+    baseline_scores = tuple(
+        dict(example.feature_snapshot).get("baseline_score", 0.0)
+        for example in validation.examples
+    )
     output = arguments.output
     if arguments.backend == "logistic":
         ranker = train_logistic_ranker(train)
-        if output is None:
-            output = LOGISTIC_RANKER_MODEL_PATH
-        save_logistic_ranker(ranker, output)
         validation_scores = ranker.predict_scores(validation)
-        print(f"Validation scores: {len(validation_scores)}")
+        gate = decide_ranker_activation(
+            validation.labels,
+            baseline_scores,
+            validation_scores,
+            minimum_validation_examples=20,
+        )
+        save_model = save_logistic_ranker
     elif arguments.backend == "pairwise":
         result = train_pairwise_mlp_ranker(
             train,
             validation_dataset=validation,
             epochs=arguments.epochs,
         )
-        if output is None:
-            output = RANKER_MODEL_PATH
-        save_mlp_ranker(result, output)
+        validation_scores = predict_scores(result.model, validation)
+        gate = decide_ranker_activation(
+            validation.labels,
+            baseline_scores,
+            validation_scores,
+            candidate_scores_are_logits=True,
+            minimum_validation_examples=20,
+        )
+        save_model = save_mlp_ranker
         print(f"Final pairwise train loss: {result.train_losses[-1]:.4f}")
     else:
         result = train_mlp_ranker(
@@ -416,10 +434,48 @@ def train_ranker(arguments: argparse.Namespace) -> None:
             validation_dataset=validation,
             epochs=arguments.epochs,
         )
-        if output is None:
-            output = RANKER_MODEL_PATH
-        save_mlp_ranker(result, output)
+        validation_scores = predict_scores(result.model, validation)
+        gate = decide_ranker_activation(
+            validation.labels,
+            baseline_scores,
+            validation_scores,
+            candidate_scores_are_logits=True,
+            minimum_validation_examples=20,
+        )
+        save_model = save_mlp_ranker
         print(f"Final MLP train loss: {result.train_losses[-1]:.4f}")
+
+    print(
+        "Baseline/candidate ROC-AUC: "
+        f"{_format_metric(gate.baseline.roc_auc)}/"
+        f"{_format_metric(gate.candidate.roc_auc)}"
+    )
+    print(f"Quality gate: {'approved' if gate.approved else 'rejected'}")
+    print(f"Gate reason: {gate.reason}")
+    if not gate.approved:
+        print("Existing ranker artifact was kept unchanged.")
+        return
+
+    if output is None:
+        output = (
+            LOGISTIC_RANKER_MODEL_PATH
+            if arguments.backend == "logistic"
+            else RANKER_MODEL_PATH
+        )
+    if arguments.backend == "logistic":
+        save_model(
+            ranker,
+            output,
+            approved_for_activation=True,
+            approval_reason=gate.reason,
+        )
+    else:
+        save_model(
+            result,
+            output,
+            approved_for_activation=True,
+            approval_reason=gate.reason,
+        )
 
     print("Real ranker training completed.")
     print(f"Examples: {len(dataset.examples)}")
@@ -429,6 +485,10 @@ def train_ranker(arguments: argparse.Namespace) -> None:
     )
     print(f"Features: {', '.join(dataset.feature_names)}")
     print(f"Artifact: {output}")
+
+
+def _format_metric(value: float | None) -> str:
+    return f"{value:.4f}" if value is not None else "n/a"
 
 
 def show_ranker_status(arguments: argparse.Namespace) -> None:

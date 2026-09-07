@@ -83,11 +83,30 @@ class TrackSimilarityService:
     ) -> tuple[SimilarTrack, ...]:
         if limit <= 0:
             raise ValueError("Limit must be positive.")
-        
-        if self._index is None:
-            self.rebuild()
-            
-        return self._index.neighbors_for(track_id)[:limit]
+
+        seed_track = self.store.get_track(track_id)
+        if seed_track is None or seed_track.track_embedding is None:
+            return ()
+
+        catalog = self._get_embedding_catalog()
+        dimension_catalog = catalog.get(len(seed_track.track_embedding))
+        if dimension_catalog is None:
+            return ()
+
+        tracks, embedding_matrix = dimension_catalog
+        neighbors = self._seed_neighbor_cache.get(track_id)
+        if neighbors is None:
+            neighbors = tuple(
+                self._neighbors_for_seed(
+                    seed_track.track_embedding,
+                    tracks,
+                    embedding_matrix=embedding_matrix,
+                    excluded_ids={track_id},
+                )
+            )
+            self._seed_neighbor_cache[track_id] = neighbors
+
+        return neighbors[:limit]
 
     def recommendations_for(
         self,

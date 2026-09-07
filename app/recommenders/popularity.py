@@ -5,6 +5,8 @@ from math import exp
 from random import Random
 
 from app.domain.genres import (
+    PARENT_GENRE_RELEVANCE,
+    SUBGENRE_RECOMMENDATION_MIN_SCORE,
     popular_user_genres,
     track_genre_evidence,
 )
@@ -33,8 +35,6 @@ DEFAULT_EXPLORATION_POOL_SIZE = 30
 EXPLORATION_TEMPERATURE = 2.0
 ARTIST_PREFERENCE_FACTOR = 0.5
 GENRE_PREFERENCE_FACTOR = 0.5
-PARENT_GENRE_RELEVANCE = 0.5
-SUBGENRE_RECOMMENDATION_MIN_SCORE = 0.25
 
 class MostPopularRecommender(Recommender):
     @staticmethod
@@ -206,7 +206,9 @@ class MostPopularRecommender(Recommender):
 
         if track.detected_genres:
             for prediction in track.detected_genres:
-                full_genre = prediction.genre.strip().casefold()
+                full_genre = (
+                    prediction.subgenre or prediction.genre
+                ).strip().casefold()
                 parent_genre = (
                     prediction.parent_genre.strip().casefold()
                 )

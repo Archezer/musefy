@@ -97,12 +97,14 @@ class RecommendationService:
                 recommendations = self.mood_recommender.recommend_my_wave(
                     user_id=normalized_user_id,
                     limit=limit,
+                    excluded_track_ids=excluded_track_ids,
                 )
             else:
                 recommendations = self.mood_recommender.recommend_my_wave(
                     user_id=normalized_user_id,
                     limit=limit,
                     should_cancel=should_cancel,
+                    excluded_track_ids=excluded_track_ids,
                 )
             return self._apply_hybrid_ranker(
                 normalized_user_id,

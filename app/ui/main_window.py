@@ -82,7 +82,6 @@ from app.ingestion.audio import (
 from app.ingestion.metadata import read_audio_metadata
 from app.recommenders.feedback import suppressed_track_ids
 from app.recommenders.radio import build_radio_sequence
-from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
 from app.services.interactions import InteractionService
 from app.services.library_maintenance import (
@@ -225,6 +224,10 @@ DEFAULT_MASTER_VOLUME_PERCENT = 100
 RECOMMENDATION_QUEUE_SIZE = 12
 RECOMMENDATION_REFILL_THRESHOLD = 4
 RADIO_RECOMMENDATION_BATCH_SIZE = 4
+MOOD_SESSION_INITIAL_QUEUE_SIZE = 12
+MOOD_SESSION_REFILL_SIZE = 10
+MOOD_SESSION_REFILL_THRESHOLD = 5
+MOOD_SESSION_WAIT_ATTEMPTS = 80
 TRACK_WIDGET_BUFFER_ROWS = 4
 TRACK_MATERIALIZE_INTERVAL_MS = 16
 TRACK_HOVER_INTERVAL_MS = 16
@@ -355,6 +358,8 @@ class MainWindow(QMainWindow):
         self.session_mood_name: str | None = None
         self.session_genre_name: str | None = None
         self.current_track_id: str | None = None
+        self._last_end_of_media_track_id: str | None = None
+        self._media_ready_for_end_of_media = False
         self._current_track_listen_recorded = False
         self._current_track_played_30s_recorded = False
         self._current_track_played_ms = 0
@@ -404,6 +409,11 @@ class MainWindow(QMainWindow):
         self._mood_refill_task: RecommendationTask | None = None
         self._mood_refill_generation = 0
         self._mood_refill_inflight = False
+        self._mood_refill_added_count = 0
+        self._mood_refill_exhausted = False
+        self._mood_wait_attempts = 0
+        self._mood_wait_track_id: str | None = None
+        self._mood_session_seen_track_ids: set[str] = set()
         self._radio_recommendation_task: RecommendationTask | None = None
         self._radio_recommendation_generation = 0
         self._radio_recommendation_inflight = False
@@ -2417,6 +2427,7 @@ class MainWindow(QMainWindow):
         self.selected_track_id = None
         self._selected_track_row = -1
         self._hovered_track_row = -1
+        self.track_table.set_search_query(self._library_search_query)
         self.track_table.set_tracks(
             self._visible_tracks,
             add_mode=self._add_tracks_mode,
@@ -3248,15 +3259,21 @@ class MainWindow(QMainWindow):
         self._mood_session_result_generation = None
         self._mood_session_pending_name = session_name
         self._mood_session_pending_mode = context.mode
+        self._mood_session_seen_track_ids.clear()
+        initial_limit = (
+            MOOD_SESSION_INITIAL_QUEUE_SIZE
+            if context.mode == RecommendationMode.MY_WAVE
+            else 30
+        )
 
         task = RecommendationTask(
             lambda: (),
             generation,
-            batch_size=30,
+            batch_size=initial_limit,
             cancellable_fetcher=lambda should_cancel: (
                 self.recommendation_service.get_recommendations(
                     user_id=self.user_id,
-                    limit=30,
+                    limit=initial_limit,
                     context=context,
                     should_cancel=should_cancel,
                 )
@@ -3326,6 +3343,8 @@ class MainWindow(QMainWindow):
                 unavailable_message,
             )
             return
+
+        self._mood_session_seen_track_ids = set(track_ids)
 
         shown_recommendations = tuple(
             recommendation
@@ -3539,6 +3558,12 @@ class MainWindow(QMainWindow):
         if track is None:
             return
 
+        if not self._is_playable_track(track):
+            self.statusBar().showMessage(
+                f"Not downloaded: {track.artist} — {track.title}"
+            )
+            return
+
         self._cancel_mood_session()
         manual_track_ids = (
             self._manual_queue_snapshot()
@@ -3568,7 +3593,11 @@ class MainWindow(QMainWindow):
             return
 
         manual_id_set = set(manual_track_ids)
-        library_tracks = list(self.store.list_tracks())
+        library_tracks = [
+            item
+            for item in self.store.list_tracks()
+            if self._is_playable_track(item)
+        ]
         # Keep the queue in the same order the library currently advertises.
         # ``MusicStore.list_tracks`` has its own artist/title order and would
         # otherwise ignore a user's active Title/Genres/Added/Duration sort.
@@ -3577,7 +3606,11 @@ class MainWindow(QMainWindow):
         if track.id in visible_track_ids:
             # A row click should use exactly the order currently visible in
             # the table, including the active search/filter result.
-            ordered_library_tracks = list(self._visible_tracks)
+            ordered_library_tracks = [
+                item
+                for item in self._visible_tracks
+                if self._is_playable_track(item)
+            ]
         library_track_ids = [item.id for item in ordered_library_tracks]
 
         try:
@@ -3955,7 +3988,11 @@ class MainWindow(QMainWindow):
             return
 
         upcoming_count = len(self.playback_queue_service.upcoming_track_ids())
-        if upcoming_count > 5 or self._mood_refill_inflight:
+        if (
+            upcoming_count > MOOD_SESSION_REFILL_THRESHOLD
+            or self._mood_refill_inflight
+            or self._mood_refill_exhausted
+        ):
             return
 
         if self.session_mood_name == MY_WAVE_SESSION_NAME:
@@ -3968,18 +4005,25 @@ class MainWindow(QMainWindow):
                 target_mood,
                 mood_name=self.session_mood_name,
             )
+        excluded_track_ids = {
+            queue.current_track_id,
+            *self.playback_queue_service.upcoming_track_ids(),
+            *self._mood_session_seen_track_ids,
+        }
         self._mood_refill_generation += 1
         generation = self._mood_refill_generation
+        self._mood_refill_added_count = 0
         task = RecommendationTask(
             lambda: (),
             generation,
-            batch_size=10,
+            batch_size=MOOD_SESSION_REFILL_SIZE,
             cancellable_fetcher=lambda should_cancel: (
                 self.recommendation_service.get_recommendations(
                     user_id=self.user_id,
-                    limit=10,
+                    limit=MOOD_SESSION_REFILL_SIZE,
                     context=context,
                     should_cancel=should_cancel,
+                    excluded_track_ids=excluded_track_ids,
                 )
             ),
         )
@@ -4005,8 +4049,10 @@ class MainWindow(QMainWindow):
         existing_ids = {
             queue.current_track_id,
             *self.playback_queue_service.upcoming_track_ids(),
+            *self._mood_session_seen_track_ids,
         }
 
+        additions: list[str] = []
         shown_recommendations: list[Recommendation] = []
         for recommendation in batch:
             if not isinstance(recommendation, Recommendation):
@@ -4017,9 +4063,16 @@ class MainWindow(QMainWindow):
             if not track.local_path or not Path(track.local_path).exists():
                 continue
 
-            self.playback_queue_service.enqueue(track.id)
+            additions.append(track.id)
             existing_ids.add(track.id)
             shown_recommendations.append(recommendation)
+
+        if additions:
+            self.playback_queue_service.append_remaining(additions)
+            self._mood_session_seen_track_ids.update(additions)
+            # Paint the new upcoming tracks before synchronous impression
+            # persistence so the queue reflects the refill immediately.
+            self._load_queue()
 
         if self._record_recommendation_impressions(
             shown_recommendations,
@@ -4027,6 +4080,9 @@ class MainWindow(QMainWindow):
             position_offset=self._mood_session_impression_position,
         ):
             self._mood_session_impression_position += len(shown_recommendations)
+        if shown_recommendations:
+            self._mood_refill_added_count += len(shown_recommendations)
+            self._mood_refill_exhausted = False
 
     def _finish_mood_refill(self, generation: int) -> None:
         if generation != self._mood_refill_generation:
@@ -4034,6 +4090,11 @@ class MainWindow(QMainWindow):
 
         self._mood_refill_task = None
         self._mood_refill_inflight = False
+        self._mood_refill_exhausted = self._mood_refill_added_count == 0
+        if self._mood_wait_track_id is not None and self._mood_refill_exhausted:
+            self._mood_wait_attempts = 0
+            self._mood_wait_track_id = None
+            self.statusBar().showMessage("No more tracks available for this Wave")
 
     def _handle_mood_refill_error(
         self,
@@ -4045,6 +4106,9 @@ class MainWindow(QMainWindow):
 
         self._mood_refill_task = None
         self._mood_refill_inflight = False
+        self._mood_refill_exhausted = True
+        self._mood_wait_attempts = 0
+        self._mood_wait_track_id = None
         if message:
             self.statusBar().showMessage(f"Mood session refill unavailable: {message}")
 
@@ -4054,6 +4118,10 @@ class MainWindow(QMainWindow):
             self._mood_refill_task.cancel()
         self._mood_refill_task = None
         self._mood_refill_inflight = False
+        self._mood_refill_added_count = 0
+        self._mood_refill_exhausted = False
+        self._mood_wait_attempts = 0
+        self._mood_wait_track_id = None
 
     def _cancel_mood_session(self) -> None:
         self._mood_session_generation += 1
@@ -4063,6 +4131,7 @@ class MainWindow(QMainWindow):
         self._mood_session_pending_name = None
         self._mood_session_pending_mode = None
         self._mood_session_result_generation = None
+        self._mood_session_seen_track_ids.clear()
         self._cancel_mood_refill()
 
     def _load_queue(self) -> None:
@@ -4308,7 +4377,13 @@ class MainWindow(QMainWindow):
         action()
 
     def _play_track_now(self, track_id: str) -> None:
-        if self.store.get_track(track_id) is None:
+        track = self.store.get_track(track_id)
+        if track is None:
+            return
+        if not self._is_playable_track(track):
+            self.statusBar().showMessage(
+                f"Not downloaded: {track.artist} — {track.title}"
+            )
             return
 
         self._start_library_queue(
@@ -4340,6 +4415,12 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if not self._is_playable_track(track):
+            self.statusBar().showMessage(
+                f"Not downloaded, not added: {track.artist} — {track.title}"
+            )
+            return
+
         self.playback_queue_service.enqueue(track.id)
         self._load_queue()
         self.statusBar().showMessage(f"Added to queue: {track.artist} — {track.title}")
@@ -4358,11 +4439,26 @@ class MainWindow(QMainWindow):
             )
             return
 
-        for track in tracks:
+        playable_tracks = [
+            track for track in tracks if self._is_playable_track(track)
+        ]
+        skipped_count = len(tracks) - len(playable_tracks)
+        if not playable_tracks:
+            QMessageBox.information(
+                self,
+                "No downloaded tracks",
+                "This playlist has no downloaded audio files.",
+            )
+            return
+
+        for track in playable_tracks:
             self.playback_queue_service.enqueue(track.id)
 
         self._load_queue()
-        self.statusBar().showMessage(f"Added playlist to queue: {playlist.name}")
+        suffix = f"; skipped {skipped_count} unavailable" if skipped_count else ""
+        self.statusBar().showMessage(
+            f"Added playlist to queue: {playlist.name}{suffix}"
+        )
 
     def _merge_playlist(self, target_playlist_id: str) -> None:
         target_playlist = self._resolve_playlist(target_playlist_id)
@@ -5391,12 +5487,15 @@ class MainWindow(QMainWindow):
         # another library sort; playback should follow the same visible order
         # as the table when that sort is active.
         tracks = self._sort_tracks(tracks)
+        tracks = [
+            track for track in tracks if self._is_playable_track(track)
+        ]
 
         if not tracks:
             QMessageBox.information(
                 self,
-                "Playlist is empty",
-                "Add at least one track before playback.",
+                "No downloaded tracks",
+                "This playlist has no downloaded audio files.",
             )
             return
 
@@ -5435,13 +5534,18 @@ class MainWindow(QMainWindow):
 
         if smart:
             library_tracks = list(self.store.list_tracks())
-            similarity_index = TrackSimilarityIndex(
-                library_tracks,
-            )
+            # TrackSimilarityService answers seed queries with a cached NumPy
+            # search.  Building TrackSimilarityIndex here would calculate and
+            # sort every library pair on each smart-shuffle start.
+            similarity_provider = self.recommendation_service.track_radio
+            if similarity_provider is None:
+                from app.recommenders.similarity import TrackSimilarityIndex
+
+                similarity_provider = TrackSimilarityIndex(library_tracks)
             track_ids = list(
                 SmartShuffleBuilder(
                     library_tracks,
-                    similarity_index,
+                    similarity_provider,
                 ).build(track_ids)
             )
         elif shuffle:
@@ -7150,11 +7254,13 @@ class MainWindow(QMainWindow):
 
         settings.sync()
 
+    @staticmethod
+    def _is_playable_track(track: Track) -> bool:
+        return bool(track.local_path and Path(track.local_path).is_file())
+
     def _track_has_local_audio(self, track_id: str) -> bool:
         track = self.store.get_track(track_id)
-        return bool(
-            track is not None and track.local_path and Path(track.local_path).is_file()
-        )
+        return bool(track is not None and self._is_playable_track(track))
 
     def _apply_restored_queue_mode(self, mode: QueueMode) -> None:
         self.session_mood_name = None
@@ -9570,6 +9676,24 @@ class MainWindow(QMainWindow):
         queue = self.playback_queue_service.queue
         if (
             queue is not None
+            and queue.mode == QueueMode.SESSION
+            and queue.current_track_id is not None
+            and (
+                self.session_mood_name is not None
+                or self.session_genre_name is not None
+            )
+            and not self.playback_queue_service.upcoming_track_ids()
+        ):
+            # Mood sessions are replenished asynchronously.  Keep the
+            # current track alive until the next batch arrives instead of
+            # advancing into an empty queue.
+            self._mood_wait_track_id = queue.current_track_id
+            self._replenish_mood_session()
+            self._wait_for_mood_track()
+            return
+
+        if (
+            queue is not None
             and queue.mode == QueueMode.RECOMMENDATIONS
             and not self.playback_queue_service.upcoming_track_ids()
         ):
@@ -9594,6 +9718,9 @@ class MainWindow(QMainWindow):
 
             if queue.mode == QueueMode.RECOMMENDATIONS:
                 self._replenish_recommendation_queue()
+            elif queue.mode == QueueMode.SESSION:
+                self._replenish_mood_session()
+                self._load_queue()
 
             if queue.current_track_id is not None and self._play_track(
                 queue.current_track_id
@@ -9631,6 +9758,41 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Finding the next recommendation…")
         QTimer.singleShot(250, self._wait_for_radio_track)
 
+    def _wait_for_mood_track(self) -> None:
+        queue = self.playback_queue_service.queue
+        if (
+            queue is None
+            or queue.mode != QueueMode.SESSION
+            or queue.current_track_id != self._mood_wait_track_id
+        ):
+            self._mood_wait_attempts = 0
+            self._mood_wait_track_id = None
+            return
+
+        if self.playback_queue_service.upcoming_track_ids():
+            self._mood_wait_attempts = 0
+            self._mood_wait_track_id = None
+            self._play_next_from_queue()
+            return
+
+        if self._mood_refill_exhausted:
+            self._mood_wait_attempts = 0
+            self._mood_wait_track_id = None
+            self.statusBar().showMessage("No more tracks available for this Wave")
+            return
+
+        if self._mood_wait_attempts >= MOOD_SESSION_WAIT_ATTEMPTS:
+            self._mood_wait_attempts = 0
+            self._mood_wait_track_id = None
+            self._mood_refill_exhausted = True
+            self.statusBar().showMessage("No more tracks available for this Wave")
+            return
+
+        self._mood_wait_attempts += 1
+        self._replenish_mood_session()
+        self.statusBar().showMessage("Finding the next Wave track…")
+        QTimer.singleShot(250, self._wait_for_mood_track)
+
     def _play_track(
         self,
         track_id: str,
@@ -9651,6 +9813,11 @@ class MainWindow(QMainWindow):
 
         source_url = QUrl.fromLocalFile(str(audio_path.resolve()))
         self.current_track_id = track.id
+        # A stale EndOfMedia event from the previous source can arrive while
+        # Qt is switching to this one. Do not let it advance the new queue
+        # item before the new source has reached a loaded state.
+        self._last_end_of_media_track_id = None
+        self._media_ready_for_end_of_media = False
         self._player_duration_ms = max(int(track.duration_ms or 0), 0)
         self.player_position_label.setText("0:00")
         self.player_duration_label.setText(
@@ -9787,30 +9954,51 @@ class MainWindow(QMainWindow):
         self,
         status: QMediaPlayer.MediaStatus,
     ) -> None:
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self._repeat_mode == RepeatMode.TRACK:
-                self._current_track_listen_recorded = False
-                self._current_track_played_30s_recorded = False
-                self._current_track_played_ms = 0
-                self._current_track_last_position_ms = 0
-                self._current_track_seeked_to_completion = False
-                self.media_player.setPosition(0)
-                self.media_player.play()
-                self._record_playback_signal(InteractionType.REPEAT)
-                self._record_playback_signal(InteractionType.PLAY_START)
+        if status in {
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        }:
+            self._media_ready_for_end_of_media = True
+            return
+
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+
+        current_track_id = self.current_track_id
+        if (
+            self._is_shutting_down
+            or current_track_id is None
+            or not self._media_ready_for_end_of_media
+            or self._last_end_of_media_track_id == current_track_id
+        ):
+            return
+
+        self._last_end_of_media_track_id = current_track_id
+
+        if self._repeat_mode == RepeatMode.TRACK:
+            self._current_track_listen_recorded = False
+            self._current_track_played_30s_recorded = False
+            self._current_track_played_ms = 0
+            self._current_track_last_position_ms = 0
+            self._current_track_seeked_to_completion = False
+            self._last_end_of_media_track_id = None
+            self.media_player.setPosition(0)
+            self.media_player.play()
+            self._record_playback_signal(InteractionType.REPEAT)
+            self._record_playback_signal(InteractionType.PLAY_START)
+            return
+
+        if self._repeat_mode == RepeatMode.QUEUE:
+            queue = self.playback_queue_service.restart_cycle()
+            if queue is not None:
+                if queue.mode == QueueMode.RECOMMENDATIONS:
+                    self._replenish_recommendation_queue(force=True)
+                self._load_queue()
+                self._play_current_queue_track()
                 return
 
-            if self._repeat_mode == RepeatMode.QUEUE:
-                queue = self.playback_queue_service.restart_cycle()
-                if queue is not None:
-                    if queue.mode == QueueMode.RECOMMENDATIONS:
-                        self._replenish_recommendation_queue(force=True)
-                    self._load_queue()
-                    self._play_current_queue_track()
-                    return
-
-            self._replenish_mood_session()
-            self._play_next_from_queue()
+        self._replenish_mood_session()
+        self._play_next_from_queue()
 
     def _handle_volume_changed(
         self,

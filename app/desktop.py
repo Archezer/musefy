@@ -138,6 +138,13 @@ def _load_optional_hybrid_ranker(store):
         )
 
         model = load_mlp_ranker(RANKER_MODEL_PATH)
+        if not model.approved_for_activation:
+            print(
+                "ML ranker rejected by quality gate; using baseline "
+                f"recommenders: {model.approval_reason}",
+                file=sys.stderr,
+            )
+            return None
         return HybridRecommendationRanker(store, model)
     except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
         print(

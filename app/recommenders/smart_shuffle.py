@@ -1,17 +1,28 @@
 from collections.abc import Sequence
+from typing import Protocol
 
 from app.domain.models import Track
 from app.recommenders.similarity import (
-    TrackSimilarityIndex,
+    SimilarTrack,
     cosine_similarity,
 )
+
+SMART_SHUFFLE_NEIGHBOR_LIMIT = 20
+
+
+class SimilarityProvider(Protocol):
+    def neighbors_for(
+        self,
+        track_id: str,
+        limit: int = 10,
+    ) -> tuple[SimilarTrack, ...]: ...
 
 
 class SmartShuffleBuilder:
     def __init__(
         self,
         tracks: Sequence[Track],
-        similarity_index: TrackSimilarityIndex,
+        similarity_index: SimilarityProvider,
     ) -> None:
         self.tracks_by_id = {
             track.id: track
@@ -63,7 +74,8 @@ class SmartShuffleBuilder:
             candidate_ids.update(
                 neighbor.track_id
                 for neighbor in self.similarity_index.neighbors_for(
-                    track_id
+                    track_id,
+                    limit=SMART_SHUFFLE_NEIGHBOR_LIMIT,
                 )
             )
 

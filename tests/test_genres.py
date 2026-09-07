@@ -1,4 +1,8 @@
-from app.domain.genres import popular_user_genres, track_genre_evidence
+from app.domain.genres import (
+    PARENT_GENRE_RELEVANCE,
+    popular_user_genres,
+    track_genre_evidence,
+)
 from app.domain.models import DetectedGenre, Interaction, InteractionType, Track, User
 from app.domain.recommendations import RecommendationContext, RecommendationMode
 from app.recommenders.popularity import MostPopularRecommender
@@ -24,7 +28,58 @@ def test_detected_genres_take_priority_over_parent_metadata() -> None:
         ),
     )
 
-    assert track_genre_evidence(track) == (("Shoegaze", 0.9),)
+    assert track_genre_evidence(track) == (
+        ("Shoegaze", 0.9),
+        ("Alternative", 0.9 * PARENT_GENRE_RELEVANCE),
+    )
+
+
+def test_specific_genre_has_stronger_evidence_than_parent() -> None:
+    track = Track(
+        id="ambient",
+        title="Ambient track",
+        artist="Artist",
+        detected_genres=(
+            DetectedGenre(
+                genre="Electronic---Ambient",
+                parent_genre="Electronic",
+                subgenre="Ambient",
+                score=0.8,
+                rank=1,
+                rank_weight=1.0,
+                weighted_score=0.8,
+            ),
+        ),
+    )
+
+    evidence = dict(track_genre_evidence(track))
+
+    assert evidence["Ambient"] > evidence["Electronic"]
+
+
+def test_ranker_uses_subgenre_key_and_downweights_parent() -> None:
+    track = Track(
+        id="ambient",
+        title="Ambient track",
+        artist="Artist",
+        detected_genres=(
+            DetectedGenre(
+                genre="Electronic---Ambient",
+                parent_genre="Electronic",
+                subgenre="Ambient",
+                score=0.8,
+                rank=1,
+                rank_weight=1.0,
+                weighted_score=0.8,
+            ),
+        ),
+    )
+
+    features = MostPopularRecommender._get_track_genre_features(track)
+
+    assert features["ambient"] == 0.8
+    assert features["electronic"] == 0.8 * PARENT_GENRE_RELEVANCE
+    assert "electronic---ambient" not in features
 
 
 def test_popular_user_genres_use_history_and_fill_from_catalogue() -> None:

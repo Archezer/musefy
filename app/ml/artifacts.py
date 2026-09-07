@@ -12,7 +12,13 @@ from app.ml.preprocessing import FeatureStandardizer
 from app.ml.ranker import MLPRanker, MLPTrainingResult
 
 
-def save_mlp_ranker(result: MLPTrainingResult, path: Path) -> None:
+def save_mlp_ranker(
+    result: MLPTrainingResult,
+    path: Path,
+    *,
+    approved_for_activation: bool = True,
+    approval_reason: str = "",
+) -> None:
     """Save weights and the exact feature/model contract."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -24,6 +30,8 @@ def save_mlp_ranker(result: MLPTrainingResult, path: Path) -> None:
         "hidden_dims": result.model.hidden_dims,
         "dropout": result.model.dropout,
         "scaler": result.scaler.to_payload() if result.scaler else None,
+        "approved_for_activation": approved_for_activation,
+        "approval_reason": approval_reason,
         "state_dict": {
             name: value.detach().cpu()
             for name, value in result.model.state_dict().items()
@@ -63,12 +71,19 @@ def load_mlp_ranker(path: Path) -> MLPTrainingResult:
         train_losses=(),
         validation_losses=(),
         scaler=scaler,
+        approved_for_activation=bool(
+            payload.get("approved_for_activation", True)
+        ),
+        approval_reason=str(payload.get("approval_reason", "")),
     )
 
 
 def save_logistic_ranker(
     ranker: LogisticRanker,
     path: Path,
+    *,
+    approved_for_activation: bool = True,
+    approval_reason: str = "",
 ) -> None:
     """Save the interpretable baseline with its feature order."""
 
@@ -79,6 +94,8 @@ def save_logistic_ranker(
             "version": 1,
             "feature_names": ranker.feature_names,
             "scaler": ranker.scaler.to_payload() if ranker.scaler else None,
+            "approved_for_activation": approved_for_activation,
+            "approval_reason": approval_reason,
             "model": ranker.model,
         },
         path,
@@ -105,4 +122,8 @@ def load_logistic_ranker(path: Path) -> LogisticRanker:
         model=model,
         feature_names=feature_names,
         scaler=scaler,
+        approved_for_activation=bool(
+            payload.get("approved_for_activation", True)
+        ),
+        approval_reason=str(payload.get("approval_reason", "")),
     )
