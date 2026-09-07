@@ -112,6 +112,10 @@ from app.services.spotify_favorites_import import (
     SpotifyFavoritesImportResult,
     SpotifyFavoritesImportService,
 )
+from app.services.spotify_history_import import (
+    SpotifyListeningHistoryImportResult,
+    SpotifyListeningHistoryImportService,
+)
 from app.services.statistics import ListeningStatisticsService
 from app.services.tracks import TrackManagementService
 from app.services.watch_folder import (
@@ -333,6 +337,9 @@ class MainWindow(QMainWindow):
                 store,
                 youtube_import_service.spotify_provider,
             )
+        )
+        self.spotify_history_import_service = (
+            SpotifyListeningHistoryImportService(store)
         )
         self.soundcloud_import_service = soundcloud_import_service
         self.mp3party_import_service = mp3party_import_service
@@ -7198,6 +7205,9 @@ class MainWindow(QMainWindow):
         settings_dialog.spotify_favorites_import_requested.connect(
             lambda: self._start_spotify_favorites_import(settings_dialog)
         )
+        settings_dialog.spotify_history_import_requested.connect(
+            lambda: self._start_spotify_history_import(settings_dialog)
+        )
         settings_dialog.sync_requested.connect(
             lambda: self._start_spotify_sync_last(settings_dialog)
         )
@@ -7598,14 +7608,10 @@ class MainWindow(QMainWindow):
             return
 
         message = (
-            f"Imported {result.active_preferences} Spotify favorite metadata "
-            "record(s) for recommendations. Audio was not downloaded."
+            f"Imported {result.imported_metadata} and updated "
+            f"{result.updated_metadata} Spotify metadata record(s) for "
+            "recommendations. Audio was not downloaded."
         )
-        if result.deactivated_preferences:
-            message += (
-                f" Deactivated {result.deactivated_preferences} removed "
-                "favorite(s)."
-            )
         dialog.set_busy(False, message)
         dialog.finish_progress(message)
         self.statusBar().showMessage(message)
@@ -7621,6 +7627,107 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(
             dialog,
             "Spotify metadata import failed",
+            message,
+        )
+
+    def _start_spotify_history_import(
+        self,
+        dialog: SpotifySettingsDialog,
+    ) -> None:
+        """Import a Spotify Extended Streaming History JSON/ZIP file."""
+
+        if self._youtube_thread is not None:
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            dialog,
+            "Select Spotify Extended Streaming History",
+            "",
+            "Spotify history (*.json *.zip);;JSON files (*.json);;ZIP files (*.zip)",
+        )
+        if not file_path:
+            return
+
+        message = "Importing Spotify listening history..."
+        dialog.set_busy(True, message)
+        dialog.start_progress(message)
+
+        def import_history() -> SpotifyListeningHistoryImportResult:
+            return self.spotify_history_import_service.import_path(
+                Path(file_path),
+                on_progress=(
+                    lambda completed, total, current: (
+                        thread.search_progress_updated.emit(
+                            completed,
+                            total,
+                            completed,
+                            0,
+                            current,
+                        )
+                    )
+                ),
+                should_cancel=thread.is_cancelled,
+            )
+
+        thread = YouTubeTaskThread(import_history, self)
+        thread.search_progress_updated.connect(
+            lambda completed, total, _found, _failed, current: (
+                dialog.update_history_import_progress(
+                    completed,
+                    total,
+                    current,
+                )
+            )
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_spotify_history_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda error: self._handle_spotify_history_import_error(
+                dialog,
+                error,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _handle_spotify_history_import_result(
+        self,
+        dialog: SpotifySettingsDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SpotifyListeningHistoryImportResult):
+            self._handle_spotify_history_import_error(
+                dialog,
+                "Spotify listening history import returned an invalid result.",
+            )
+            return
+
+        message = (
+            f"Imported {result.imported_stats} new and updated "
+            f"{result.updated_stats} listening-stat record(s) from "
+            f"{result.total_entries} history entr(y/ies). "
+            "Audio was not downloaded."
+        )
+        if result.skipped_entries:
+            message += f" Skipped {result.skipped_entries} entr(y/ies)."
+        dialog.set_busy(False, message)
+        dialog.finish_progress(message)
+        self.statusBar().showMessage(message)
+
+    def _handle_spotify_history_import_error(
+        self,
+        dialog: SpotifySettingsDialog,
+        message: str,
+    ) -> None:
+        failure_message = "Spotify listening history import failed."
+        dialog.set_busy(False, failure_message)
+        dialog.finish_progress(failure_message)
+        QMessageBox.warning(
+            dialog,
+            "Spotify listening history import failed",
             message,
         )
 

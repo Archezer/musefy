@@ -47,6 +47,76 @@ class UserRecord(Base):
     )
 
 
+class SpotifyTrackMetadataRecord(Base):
+    __tablename__ = "spotify_track_metadata"
+
+    spotify_id: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+    title: Mapped[str] = mapped_column(String(500))
+    artist: Mapped[str] = mapped_column(String(500))
+    album: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+    duration_ms: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    added_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    isrc: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+
+class SpotifyListeningStatsRecord(Base):
+    __tablename__ = "spotify_listening_stats"
+
+    spotify_id: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+    play_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    total_ms_played: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    first_played_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_played_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    completion_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    skip_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+
 class SpotifyFavoriteRecord(Base):
     __tablename__ = "spotify_favorites"
 

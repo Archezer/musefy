@@ -12,6 +12,9 @@ from app.services.interactions import InteractionService
 from app.services.spotify_favorites_import import (
     SpotifyFavoritesImportService,
 )
+from app.services.spotify_history_import import (
+    SpotifyListeningHistoryImportService,
+)
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import YouTubeImportService
 from app.sources.spotify import SpotifyMetadataProvider
@@ -123,6 +126,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refresh Spotify OAuth authorization and saved token",
     )
 
+    spotify_history_command = commands.add_parser(
+        "spotify-import-history",
+        help="Import Spotify Extended Streaming History JSON/ZIP",
+    )
+    spotify_history_command.add_argument(
+        "file_path",
+        type=Path,
+        help="Path to Spotify Extended Streaming History JSON or ZIP",
+    )
+
     return parser
 
 
@@ -164,12 +177,6 @@ def import_spotify_favorites(arguments: argparse.Namespace) -> None:
     create_database()
 
     store = SQLAlchemyMusicStore(create_session)
-    if store.get_user(arguments.user_id) is None:
-        raise SystemExit(
-            f"User does not exist: {arguments.user_id}. "
-            "Use the user ID configured by the desktop app."
-        )
-
     provider = SpotifyMetadataProvider()
     service = SpotifyFavoritesImportService(store, provider)
     result = service.import_all(arguments.user_id)
@@ -179,10 +186,8 @@ def import_spotify_favorites(arguments: argparse.Namespace) -> None:
         "Audio was not downloaded."
     )
     print(f"Fetched: {result.fetched}")
-    print(f"New tracks: {result.imported_tracks}")
-    print(f"Updated tracks: {result.updated_tracks}")
-    print(f"Active preferences: {result.active_preferences}")
-    print(f"Deactivated preferences: {result.deactivated_preferences}")
+    print(f"New metadata rows: {result.imported_metadata}")
+    print(f"Updated metadata rows: {result.updated_metadata}")
     print(f"Skipped: {result.skipped_tracks}")
 
 
@@ -192,6 +197,25 @@ def reauthorize_spotify(_arguments: argparse.Namespace) -> None:
     provider = SpotifyMetadataProvider()
     provider.reauthorize()
     print("Spotify OAuth completed. Token was refreshed.")
+
+
+def import_spotify_history(arguments: argparse.Namespace) -> None:
+    """Import Spotify listening stats without creating library tracks."""
+
+    create_database()
+    store = SQLAlchemyMusicStore(create_session)
+    service = SpotifyListeningHistoryImportService(store)
+    result = service.import_path(arguments.file_path)
+
+    print(
+        "Spotify listening history imported for recommendations. "
+        "Audio was not downloaded."
+    )
+    print(f"Source files: {result.source_files}")
+    print(f"History entries: {result.total_entries}")
+    print(f"New stats rows: {result.imported_stats}")
+    print(f"Updated stats rows: {result.updated_stats}")
+    print(f"Skipped entries: {result.skipped_entries}")
 
 
 def record_interaction(
@@ -487,6 +511,8 @@ def main() -> None:
         import_spotify_favorites(arguments)
     elif arguments.command == "spotify-reauthorize":
         reauthorize_spotify(arguments)
+    elif arguments.command == "spotify-import-history":
+        import_spotify_history(arguments)
 
 
 if __name__ == "__main__":

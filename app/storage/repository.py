@@ -15,6 +15,8 @@ from app.domain.models import (
     PlaylistEntry,
     RecommendationImpression,
     SpotifyFavorite,
+    SpotifyListeningStats,
+    SpotifyTrackMetadata,
     Track,
     User,
 )
@@ -26,6 +28,8 @@ from app.storage.models import (
     PlaylistRecord,
     RecommendationImpressionRecord,
     SpotifyFavoriteRecord,
+    SpotifyListeningStatsRecord,
+    SpotifyTrackMetadataRecord,
     TrackRecord,
     UserRecord,
 )
@@ -130,6 +134,122 @@ class SQLAlchemyMusicStore:
             records = session.scalars(statement).all()
 
         return [self._to_spotify_favorite(record) for record in records]
+
+    def get_spotify_track_metadata(
+        self,
+        spotify_id: str,
+    ) -> SpotifyTrackMetadata | None:
+        with self.session_factory() as session:
+            record = session.get(SpotifyTrackMetadataRecord, spotify_id)
+
+        if record is None:
+            return None
+
+        return self._to_spotify_track_metadata(record)
+
+    def upsert_spotify_track_metadata(
+        self,
+        metadata: SpotifyTrackMetadata,
+    ) -> None:
+        with self.session_factory() as session:
+            record = session.get(
+                SpotifyTrackMetadataRecord,
+                metadata.spotify_id,
+            )
+            if record is None:
+                session.add(
+                    SpotifyTrackMetadataRecord(
+                        spotify_id=metadata.spotify_id,
+                        title=metadata.title,
+                        artist=metadata.artist,
+                        album=metadata.album,
+                        duration_ms=metadata.duration_ms,
+                        added_at=metadata.added_at,
+                        isrc=metadata.isrc,
+                        imported_at=metadata.imported_at,
+                    )
+                )
+            else:
+                record.title = metadata.title
+                record.artist = metadata.artist
+                record.album = metadata.album
+                record.duration_ms = metadata.duration_ms
+                record.added_at = metadata.added_at
+                record.isrc = metadata.isrc
+                record.imported_at = metadata.imported_at
+            session.commit()
+
+    def list_spotify_track_metadata(self) -> list[SpotifyTrackMetadata]:
+        statement = select(SpotifyTrackMetadataRecord).order_by(
+            SpotifyTrackMetadataRecord.added_at,
+            SpotifyTrackMetadataRecord.spotify_id,
+        )
+
+        with self.session_factory() as session:
+            records = session.scalars(statement).all()
+
+        return [
+            self._to_spotify_track_metadata(record)
+            for record in records
+        ]
+
+    def get_spotify_listening_stats(
+        self,
+        spotify_id: str,
+    ) -> SpotifyListeningStats | None:
+        with self.session_factory() as session:
+            record = session.get(SpotifyListeningStatsRecord, spotify_id)
+
+        if record is None:
+            return None
+
+        return self._to_spotify_listening_stats(record)
+
+    def upsert_spotify_listening_stats(
+        self,
+        stats: SpotifyListeningStats,
+    ) -> None:
+        with self.session_factory() as session:
+            record = session.get(
+                SpotifyListeningStatsRecord,
+                stats.spotify_id,
+            )
+            if record is None:
+                session.add(
+                    SpotifyListeningStatsRecord(
+                        spotify_id=stats.spotify_id,
+                        play_count=stats.play_count,
+                        total_ms_played=stats.total_ms_played,
+                        first_played_at=stats.first_played_at,
+                        last_played_at=stats.last_played_at,
+                        completion_count=stats.completion_count,
+                        skip_count=stats.skip_count,
+                        imported_at=stats.imported_at,
+                    )
+                )
+            else:
+                record.play_count = stats.play_count
+                record.total_ms_played = stats.total_ms_played
+                record.first_played_at = stats.first_played_at
+                record.last_played_at = stats.last_played_at
+                record.completion_count = stats.completion_count
+                record.skip_count = stats.skip_count
+                record.imported_at = stats.imported_at
+            session.commit()
+
+    def list_spotify_listening_stats(self) -> list[SpotifyListeningStats]:
+        statement = select(SpotifyListeningStatsRecord).order_by(
+            SpotifyListeningStatsRecord.last_played_at,
+            SpotifyListeningStatsRecord.spotify_id,
+        )
+
+        with self.session_factory() as session:
+            records = session.scalars(statement).all()
+
+        return [
+            self._to_spotify_listening_stats(record)
+            for record in records
+        ]
 
     def add_track(self, track: Track) -> None:
         record = TrackRecord(
@@ -781,6 +901,56 @@ class SQLAlchemyMusicStore:
             reason=record.reason,
             shown_at=shown_at,
             session_id=record.session_id,
+        )
+
+    @staticmethod
+    def _to_spotify_listening_stats(
+        record: SpotifyListeningStatsRecord,
+    ) -> SpotifyListeningStats:
+        first_played_at = record.first_played_at
+        if first_played_at is not None and first_played_at.tzinfo is None:
+            first_played_at = first_played_at.replace(tzinfo=UTC)
+
+        last_played_at = record.last_played_at
+        if last_played_at is not None and last_played_at.tzinfo is None:
+            last_played_at = last_played_at.replace(tzinfo=UTC)
+
+        imported_at = record.imported_at
+        if imported_at.tzinfo is None:
+            imported_at = imported_at.replace(tzinfo=UTC)
+
+        return SpotifyListeningStats(
+            spotify_id=record.spotify_id,
+            play_count=record.play_count,
+            total_ms_played=record.total_ms_played,
+            first_played_at=first_played_at,
+            last_played_at=last_played_at,
+            completion_count=record.completion_count,
+            skip_count=record.skip_count,
+            imported_at=imported_at,
+        )
+
+    @staticmethod
+    def _to_spotify_track_metadata(
+        record: SpotifyTrackMetadataRecord,
+    ) -> SpotifyTrackMetadata:
+        added_at = record.added_at
+        if added_at is not None and added_at.tzinfo is None:
+            added_at = added_at.replace(tzinfo=UTC)
+
+        imported_at = record.imported_at
+        if imported_at.tzinfo is None:
+            imported_at = imported_at.replace(tzinfo=UTC)
+
+        return SpotifyTrackMetadata(
+            spotify_id=record.spotify_id,
+            title=record.title,
+            artist=record.artist,
+            album=record.album,
+            duration_ms=record.duration_ms,
+            added_at=added_at,
+            isrc=record.isrc,
+            imported_at=imported_at,
         )
 
     @staticmethod

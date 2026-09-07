@@ -7,6 +7,8 @@ from app.domain.models import (
     PlaylistEntry,
     RecommendationImpression,
     SpotifyFavorite,
+    SpotifyListeningStats,
+    SpotifyTrackMetadata,
     Track,
     User,
 )
@@ -35,6 +37,36 @@ class MusicStore(Protocol):
         *,
         active_only: bool = False,
     ) -> Iterable[SpotifyFavorite]:
+        ...
+
+    def get_spotify_track_metadata(
+        self,
+        spotify_id: str,
+    ) -> SpotifyTrackMetadata | None:
+        ...
+
+    def upsert_spotify_track_metadata(
+        self,
+        metadata: SpotifyTrackMetadata,
+    ) -> None:
+        ...
+
+    def list_spotify_track_metadata(self) -> Iterable[SpotifyTrackMetadata]:
+        ...
+
+    def get_spotify_listening_stats(
+        self,
+        spotify_id: str,
+    ) -> SpotifyListeningStats | None:
+        ...
+
+    def upsert_spotify_listening_stats(
+        self,
+        stats: SpotifyListeningStats,
+    ) -> None:
+        ...
+
+    def list_spotify_listening_stats(self) -> Iterable[SpotifyListeningStats]:
         ...
 
     def add_track(self, track: Track) -> None:

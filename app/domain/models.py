@@ -110,6 +110,38 @@ class SpotifyFavorite:
 
 
 @dataclass(frozen=True)
+class SpotifyTrackMetadata:
+    """Metadata from Spotify's external saved-track catalog."""
+
+    spotify_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    duration_ms: int | None = None
+    added_at: datetime | None = None
+    isrc: str | None = None
+    imported_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+
+
+@dataclass(frozen=True)
+class SpotifyListeningStats:
+    """Aggregated listening signals from Spotify's history export."""
+
+    spotify_id: str
+    play_count: int = 0
+    total_ms_played: int = 0
+    first_played_at: datetime | None = None
+    last_played_at: datetime | None = None
+    completion_count: int = 0
+    skip_count: int = 0
+    imported_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+
+
+@dataclass(frozen=True)
 class Interaction:
     user_id: str
     track_id: str

@@ -200,6 +200,7 @@ class SpotifySettingsDialog(QDialog):
     closed = Signal()
     authenticate_requested = Signal()
     spotify_favorites_import_requested = Signal()
+    spotify_history_import_requested = Signal()
     sync_requested = Signal()
     sync_all_requested = Signal()
 
@@ -216,7 +217,7 @@ class SpotifySettingsDialog(QDialog):
         self._close_notified = False
         self.setObjectName("spotifySettingsDialog")
         self.setWindowTitle("Spotify settings")
-        self.resize(500, 360)
+        self.resize(500, 470)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -277,7 +278,7 @@ class SpotifySettingsDialog(QDialog):
         sync_layout.addWidget(metadata_description)
 
         self.import_favorites_button = QPushButton(
-            "Import Favorites for Recommendations"
+            "Import Spotify Metadata for Recommendations"
         )
         self.import_favorites_button.setObjectName(
             "spotifyImportFavoritesButton"
@@ -291,6 +292,34 @@ class SpotifySettingsDialog(QDialog):
         )
         sync_layout.addWidget(
             self.import_favorites_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+
+        history_description = QLabel(
+            "Import Spotify Extended Streaming History from JSON or ZIP. "
+            "This adds real listening statistics for recommendations; "
+            "no audio is downloaded."
+        )
+        history_description.setObjectName("spotifySettingsDescription")
+        history_description.setWordWrap(True)
+        sync_layout.addWidget(history_description)
+
+        self.import_history_button = QPushButton(
+            "Import Spotify Listening History"
+        )
+        self.import_history_button.setObjectName(
+            "spotifyImportHistoryButton"
+        )
+        self.import_history_button.setToolTip(
+            "Import Spotify Extended Streaming History from JSON or ZIP. "
+            "No audio is downloaded."
+        )
+        self.import_history_button.clicked.connect(
+            self.spotify_history_import_requested
+        )
+        sync_layout.addWidget(
+            self.import_history_button,
             0,
             Qt.AlignmentFlag.AlignLeft,
         )
@@ -424,6 +453,7 @@ class SpotifySettingsDialog(QDialog):
         self.sync_now_button.setEnabled(authenticated)
         self.sync_all_button.setEnabled(authenticated)
         self.import_favorites_button.setEnabled(authenticated)
+        self.import_history_button.setEnabled(True)
         self.auth_status_label.style().unpolish(self.auth_status_label)
         self.auth_status_label.style().polish(self.auth_status_label)
 
@@ -468,6 +498,7 @@ class SpotifySettingsDialog(QDialog):
         self.import_favorites_button.setEnabled(
             not busy and self._is_authenticated()
         )
+        self.import_history_button.setEnabled(not busy)
         if message:
             self.status_label.setText(message)
 
@@ -552,6 +583,30 @@ class SpotifySettingsDialog(QDialog):
         self.progress_bar.show()
 
         message = f"Importing metadata: {completed}/{total}"
+        if current:
+            current = " ".join(current.split())
+            if len(current) > 52:
+                current = f"{current[:51].rstrip()}…"
+            message += f" · {current}"
+        self.status_label.setText(message)
+
+    def update_history_import_progress(
+        self,
+        completed: int,
+        total: int,
+        current: str = "",
+    ) -> None:
+        """Show progress for the Extended Streaming History import."""
+
+        total = max(total, 0)
+        if total:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(max(completed, 0), total))
+        else:
+            self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+
+        message = f"Importing listening history: {completed}/{total}"
         if current:
             current = " ".join(current.split())
             if len(current) > 52:

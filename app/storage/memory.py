@@ -6,6 +6,8 @@ from app.domain.models import (
     PlaylistEntry,
     RecommendationImpression,
     SpotifyFavorite,
+    SpotifyListeningStats,
+    SpotifyTrackMetadata,
     Track,
     User,
 )
@@ -28,6 +30,12 @@ class InMemoryMusicStore:
         default_factory=dict
     )
     spotify_favorites: dict[tuple[str, str], SpotifyFavorite] = field(
+        default_factory=dict
+    )
+    spotify_track_metadata: dict[str, SpotifyTrackMetadata] = field(
+        default_factory=dict
+    )
+    spotify_listening_stats: dict[str, SpotifyListeningStats] = field(
         default_factory=dict
     )
 
@@ -71,6 +79,50 @@ class InMemoryMusicStore:
                 favorite.added_at is None,
                 favorite.added_at or favorite.imported_at,
                 favorite.spotify_id,
+            ),
+        )
+
+    def get_spotify_track_metadata(
+        self,
+        spotify_id: str,
+    ) -> SpotifyTrackMetadata | None:
+        return self.spotify_track_metadata.get(spotify_id)
+
+    def upsert_spotify_track_metadata(
+        self,
+        metadata: SpotifyTrackMetadata,
+    ) -> None:
+        self.spotify_track_metadata[metadata.spotify_id] = metadata
+
+    def list_spotify_track_metadata(self) -> list[SpotifyTrackMetadata]:
+        return sorted(
+            self.spotify_track_metadata.values(),
+            key=lambda metadata: (
+                metadata.added_at is None,
+                metadata.added_at or metadata.imported_at,
+                metadata.spotify_id,
+            ),
+        )
+
+    def get_spotify_listening_stats(
+        self,
+        spotify_id: str,
+    ) -> SpotifyListeningStats | None:
+        return self.spotify_listening_stats.get(spotify_id)
+
+    def upsert_spotify_listening_stats(
+        self,
+        stats: SpotifyListeningStats,
+    ) -> None:
+        self.spotify_listening_stats[stats.spotify_id] = stats
+
+    def list_spotify_listening_stats(self) -> list[SpotifyListeningStats]:
+        return sorted(
+            self.spotify_listening_stats.values(),
+            key=lambda stats: (
+                stats.last_played_at is None,
+                stats.last_played_at or stats.imported_at,
+                stats.spotify_id,
             ),
         )
 
