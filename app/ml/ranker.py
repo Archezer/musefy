@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
+from app.ml.preprocessing import FeatureStandardizer
 from app.ml.training_data import RankerDataset
 
 
@@ -30,6 +31,7 @@ class MLPRanker(nn.Module):
         self.input_dim = input_dim
         self.hidden_dims = tuple(hidden_dims)
         self.dropout = dropout
+        self.feature_scaler: FeatureStandardizer | None = None
         layers: list[nn.Module] = []
         previous_dim = input_dim
         for hidden_dim in hidden_dims:
@@ -56,6 +58,7 @@ class MLPTrainingResult:
     feature_names: tuple[str, ...]
     train_losses: tuple[float, ...]
     validation_losses: tuple[float, ...]
+    scaler: FeatureStandardizer | None = None
 
 
 def train_mlp_ranker(
@@ -86,7 +89,9 @@ def train_mlp_ranker(
         hidden_dims=hidden_dims,
         dropout=dropout,
     )
-    inputs = _as_tensor(train_dataset.as_matrix())
+    scaler = FeatureStandardizer.fit(train_dataset)
+    model.feature_scaler = scaler
+    inputs = _as_tensor(scaler.transform_dataset(train_dataset))
     labels = _as_tensor(train_dataset.labels)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -109,7 +114,7 @@ def train_mlp_ranker(
             model.eval()
             with torch.no_grad():
                 validation_loss = criterion(
-                    model(_as_tensor(validation_dataset.as_matrix())),
+                    model(_as_tensor(scaler.transform_dataset(validation_dataset))),
                     _as_tensor(validation_dataset.labels),
                 )
             validation_losses.append(
@@ -121,6 +126,7 @@ def train_mlp_ranker(
         feature_names=train_dataset.feature_names,
         train_losses=tuple(train_losses),
         validation_losses=tuple(validation_losses),
+        scaler=scaler,
     )
 
 
@@ -149,7 +155,9 @@ def train_pairwise_mlp_ranker(
         hidden_dims=hidden_dims,
         dropout=dropout,
     )
-    inputs = _as_tensor(train_dataset.as_matrix())
+    scaler = FeatureStandardizer.fit(train_dataset)
+    model.feature_scaler = scaler
+    inputs = _as_tensor(scaler.transform_dataset(train_dataset))
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
@@ -176,7 +184,7 @@ def train_pairwise_mlp_ranker(
                 model.eval()
                 with torch.no_grad():
                     validation_inputs = _as_tensor(
-                        validation_dataset.as_matrix()
+                        scaler.transform_dataset(validation_dataset)
                     )
                     validation_loss = torch.nn.functional.softplus(
                         -(
@@ -201,6 +209,7 @@ def train_pairwise_mlp_ranker(
         feature_names=train_dataset.feature_names,
         train_losses=tuple(train_losses),
         validation_losses=tuple(validation_losses),
+        scaler=scaler,
     )
 
 
@@ -213,8 +222,14 @@ def predict_scores(
     if dataset.examples and not dataset.feature_names:
         raise ValueError("Dataset must have features")
     model.eval()
+    scaler = model.feature_scaler
     with torch.no_grad():
-        scores = model(_as_tensor(dataset.as_matrix()))
+        inputs = (
+            scaler.transform_dataset(dataset)
+            if scaler is not None
+            else dataset.as_matrix()
+        )
+        scores = model(_as_tensor(inputs))
     return tuple(float(value) for value in scores.cpu().tolist())
 
 
@@ -226,7 +241,11 @@ def score_feature_snapshot(
     """Score one candidate using the model's frozen feature order."""
 
     values = dict(feature_snapshot)
-    vector = tuple(values.get(name, 0.0) for name in feature_names)
+    scaler = getattr(model, "feature_scaler", None)
+    if scaler is not None:
+        vector = scaler.transform_snapshot(feature_snapshot)
+    else:
+        vector = tuple(values.get(name, 0.0) for name in feature_names)
     model.eval()
     with torch.no_grad():
         score = model(_as_tensor((vector,)))[0]

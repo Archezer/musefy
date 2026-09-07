@@ -75,3 +75,50 @@ def test_genre_context_and_recommender_select_matching_tracks() -> None:
             limit=10,
         )
     ] == ["phonk"]
+
+
+def test_genre_skip_is_scoped_to_the_active_genre() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="User"))
+    store.add_track(
+        Track(
+            id="shared",
+            title="Shared",
+            artist="A",
+            genres=("ambient", "phonk"),
+        )
+    )
+    store.add_track(
+        Track(id="other-phonk", title="Other Phonk", artist="B", genres=("phonk",))
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="shared",
+            interaction_type=InteractionType.SKIP,
+            mood_context="genre:phonk",
+        )
+    )
+
+    recommender = MostPopularRecommender(
+        store,
+        replay_cooldown=0,
+        exploration_pool_size=1,
+    )
+
+    assert [
+        item.track.id
+        for item in recommender.recommend_genre(
+            "user-1",
+            "phonk",
+            limit=10,
+        )
+    ] == ["other-phonk"]
+    assert [
+        item.track.id
+        for item in recommender.recommend_genre(
+            "user-1",
+            "ambient",
+            limit=10,
+        )
+    ] == ["shared"]

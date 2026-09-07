@@ -54,6 +54,7 @@ CHORD_SAMPLE_RATE = 22_050
 MERT_WINDOW_SECONDS = 30
 CHORD_INSTANCE_SECONDS = 10
 CHORD_TIMESTEP = 108
+GPU_INFERENCE_BATCH_SIZE = 2
 MUSIC2EMO_ANALYSIS_VERSION = "music2emo-v1"
 
 
@@ -138,6 +139,7 @@ class Music2EmoMoodAnalyzer:
         device: str | None = None,
         idle_timeout_seconds: float = 300.0,
         top_tag_count: int = 16,
+        gpu_optimized: bool = False,
     ) -> None:
         if idle_timeout_seconds <= 0:
             raise ValueError("idle_timeout_seconds must be positive.")
@@ -147,6 +149,7 @@ class Music2EmoMoodAnalyzer:
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
+        self.gpu_optimized = bool(gpu_optimized)
         self.idle_timeout_seconds = idle_timeout_seconds
         self.top_tag_count = top_tag_count
         self._processor: Wav2Vec2FeatureExtractor | None = None
@@ -158,6 +161,11 @@ class Music2EmoMoodAnalyzer:
         self._tags: np.ndarray | None = None
         self._last_used_at: float | None = None
         self._model_lock = RLock()
+
+    def set_gpu_optimized(self, enabled: bool) -> None:
+        """Toggle batched neural inference for subsequent tracks."""
+
+        self.gpu_optimized = bool(enabled)
 
     @property
     def is_loaded(self) -> bool:
@@ -306,6 +314,12 @@ class Music2EmoMoodAnalyzer:
                 MERT_SAMPLE_RATE,
             )
 
+        if self.gpu_optimized and self.device.type == "cuda":
+            return self._extract_mert_embedding_batched(
+                waveform,
+                is_cancelled=is_cancelled,
+            )
+
         window_size = MERT_SAMPLE_RATE * MERT_WINDOW_SECONDS
         embeddings = []
         with torch.inference_mode():
@@ -325,6 +339,70 @@ class Music2EmoMoodAnalyzer:
                 inputs = {
                     name: value.to(self.device)
                     for name, value in inputs.items()
+                }
+                outputs = self._mert(
+                    **inputs,
+                    output_hidden_states=True,
+                )
+                hidden_states = torch.stack(outputs.hidden_states)[1:]
+                embeddings.append(
+                    torch.cat(
+                        (
+                            hidden_states[5].mean(dim=1),
+                            hidden_states[6].mean(dim=1),
+                        ),
+                        dim=1,
+                    )
+                )
+
+        return torch.cat(embeddings, dim=0).mean(dim=0, keepdim=True)
+
+    def _extract_mert_embedding_batched(
+        self,
+        waveform: torch.Tensor,
+        *,
+        is_cancelled: CancellationCheck | None = None,
+    ) -> torch.Tensor:
+        """Run several MERT windows per GPU call instead of one at a time."""
+
+        assert self._processor is not None
+        assert self._mert is not None
+
+        window_size = MERT_SAMPLE_RATE * MERT_WINDOW_SECONDS
+        processed_windows: list[dict[str, torch.Tensor]] = []
+        for start in range(0, waveform.shape[0], window_size):
+            raise_if_cancelled(is_cancelled)
+            window = waveform[start : start + window_size]
+            if window.shape[0] < window_size:
+                window = torch.nn.functional.pad(
+                    window,
+                    (0, window_size - window.shape[0]),
+                )
+            processed_windows.append(
+                self._processor(
+                    window.numpy(),
+                    sampling_rate=MERT_SAMPLE_RATE,
+                    return_tensors="pt",
+                )
+            )
+
+        embeddings = []
+        with torch.inference_mode():
+            for start in range(
+                0,
+                len(processed_windows),
+                GPU_INFERENCE_BATCH_SIZE,
+            ):
+                raise_if_cancelled(is_cancelled)
+                window_batch = processed_windows[
+                    start : start + GPU_INFERENCE_BATCH_SIZE
+                ]
+                inputs = {
+                    name: torch.cat(
+                        [item[name] for item in window_batch],
+                        dim=0,
+                    ).to(self.device)
+                    for name in window_batch[0]
                 }
                 outputs = self._mert(
                     **inputs,
@@ -369,16 +447,30 @@ class Music2EmoMoodAnalyzer:
 
         predictions = []
         with torch.inference_mode():
-            for start in range(0, features.shape[0], CHORD_TIMESTEP):
+            starts = range(0, features.shape[0], CHORD_TIMESTEP)
+            batch_size = (
+                GPU_INFERENCE_BATCH_SIZE
+                if self.gpu_optimized and self.device.type == "cuda"
+                else 1
+            )
+            starts = list(starts)
+            for batch_start in range(0, len(starts), batch_size):
                 raise_if_cancelled(is_cancelled)
-                batch = torch.from_numpy(
-                    features[start : start + CHORD_TIMESTEP]
-                ).float().unsqueeze(0).to(self.device)
+                chunk_starts = starts[batch_start : batch_start + batch_size]
+                feature_batch = np.stack(
+                    [
+                        features[start : start + CHORD_TIMESTEP]
+                        for start in chunk_starts
+                    ]
+                )
+                batch = torch.from_numpy(feature_batch).float().to(self.device)
                 hidden, _ = self._chord_model.self_attn_layers(batch)
                 logits = self._chord_model.output_layer(hidden)
-                predictions.append(logits.argmax(dim=-1)[0].cpu().numpy())
+                predictions.append(logits.argmax(dim=-1).cpu().numpy())
 
-        chord_indexes = np.concatenate(predictions)[: features.shape[0] - padding]
+        chord_indexes = np.concatenate(predictions, axis=0).reshape(-1)[
+            : features.shape[0] - padding
+        ]
         root_ids = []
         attr_ids = []
         for index in chord_indexes[:100]:

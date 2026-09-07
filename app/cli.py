@@ -10,6 +10,7 @@ from app.ingestion.audio import AudioIngestionService
 from app.ml.genre_analysis import GenreAnalysisService
 from app.ml.training_data import (
     build_ranker_dataset,
+    inspect_ranker_data,
     make_synthetic_ranker_dataset,
     split_ranker_dataset_by_time,
 )
@@ -195,6 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reaction attribution window (default: 1)",
     )
     real_ranker_command.add_argument(
+        "--minimum-examples",
+        type=int,
+        default=100,
+        help="Minimum labelled rows before training (default: 100)",
+    )
+    real_ranker_command.add_argument(
         "--epochs",
         type=int,
         default=30,
@@ -204,6 +211,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         help="Artifact path; defaults by backend",
+    )
+    readiness_command = commands.add_parser(
+        "ranker-status",
+        help="Show whether stored impressions are ready for training",
+    )
+    readiness_command.add_argument(
+        "--user-id",
+        help="Inspect one user; omit to use all users",
+    )
+    readiness_command.add_argument(
+        "--attribution-days",
+        type=int,
+        default=1,
+        help="Reaction attribution window (default: 1)",
+    )
+    readiness_command.add_argument(
+        "--minimum-examples",
+        type=int,
+        default=100,
+        help="Minimum labelled rows for ready status (default: 100)",
     )
 
     return parser
@@ -338,6 +365,21 @@ def train_ranker(arguments: argparse.Namespace) -> None:
 
     create_database()
     store = SQLAlchemyMusicStore(create_session)
+    readiness = inspect_ranker_data(
+        store,
+        user_id=arguments.user_id,
+        attribution_days=arguments.attribution_days,
+        minimum_examples=arguments.minimum_examples,
+    )
+    if not readiness.ready:
+        raise SystemExit(
+            "Ranker data is not ready: "
+            f"{readiness.labelled_examples}/"
+            f"{readiness.minimum_examples} labelled examples, "
+            f"positive={readiness.positive_examples}, "
+            f"negative={readiness.negative_examples}. "
+            "Run ranker-status or collect more explicit reactions."
+        )
     dataset = build_ranker_dataset(
         store,
         user_id=arguments.user_id,
@@ -387,6 +429,29 @@ def train_ranker(arguments: argparse.Namespace) -> None:
     )
     print(f"Features: {', '.join(dataset.feature_names)}")
     print(f"Artifact: {output}")
+
+
+def show_ranker_status(arguments: argparse.Namespace) -> None:
+    """Print ranker data readiness without training or writing an artifact."""
+
+    create_database()
+    store = SQLAlchemyMusicStore(create_session)
+    readiness = inspect_ranker_data(
+        store,
+        user_id=arguments.user_id,
+        attribution_days=arguments.attribution_days,
+        minimum_examples=arguments.minimum_examples,
+    )
+
+    print(f"Ranker data status: {readiness.status}")
+    print(f"Impressions: {readiness.total_impressions}")
+    print(f"With feature snapshots: {readiness.snapshot_impressions}")
+    print(f"Labelled examples: {readiness.labelled_examples}")
+    print(f"Positive examples: {readiness.positive_examples}")
+    print(f"Negative examples: {readiness.negative_examples}")
+    print(f"Users represented: {readiness.user_count}")
+    print(f"Minimum examples: {readiness.minimum_examples}")
+    print(f"Features: {', '.join(readiness.feature_names) or 'none'}")
 
 
 def record_interaction(
@@ -688,6 +753,8 @@ def main() -> None:
         train_synthetic_ranker(arguments)
     elif arguments.command == "train-ranker":
         train_ranker(arguments)
+    elif arguments.command == "ranker-status":
+        show_ranker_status(arguments)
 
 
 if __name__ == "__main__":

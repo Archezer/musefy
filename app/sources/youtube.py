@@ -492,7 +492,6 @@ class YouTubeSearchProvider:
 
         return downloaded_path
 
-
 def _find_ffmpeg() -> str | None:
     """Locate FFmpeg, including the Windows WinGet installation used by Musefy."""
 

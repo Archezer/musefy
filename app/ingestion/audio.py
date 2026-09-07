@@ -35,6 +35,28 @@ class AudioIngestionService:
     def __init__(self, store: MusicStore) -> None:
         self.store = store
 
+    def ensure_cover(
+        self,
+        track: Track,
+        *,
+        cover_url: str | None,
+    ) -> Track:
+        """Persist a remote cover for an existing track when it is missing."""
+
+        if (
+            track.cover_path
+            and Path(track.cover_path).is_file()
+        ) or not cover_url:
+            return track
+
+        cover_path = save_remote_artwork(cover_url, track.id)
+        if cover_path is None:
+            return track
+
+        updated_track = replace(track, cover_path=cover_path)
+        self.store.update_track(updated_track)
+        return updated_track
+
     def ingest(
         self,
         file_path: Path,

@@ -4,19 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRect, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QByteArray,
+    QEvent,
+    QModelIndex,
+    QRect,
+    QSize,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QFont,
-    QLinearGradient,
     QPainter,
-    QPainterPath,
     QPixmap,
 )
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QTableView
 
 from app.domain.models import Track
-from app.ui.components import track_cover_pixmap
+from app.ui.components import PLAY_ICON, track_cover_pixmap
 
 HEADERS = ("#", "", "Title", "Genres", "Added", "Duration", "", "Analysis", "")
 
@@ -77,6 +85,12 @@ class _TrackModel(QAbstractTableModel):
 
 
 class _TrackDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # Reuse the exact play artwork used by queue rows instead of a text
+        # glyph, whose shape and baseline vary between installed fonts.
+        self._play_renderer = QSvgRenderer(QByteArray(PLAY_ICON.encode("utf-8")))
+
     def paint(
         self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
     ) -> None:
@@ -101,38 +115,27 @@ class _TrackDelegate(QStyledItemDelegate):
         column = index.column()
         if column == 0:
             if hovered or selected:
-                diameter = max(1, min(rect.width() - 16, rect.height() - 16))
+                diameter = min(32, rect.width() - 8, rect.height() - 8)
+                button_center_x = rect.center().x() + 1
+                button_center_y = rect.center().y() + 1
                 button_rect = QRect(
-                    rect.center().x() - diameter // 2,
-                    rect.center().y() - diameter // 2,
+                    button_center_x - diameter // 2,
+                    button_center_y - diameter // 2,
                     diameter,
                     diameter,
                 )
-                painter.setPen(Qt.PenStyle.NoPen)
-                gradient = QLinearGradient(
-                    button_rect.topLeft(),
-                    button_rect.bottomRight(),
+                if hovered and view.hovered_column == 0:
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(112, 224, 190, 25))
+                    painter.drawEllipse(button_rect.adjusted(2, 2, -2, -2))
+                icon_size = min(18, button_rect.width(), button_rect.height())
+                icon_rect = QRect(
+                    button_center_x - icon_size // 2,
+                    button_center_y - icon_size // 2,
+                    icon_size,
+                    icon_size,
                 )
-                gradient.setColorAt(0.0, QColor("#8AE8C8"))
-                gradient.setColorAt(0.52, QColor("#5DD8B7"))
-                gradient.setColorAt(1.0, QColor("#3EAA95"))
-                painter.setBrush(gradient)
-                painter.drawEllipse(button_rect)
-                painter.setPen(QColor("#08211C"))
-                play_path = QPainterPath()
-                play_center = button_rect.center()
-                play_path.moveTo(
-                    play_center.x() - 3,
-                    play_center.y() - 5,
-                )
-                play_path.lineTo(play_center.x() + 5, play_center.y())
-                play_path.lineTo(
-                    play_center.x() - 3,
-                    play_center.y() + 5,
-                )
-                play_path.closeSubpath()
-                painter.setBrush(QColor("#08211C"))
-                painter.drawPath(play_path)
+                self._play_renderer.render(painter, icon_rect)
             else:
                 painter.drawText(
                     rect,
@@ -154,8 +157,12 @@ class _TrackDelegate(QStyledItemDelegate):
                 )
         elif column == 2:
             left = rect.left() + 8
-            title_font = QFont(painter.font())
-            title_font.setBold(True)
+            base_font = painter.font()
+            title_font = painter.font()
+            # Queue labels use a 13px stylesheet size.  QFont point sizes are
+            # larger on screen, so use pixels here to keep the two views aligned.
+            title_font.setPixelSize(13)
+            title_font.setWeight(QFont.Weight.DemiBold)
             painter.setFont(title_font)
             title_rect = rect.adjusted(left - rect.left(), 10, -8, -30)
             painter.drawText(
@@ -165,7 +172,7 @@ class _TrackDelegate(QStyledItemDelegate):
                     track.title, Qt.TextElideMode.ElideRight, title_rect.width()
                 ),
             )
-            painter.setFont(QFont())
+            painter.setFont(base_font)
             painter.setPen(QColor("#96969E"))
             artist_rect = rect.adjusted(left - rect.left(), 31, -8, -8)
             painter.drawText(
@@ -253,6 +260,9 @@ class VirtualTrackTable(QTableView):
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
+        # The viewport is a child widget, so moving from a row to the header
+        # does not send leaveEvent() to the table itself.
+        self.viewport().installEventFilter(self)
 
     def set_tracks(
         self,
@@ -305,9 +315,12 @@ class VirtualTrackTable(QTableView):
 
     def refresh_row(self, row: int) -> None:
         if 0 <= row < self.rowCount():
-            # Hover/selection changes paint only.  dataChanged makes Qt
-            # reconsider the complete view layout on every mouse move.
-            self.viewport().update(self.visualRect(self._track_model.index(row, 0)))
+            # Repaint the complete row so every cell clears a stale hover
+            # background when the pointer moves to another widget.
+            row_rect = self.visualRect(self._track_model.index(row, 0))
+            row_rect.setLeft(0)
+            row_rect.setRight(self.viewport().width())
+            self.viewport().update(row_rect)
 
     def update_row(self, row_index: int, track: Track) -> None:
         self._cover_pixmaps.pop(track.id, None)
@@ -318,6 +331,14 @@ class VirtualTrackTable(QTableView):
         index = self.indexAt(event.position().toPoint())
         row = index.row() if index.isValid() else -1
         column = index.column() if index.isValid() else -1
+        interactive = index.isValid() and (
+            column in {0, 8} or (column == 1 and self.add_mode)
+        )
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if interactive
+            else Qt.CursorShape.ArrowCursor
+        )
         if (row, column) != (self.hovered_row, self.hovered_column):
             previous = self.hovered_row
             self.hovered_row = row
@@ -329,14 +350,25 @@ class VirtualTrackTable(QTableView):
                     self.refresh_row(changed_row)
         super().mouseMoveEvent(event)
 
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.viewport() and event.type() == QEvent.Type.Leave:
+            self._clear_hover()
+        return super().eventFilter(watched, event)
+
     def leaveEvent(self, event) -> None:
-        if self.hovered_row >= 0:
-            previous = self.hovered_row
-            self.hovered_row = -1
-            self.hovered_column = -1
-            self.row_hovered.emit(-1)
-            self.refresh_row(previous)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        self._clear_hover()
         super().leaveEvent(event)
+
+    def _clear_hover(self) -> None:
+        if self.hovered_row < 0:
+            self.hovered_column = -1
+            return
+        previous = self.hovered_row
+        self.hovered_row = -1
+        self.hovered_column = -1
+        self.row_hovered.emit(-1)
+        self.refresh_row(previous)
 
     def mousePressEvent(self, event) -> None:
         index = self.indexAt(event.position().toPoint())

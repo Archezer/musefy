@@ -13,6 +13,7 @@ from app.domain.recommendations import RecommendationContext
 from app.recommenders.feedback import (
     aggregate_playback_weights,
     latest_user_preference_states,
+    suppressed_track_ids,
 )
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import (
@@ -247,6 +248,40 @@ def test_mood_skip_is_scoped_to_the_same_mood():
         "happy-track"
     ]
     assert other_mood[0].track.id == "dark-track"
+
+
+def test_temporary_feedback_is_scoped_to_its_context():
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    interactions = [
+        Interaction(
+            user_id="user-1",
+            track_id="library-track",
+            interaction_type=InteractionType.SKIP,
+            created_at=now,
+        ),
+        Interaction(
+            user_id="user-1",
+            track_id="playlist-track",
+            interaction_type=InteractionType.SKIP,
+            mood_context="playlist:playlist-1",
+            created_at=now,
+        ),
+    ]
+
+    _, library_skipped = suppressed_track_ids(
+        "user-1",
+        interactions,
+        now=now,
+    )
+    _, playlist_skipped = suppressed_track_ids(
+        "user-1",
+        interactions,
+        now=now,
+        context="playlist:playlist-1",
+    )
+
+    assert library_skipped == {"library-track"}
+    assert playlist_skipped == {"playlist-track"}
 
 
 def test_replay_cooldown_excludes_recently_played_track():

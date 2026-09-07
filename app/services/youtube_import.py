@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from app.domain.models import Track
 from app.ingestion.audio import AudioIngestionService
 from app.services.parallel_playlist import (
-    DEFAULT_PLAYLIST_IMPORT_WORKERS,
+    DEFAULT_DOWNLOAD_WORKERS,
     parallel_playlist_import,
 )
 from app.services.playlist_exports import read_playlist_export
@@ -25,7 +25,7 @@ from app.sources.youtube import (
     extract_youtube_video_id,
 )
 
-DEFAULT_SEARCH_WORKERS = 6
+DEFAULT_SEARCH_WORKERS = 12
 # Video uploads often contain a short intro/outro, so allow a modest but
 # bounded difference while rejecting an obviously wrong long-form result.
 YOUTUBE_DURATION_TOLERANCE_MS = 12_000
@@ -91,9 +91,12 @@ class YouTubeImportService:
         spotify_provider: SpotifyMetadataProvider | None = None,
         *,
         search_workers: int = DEFAULT_SEARCH_WORKERS,
+        download_workers: int = DEFAULT_DOWNLOAD_WORKERS,
     ) -> None:
         if not 1 <= search_workers <= 16:
             raise ValueError("search_workers must be between 1 and 16")
+        if not 1 <= download_workers <= 16:
+            raise ValueError("download_workers must be between 1 and 16")
 
         self.ingestion_service = ingestion_service
         self.provider = provider or YouTubeSearchProvider()
@@ -101,6 +104,7 @@ class YouTubeImportService:
             spotify_provider or SpotifyMetadataProvider()
         )
         self.search_workers = search_workers
+        self.download_workers = download_workers
 
     def search(
         self,
@@ -556,6 +560,7 @@ class YouTubeImportService:
         existing_track = self._find_existing_youtube_track(
             candidate.video_id
         )
+        cover_url = candidate.cover_url
 
         with TemporaryDirectory(
             prefix="music-recommendation-youtube-"
@@ -567,7 +572,10 @@ class YouTubeImportService:
                 and existing_track.local_path
                 and Path(existing_track.local_path).is_file()
             ):
-                return existing_track
+                return self.ingestion_service.ensure_cover(
+                    existing_track,
+                    cover_url=cover_url,
+                )
 
             downloaded_path = self.provider.download(
                 candidate,
@@ -580,8 +588,8 @@ class YouTubeImportService:
                 or candidate.channel_title
             )
             cover_kwargs = (
-                {"cover_url": candidate.cover_url}
-                if candidate.cover_url
+                {"cover_url": cover_url}
+                if cover_url
                 else {}
             )
 
@@ -678,10 +686,7 @@ class YouTubeImportService:
                 source=source,
                 preserve_added_dates=preserve_added_dates,
             ),
-            max_workers=min(
-                self.search_workers,
-                DEFAULT_PLAYLIST_IMPORT_WORKERS,
-            ),
+            max_workers=self.download_workers,
             on_progress=on_progress,
             on_track_imported=on_track_imported,
         )

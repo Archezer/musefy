@@ -83,6 +83,7 @@ def test_playlist_extracts_video_candidates(monkeypatch) -> None:
 class FakeIngestionService:
     def __init__(self) -> None:
         self.store = InMemoryMusicStore()
+        self.cover_urls: list[str | None] = []
 
     def ingest(
         self,
@@ -95,7 +96,9 @@ class FakeIngestionService:
         source_id: str,
         source_url: str,
         created_at: datetime | None = None,
+        cover_url: str | None = None,
     ) -> Track:
+        self.cover_urls.append(cover_url)
         if title == "Broken track":
             raise ValueError("duplicate track")
 
@@ -110,6 +113,15 @@ class FakeIngestionService:
             local_path=str(source_path),
         )
 
+    def ensure_cover(
+        self,
+        track: Track,
+        *,
+        cover_url: str | None,
+    ) -> Track:
+        self.cover_urls.append(cover_url)
+        return track
+
     def restore_missing_track(
         self,
         existing_track: Track,
@@ -121,6 +133,7 @@ class FakeIngestionService:
         source_id: str,
         source_url: str,
         created_at: datetime | None = None,
+        cover_url: str | None = None,
     ) -> Track:
         return Track(
             id=existing_track.id,
@@ -456,6 +469,7 @@ def test_playlist_downloads_in_parallel_but_keeps_playlist_order() -> None:
         FakeIngestionService(),
         SlowDownloadProvider(),
         search_workers=3,
+        download_workers=3,
     )
 
     progress: list[tuple[int, int]] = []

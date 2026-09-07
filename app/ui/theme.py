@@ -307,6 +307,12 @@ QPushButton#spotifySyncAllButton:hover {
     background-color: rgba(112, 224, 190, 32);
     border-color: #B5FBE0;
 }
+QPushButton#spotifySyncLastButton:disabled,
+QPushButton#spotifySyncLastButton:disabled:hover {
+    background-color: rgba(255, 255, 255, 5);
+    border-color: rgba(255, 255, 255, 14);
+    color: #74747B;
+}
 QLabel#appTitle {
     font-size: 18px;
     font-weight: 650;
@@ -569,8 +575,15 @@ QTableView#libraryTable {
     background: transparent;
     border: none;
     border-radius: 0;
-    selection-background-color: #303334;
+    selection-background-color: transparent;
     selection-color: #F2F4F3;
+    outline: none;
+}
+QTableView#libraryTable::item:selected,
+QTableView#libraryTable::item:focus {
+    background-color: transparent;
+    border: none;
+    outline: none;
 }
 QListWidget#queueList {
     background: transparent;

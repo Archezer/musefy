@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from sklearn.linear_model import LogisticRegression
 
+from app.ml.preprocessing import FeatureStandardizer
 from app.ml.training_data import RankerDataset
 
 
@@ -13,9 +14,15 @@ from app.ml.training_data import RankerDataset
 class LogisticRanker:
     model: LogisticRegression
     feature_names: tuple[str, ...]
+    scaler: FeatureStandardizer | None = None
 
     def predict_scores(self, dataset: RankerDataset) -> tuple[float, ...]:
-        probabilities = self.model.predict_proba(dataset.as_matrix())[:, 1]
+        inputs = (
+            self.scaler.transform_dataset(dataset)
+            if self.scaler is not None
+            else dataset.as_matrix()
+        )
+        probabilities = self.model.predict_proba(inputs)[:, 1]
         return tuple(float(value) for value in probabilities)
 
     def score_feature_snapshot(
@@ -23,7 +30,11 @@ class LogisticRanker:
         feature_snapshot: tuple[tuple[str, float], ...],
     ) -> float:
         values = dict(feature_snapshot)
-        vector = tuple(values.get(name, 0.0) for name in self.feature_names)
+        vector = (
+            self.scaler.transform_snapshot(feature_snapshot)
+            if self.scaler is not None
+            else tuple(values.get(name, 0.0) for name in self.feature_names)
+        )
         return float(self.model.predict_proba((vector,))[0, 1])
 
 
@@ -49,8 +60,10 @@ def train_logistic_ranker(
         max_iter=500,
         random_state=seed,
     )
-    model.fit(dataset.as_matrix(), dataset.labels)
+    scaler = FeatureStandardizer.fit(dataset)
+    model.fit(scaler.transform_dataset(dataset), dataset.labels)
     return LogisticRanker(
         model=model,
         feature_names=dataset.feature_names,
+        scaler=scaler,
     )

@@ -51,12 +51,12 @@ class MapBuildResult:
     points: np.ndarray
 
 
-# A track is connected only to genuinely similar tracks.  The cap prevents a
-# dense genre cluster from turning into a hairball, while the threshold keeps
-# sparse tracks from receiving artificial low-quality connections.
+# A track is connected only to genuinely similar tracks.  The larger local
+# neighborhood keeps the web visible, while the threshold removes accidental
+# long-range links between unrelated parts of the library.
 MAP_MAX_NEIGHBOR_COUNT = 15
 MAP_SIMILARITY_THRESHOLD = 0.62
-MAP_EDGE_STRATEGY_VERSION = 2
+MAP_EDGE_STRATEGY_VERSION = 7
 
 
 class MusicMapWidget(QWidget):
@@ -98,7 +98,7 @@ class MusicMapWidget(QWidget):
         embedded_tracks = [
             track
             for track in tracks
-            if track.track_embedding is not None
+            if track.track_embedding
         ]
         return MusicMapWidget._signature_for_tracks(embedded_tracks)
 
@@ -107,7 +107,7 @@ class MusicMapWidget(QWidget):
         embedded_tracks = [
             track
             for track in tracks
-            if track.track_embedding is not None
+            if track.track_embedding
         ]
         signature = cls._signature_for_tracks(embedded_tracks)
 
@@ -134,11 +134,7 @@ class MusicMapWidget(QWidget):
             for index, track in enumerate(embedded_tracks)
         )
         edges = cls._build_edges(embeddings)
-        points = cls._force_layout(
-            cls._project_embeddings(embeddings),
-            edges,
-            communities,
-        )
+        points = cls._project_embeddings(embeddings)
         return MapBuildResult(
             signature=signature,
             nodes=nodes,
@@ -502,8 +498,8 @@ class MusicMapWidget(QWidget):
 
     def _radii(self) -> tuple[float, float]:
         return (
-            max(40.0, self.width() * 0.45),
-            max(34.0, self.height() * 0.43),
+            max(40.0, self.width() * 0.52),
+            max(34.0, self.height() * 0.50),
         )
 
     def _reset_view(self) -> None:
@@ -518,19 +514,80 @@ class MusicMapWidget(QWidget):
 
     @staticmethod
     def _project_embeddings(embeddings: np.ndarray) -> np.ndarray:
+        """Project tracks while preserving local similarity neighborhoods.
+
+        PCA is useful as a deterministic fallback, but it mostly preserves the
+        broadest global axes.  That is what made the old map stretch into a
+        rectangular shell.  t-SNE works from cosine distance instead, so
+        tracks with similar embeddings naturally settle into local groups.
+        """
+
+        if not len(embeddings):
+            return np.empty((0, 2), dtype=np.float32)
+
         centered = embeddings - embeddings.mean(axis=0, keepdims=True)
-        _, _, components = np.linalg.svd(centered, full_matrices=False)
-        projected = centered @ components[:2].T
-        scale = np.maximum(np.abs(projected).max(axis=0), 1e-6)
-        return (projected / scale * 0.48).astype(np.float32)
+
+        def pca_projection() -> np.ndarray:
+            _, _, components = np.linalg.svd(centered, full_matrices=False)
+            result = centered @ components[:2].T
+            if result.shape[1] == 1:
+                result = np.column_stack((result[:, 0], np.zeros(len(result))))
+            return result
+
+        projected: np.ndarray
+        if len(embeddings) < 8:
+            projected = pca_projection()
+        else:
+            try:
+                from sklearn.manifold import TSNE
+
+                perplexity = min(
+                    30.0,
+                    max(5.0, (len(embeddings) - 1) / 3.0),
+                )
+                projected = TSNE(
+                    n_components=2,
+                    metric="cosine",
+                    perplexity=perplexity,
+                    init="pca",
+                    learning_rate="auto",
+                    max_iter=500,
+                    random_state=17,
+                ).fit_transform(embeddings)
+            except (ImportError, ValueError):
+                # Keep map generation usable in a minimal installation and
+                # for unusual embedding arrays that t-SNE cannot accept.
+                projected = pca_projection()
+
+        projected = np.asarray(projected, dtype=np.float32)
+        projected -= projected.mean(axis=0, keepdims=True)
+        radius_scale = max(
+            float(np.percentile(np.linalg.norm(projected, axis=1), 98)),
+            1e-6,
+        )
+        # Use one radial scale for both axes.  Independent axis scaling is
+        # what previously forced the map into a box and destroyed density.
+        return np.clip(
+            projected / radius_scale * 0.72,
+            -0.82,
+            0.82,
+        ).astype(np.float32)
 
     @staticmethod
     def _assign_communities(embeddings: np.ndarray) -> np.ndarray:
+        """Assign colors from the embedding structure, not fixed genre bins."""
+
         normalized = embeddings / np.maximum(
             np.linalg.norm(embeddings, axis=1, keepdims=True),
             1e-6,
         )
-        cluster_count = min(10, max(3, round(np.sqrt(len(normalized)) / 1.5)))
+        cluster_count = min(
+            len(normalized),
+            max(3, round(np.sqrt(len(normalized)) / 1.5)),
+        )
+        if cluster_count <= 1:
+            return np.zeros(len(normalized), dtype=np.int16)
+
         center_indexes = [0]
         closest_similarity = normalized @ normalized[0]
         for _ in range(1, cluster_count):
@@ -555,52 +612,6 @@ class MusicMapWidget(QWidget):
                     1e-6,
                 )
         return labels
-
-    @staticmethod
-    def _force_layout(
-        points: np.ndarray,
-        edges: tuple[_MapEdge, ...],
-        communities: np.ndarray,
-    ) -> np.ndarray:
-        """Force-direct the similarity graph into readable local communities."""
-
-        result = points.copy()
-        indexes = np.arange(len(result), dtype=np.float32)
-        result += np.column_stack(
-            (np.cos(indexes * 2.41), np.sin(indexes * 1.73))
-        ) * 0.015
-
-        for iteration in range(150):
-            deltas = result[:, np.newaxis, :] - result[np.newaxis, :, :]
-            squared_distance = np.sum(deltas * deltas, axis=2, keepdims=True)
-            repulsion = (
-                deltas / np.maximum(squared_distance, 0.016)
-            ).sum(axis=1) * 0.0026
-            movement = repulsion
-
-            for edge in edges:
-                delta = result[edge.right_index] - result[edge.left_index]
-                distance = max(float(np.linalg.norm(delta)), 1e-4)
-                ideal_distance = 0.17 + (1.0 - edge.strength) * 0.25
-                pull = delta * (distance - ideal_distance) * edge.strength * 0.095
-                movement[edge.left_index] += pull
-                movement[edge.right_index] -= pull
-
-            for community in np.unique(communities):
-                member_indexes = np.flatnonzero(communities == community)
-                if len(member_indexes) < 2:
-                    continue
-                center = result[member_indexes].mean(axis=0)
-                movement[member_indexes] += (
-                    center - result[member_indexes]
-                ) * 0.0038
-
-            cooling = 1.0 - iteration / 185
-            result += np.clip(movement, -0.032, 0.032) * cooling
-
-        result -= result.mean(axis=0, keepdims=True)
-        scale = np.maximum(np.abs(result).max(axis=0), 1e-6)
-        return np.clip(result / scale * 0.94, -1.1, 1.1).astype(np.float32)
 
     @staticmethod
     def _build_edges(embeddings: np.ndarray) -> tuple[_MapEdge, ...]:

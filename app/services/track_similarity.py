@@ -13,6 +13,11 @@ from app.recommenders.similarity import (
 )
 from app.storage.protocols import MusicStore
 
+RADIO_BASE_POOL_EXTRA = 6
+RADIO_MAX_CANDIDATE_POOL = 20
+RADIO_MIN_CONFIDENT_SIMILARITY = 0.55
+RADIO_MAX_CONFIDENCE_DROP = 0.12
+
 
 class TrackSimilarityService:
     def __init__(
@@ -116,13 +121,14 @@ class TrackSimilarityService:
                 user_id,
                 list(self.store.list_interactions(user_id=user_id)),
                 now=datetime.now(UTC),
+                context=f"track_radio:{track_id.casefold()}",
             )
             excluded_ids.update(permanent | temporary)
 
         # Keep the candidate pool close to the seed in embedding space, then
         # apply a tiny jitter so repeated radio starts do not feel identical.
-        # The pool is deliberately kept only a few tracks wider than the
-        # requested result size to avoid drifting into merely related tracks.
+        # A confident seed can use up to 20 candidates; weak neighborhoods
+        # stay compact instead of padding the radio with unrelated tracks.
         # Radio only needs one seed-to-library search.  Building the complete
         # all-pairs index here made the first radio start quadratic in the
         # library size and blocked the first visible batch for too long.
@@ -144,7 +150,7 @@ class TrackSimilarityService:
             for neighbor in neighbors
             if neighbor.track_id not in excluded_ids
         ]
-        candidate_pool = neighbors[: limit + 6]
+        candidate_pool = self._select_candidate_pool(neighbors, limit)
         candidate_pool.sort(
             key=lambda neighbor: (
                 neighbor.score + self.random.uniform(-0.02, 0.02)
@@ -172,6 +178,38 @@ class TrackSimilarityService:
         return recommendations
 
     @staticmethod
+    def _select_candidate_pool(
+        neighbors: Sequence[SimilarTrack],
+        limit: int,
+    ) -> list[SimilarTrack]:
+        """Expand the shuffle pool only while similarity remains trustworthy."""
+
+        base_size = min(
+            len(neighbors),
+            limit + RADIO_BASE_POOL_EXTRA,
+        )
+        if base_size == len(neighbors):
+            return list(neighbors)
+
+        best_score = neighbors[0].score
+        if best_score < RADIO_MIN_CONFIDENT_SIMILARITY:
+            return list(neighbors[:base_size])
+
+        confidence_floor = max(
+            RADIO_MIN_CONFIDENT_SIMILARITY,
+            best_score - RADIO_MAX_CONFIDENCE_DROP,
+        )
+        confident_count = sum(
+            neighbor.score >= confidence_floor
+            for neighbor in neighbors[:RADIO_MAX_CANDIDATE_POOL]
+        )
+        pool_size = max(
+            base_size,
+            min(RADIO_MAX_CANDIDATE_POOL, confident_count),
+        )
+        return list(neighbors[:pool_size])
+
+    @staticmethod
     def _neighbors_for_seed(
         seed_embedding: tuple[float, ...],
         tracks: Sequence[Track],
@@ -183,9 +221,12 @@ class TrackSimilarityService:
         compatible_tracks: list[Track] = []
         compatible_indexes: list[int] = []
         for index, track in enumerate(tracks):
-            if index % 64 == 0 and should_cancel is not None:
-                if should_cancel():
-                    raise RuntimeError("Recommendation calculation cancelled")
+            if (
+                index % 64 == 0
+                and should_cancel is not None
+                and should_cancel()
+            ):
+                raise RuntimeError("Recommendation calculation cancelled")
 
             if (
                 track.id in excluded_ids

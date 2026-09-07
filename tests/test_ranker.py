@@ -119,11 +119,27 @@ def test_cli_exposes_synthetic_ranker_pipeline() -> None:
 
 def test_cli_exposes_real_ranker_backends() -> None:
     arguments = build_parser().parse_args(
-        ["train-ranker", "--backend", "pairwise"]
+        [
+            "train-ranker",
+            "--backend",
+            "pairwise",
+            "--minimum-examples",
+            "12",
+        ]
     )
 
     assert arguments.command == "train-ranker"
     assert arguments.backend == "pairwise"
+    assert arguments.minimum_examples == 12
+
+
+def test_cli_exposes_ranker_status() -> None:
+    arguments = build_parser().parse_args(
+        ["ranker-status", "--minimum-examples", "12"]
+    )
+
+    assert arguments.command == "ranker-status"
+    assert arguments.minimum_examples == 12
 
 
 def test_logistic_artifact_round_trip_preserves_scores(tmp_path: Path) -> None:

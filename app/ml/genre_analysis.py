@@ -34,7 +34,8 @@ class GenreAnalysisService:
     def __init__(
         self,
         top_k: int = 10,
-        min_score: float = 0.1
+        min_score: float = 0.1,
+        gpu_optimized: bool = False,
     ) -> None:
         self.top_k = top_k
         self.min_score = min_score
@@ -47,7 +48,13 @@ class GenreAnalysisService:
         self._classifier_lock = RLock()
         self.mood_analyzer = Music2EmoMoodAnalyzer(
             idle_timeout_seconds=MODEL_IDLE_TIMEOUT_SECONDS,
+            gpu_optimized=gpu_optimized,
         )
+
+    def set_gpu_optimized(self, enabled: bool) -> None:
+        """Toggle batched GPU inference for subsequent tracks."""
+
+        self.mood_analyzer.set_gpu_optimized(enabled)
 
     @property
     def analysis_worker_count(self) -> int:
@@ -131,6 +138,21 @@ class GenreAnalysisService:
         classifier_unloaded = self._unload_classifier_if_idle()
         return mood_unloaded or classifier_unloaded
 
+    def unload(self) -> bool:
+        """Release all analysis models and free unused accelerator memory."""
+
+        with self._classifier_lock:
+            classifier = self.classifier
+            self.classifier = None
+            self._classifier_last_used_at = None
+            if classifier is not None:
+                classifier.unload()
+
+        mood_was_loaded = self.mood_analyzer.is_loaded
+        self.mood_analyzer.unload()
+        gc.collect()
+        return classifier is not None or mood_was_loaded
+
     def _ensure_classifier(self) -> MaestClassifier:
         with self._classifier_lock:
             if self.classifier is None:
@@ -153,8 +175,10 @@ class GenreAnalysisService:
             ):
                 return False
 
+            classifier = self.classifier
             self.classifier = None
             self._classifier_last_used_at = None
+            classifier.unload()
             gc.collect()
             return True
 

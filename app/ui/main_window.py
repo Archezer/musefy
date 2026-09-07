@@ -4,6 +4,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -79,6 +80,7 @@ from app.ingestion.audio import (
     AudioIngestionService,
 )
 from app.ingestion.metadata import read_audio_metadata
+from app.recommenders.feedback import suppressed_track_ids
 from app.recommenders.radio import build_radio_sequence
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
@@ -200,11 +202,13 @@ from app.ui.dialogs import (
     YouTubeSearchDialog,
 )
 from app.ui.music_map import MapBuildResult, MusicMapWidget
+from app.ui.playback_metrics import reached_completion_threshold
 from app.ui.theme import DARK_THEME
 from app.ui.virtual_track_table import VirtualTrackTable
 from app.ui.workers import (
     AlternativePlaylistSearchResult,
     GenreAnalysisTask,
+    LazyGenreAnalysisService,
     LibraryHealthTaskThread,
     MusicMapTask,
     RecommendationTask,
@@ -224,6 +228,8 @@ RADIO_RECOMMENDATION_BATCH_SIZE = 4
 TRACK_WIDGET_BUFFER_ROWS = 4
 TRACK_MATERIALIZE_INTERVAL_MS = 16
 TRACK_HOVER_INTERVAL_MS = 16
+PARALLEL_GENRE_ANALYSIS_WORKERS = 2
+GENRE_MODEL_RELEASE_RETRY_MS = 100
 QUEUE_RENDER_BATCH_SIZE = 12
 QUEUE_RENDER_INTERVAL_MS = 12
 QUEUE_VISIBLE_TRACK_LIMIT = 50
@@ -354,6 +360,7 @@ class MainWindow(QMainWindow):
         self._current_track_played_ms = 0
         self._current_track_last_position_ms: int | None = None
         self._current_track_early_exit_recorded = False
+        self._current_track_seeked_to_completion = False
         self._library_tracks: list[Track] = []
         self._track_scope_tracks: list[Track] = []
         self._visible_tracks: list[Track] = []
@@ -423,6 +430,7 @@ class MainWindow(QMainWindow):
         self._genre_batch_total = 0
         self._analysis_pending_track_ids: set[str] = set()
         self._genre_analysis_tasks: set[GenreAnalysisTask] = set()
+        self._genre_model_release_requested = False
         self._analysis_progress_dialog: AnalysisProgressDialog | None = None
         self._analysis_total = 0
         self._analysis_completed = 0
@@ -459,7 +467,25 @@ class MainWindow(QMainWindow):
                 type=bool,
             )
         )
-        self._genre_analysis_service = None
+        self._parallel_genre_analysis_enabled = bool(
+            self._playback_state_settings.value(
+                "performance/parallel_genre_analysis",
+                False,
+                type=bool,
+            )
+        )
+        self._gpu_optimized_genre_analysis_enabled = bool(
+            self._playback_state_settings.value(
+                "performance/gpu_optimized_genre_analysis",
+                False,
+                type=bool,
+            )
+        )
+        self._genre_analysis_service = LazyGenreAnalysisService(
+            lambda: self._create_genre_analysis_service(
+                gpu_optimized=self._gpu_optimized_genre_analysis_enabled,
+            ),
+        )
         self.library_health_service = LibraryHealthService(store)
         self.library_backup_service = LibraryBackupService(store)
         self.statistics_service = ListeningStatisticsService(store)
@@ -472,6 +498,13 @@ class MainWindow(QMainWindow):
         self._watch_folder_timer.timeout.connect(self._sync_watch_folder)
         self._watch_folder_timer.start()
         self._genre_analysis_pool = QThreadPool(self)
+        # Keep the safe single-worker mode as the default. Parallel analysis is
+        # an explicit opt-in because it can increase GPU/RAM pressure.
+        self._genre_analysis_pool.setMaxThreadCount(
+            PARALLEL_GENRE_ANALYSIS_WORKERS
+            if self._parallel_genre_analysis_enabled
+            else 1
+        )
         self._track_materialize_timer = QTimer(self)
         self._track_materialize_timer.setSingleShot(True)
         self._track_materialize_timer.setInterval(TRACK_MATERIALIZE_INTERVAL_MS)
@@ -501,6 +534,14 @@ class MainWindow(QMainWindow):
         self._model_idle_timer.setInterval(60_000)
         self._model_idle_timer.timeout.connect(self._unload_idle_models)
         self._model_idle_timer.start()
+        self._genre_model_release_timer = QTimer(self)
+        self._genre_model_release_timer.setSingleShot(True)
+        self._genre_model_release_timer.setInterval(
+            GENRE_MODEL_RELEASE_RETRY_MS
+        )
+        self._genre_model_release_timer.timeout.connect(
+            self._release_cancelled_genre_models
+        )
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(
@@ -968,6 +1009,32 @@ class MainWindow(QMainWindow):
         self.track_covers_action.setCheckable(True)
         self.track_covers_action.setChecked(self._show_track_covers)
         self.track_covers_action.toggled.connect(self._set_track_covers_enabled)
+        self.parallel_genre_analysis_action = playlist_menu.addAction(
+            "Parallel genre analysis"
+        )
+        self.parallel_genre_analysis_action.setCheckable(True)
+        self.parallel_genre_analysis_action.setChecked(
+            self._parallel_genre_analysis_enabled
+        )
+        self.parallel_genre_analysis_action.setToolTip(
+            "Use two background workers; this may increase GPU and RAM usage"
+        )
+        self.parallel_genre_analysis_action.toggled.connect(
+            self._set_parallel_genre_analysis_enabled
+        )
+        self.gpu_optimized_genre_analysis_action = playlist_menu.addAction(
+            "GPU-optimized genre analysis"
+        )
+        self.gpu_optimized_genre_analysis_action.setCheckable(True)
+        self.gpu_optimized_genre_analysis_action.setChecked(
+            self._gpu_optimized_genre_analysis_enabled
+        )
+        self.gpu_optimized_genre_analysis_action.setToolTip(
+            "Batch neural inference on the GPU; may increase VRAM usage"
+        )
+        self.gpu_optimized_genre_analysis_action.toggled.connect(
+            self._set_gpu_optimized_genre_analysis_enabled
+        )
         playlist_menu.addSeparator()
         playlist_menu.addAction(
             "Spotify settings",
@@ -2030,7 +2097,7 @@ class MainWindow(QMainWindow):
         header.resizeSection(6, 44)
         header.resizeSection(7, 44)
         header.resizeSection(8, 44)
-        header.resizeSection(0, 62)
+        header.resizeSection(0, 44)
         # Keep the custom row rendering while allowing the library columns to
         # be sorted through the existing _handle_library_sort implementation.
         header.setDefaultAlignment(
@@ -2064,6 +2131,7 @@ class MainWindow(QMainWindow):
         self.track_table.selectionModel().selectionChanged.connect(
             lambda _selected, _deselected: self._handle_track_selection()
         )
+        self.track_table.row_play_requested.connect(self._play_track_from_table_row)
         self.track_table.row_double_clicked.connect(self._play_track_from_table_row)
         self.track_table.row_clicked.connect(self._handle_track_row_clicked)
         self.track_table.row_check_requested.connect(self._handle_track_row_clicked)
@@ -2181,6 +2249,48 @@ class MainWindow(QMainWindow):
                 not self._show_track_covers and not self._add_tracks_mode,
             )
             self._render_visible_tracks(self.library_title_label.text())
+
+    def _set_parallel_genre_analysis_enabled(self, enabled: bool) -> None:
+        """Choose between safe sequential and faster parallel analysis."""
+
+        self._parallel_genre_analysis_enabled = bool(enabled)
+        self._playback_state_settings.setValue(
+            "performance/parallel_genre_analysis",
+            self._parallel_genre_analysis_enabled,
+        )
+        self._genre_analysis_pool.setMaxThreadCount(
+            PARALLEL_GENRE_ANALYSIS_WORKERS
+            if self._parallel_genre_analysis_enabled
+            else 1
+        )
+        if self._parallel_genre_analysis_enabled:
+            self.statusBar().showMessage(
+                "Parallel genre analysis enabled (2 workers; higher GPU/RAM usage)"
+            )
+        else:
+            self.statusBar().showMessage(
+                "Sequential genre analysis enabled (lower GPU/RAM usage)"
+            )
+
+    def _set_gpu_optimized_genre_analysis_enabled(self, enabled: bool) -> None:
+        """Toggle batched neural inference for subsequent track analyses."""
+
+        self._gpu_optimized_genre_analysis_enabled = bool(enabled)
+        self._playback_state_settings.setValue(
+            "performance/gpu_optimized_genre_analysis",
+            self._gpu_optimized_genre_analysis_enabled,
+        )
+        self._genre_analysis_service.set_gpu_optimized(
+            self._gpu_optimized_genre_analysis_enabled
+        )
+        if self._gpu_optimized_genre_analysis_enabled:
+            self.statusBar().showMessage(
+                "GPU-optimized genre analysis enabled (batched inference)"
+            )
+        else:
+            self.statusBar().showMessage(
+                "Standard genre analysis enabled"
+            )
 
     def _load_library(self, *, refresh_map: bool = True) -> None:
         tracks = list(self.store.list_tracks())
@@ -3361,6 +3471,7 @@ class MainWindow(QMainWindow):
         track_id: str,
         *,
         restart: bool = True,
+        preserve_manual_queue: bool = True,
     ) -> None:
         """Build a new library queue for the selected playback mode."""
 
@@ -3369,7 +3480,11 @@ class MainWindow(QMainWindow):
             return
 
         self._cancel_mood_session()
-        manual_track_ids = self._manual_queue_snapshot()
+        manual_track_ids = (
+            self._manual_queue_snapshot()
+            if preserve_manual_queue
+            else ()
+        )
         if self._track_radio_enabled:
             self._start_recommendation_queue(
                 track.id,
@@ -3388,6 +3503,7 @@ class MainWindow(QMainWindow):
                 smart=self._playback_mode == QueueMode.SMART_SHUFFLE,
                 playlist_id=self.selected_playlist_id,
                 start_track_id=track.id,
+                preserve_manual_queue=preserve_manual_queue,
             )
             return
 
@@ -3397,6 +3513,11 @@ class MainWindow(QMainWindow):
         # ``MusicStore.list_tracks`` has its own artist/title order and would
         # otherwise ignore a user's active Title/Genres/Added/Duration sort.
         ordered_library_tracks = self._sort_tracks(library_tracks)
+        visible_track_ids = {item.id for item in self._visible_tracks}
+        if track.id in visible_track_ids:
+            # A row click should use exactly the order currently visible in
+            # the table, including the active search/filter result.
+            ordered_library_tracks = list(self._visible_tracks)
         library_track_ids = [item.id for item in ordered_library_tracks]
 
         try:
@@ -3686,6 +3807,13 @@ class MainWindow(QMainWindow):
         """Combine anchored radio with fallback and arrange the sequence."""
 
         excluded_ids = set(excluded_track_ids or ())
+        _, radio_skipped_ids = suppressed_track_ids(
+            self.user_id,
+            list(self.store.list_interactions(user_id=self.user_id)),
+            now=datetime.now(UTC),
+            context=f"track_radio:{anchor_track_id.casefold()}",
+        )
+        excluded_ids.update(radio_skipped_ids)
         recommendations = self._get_track_radio_recommendations(
             anchor_track_id,
             limit=limit,
@@ -3943,7 +4071,7 @@ class MainWindow(QMainWindow):
                 identity = TrackIdentityWidget(
                     track.title,
                     track.artist,
-                    cover_path=track.cover_path,
+                    show_cover=False,
                     compact=True,
                 )
                 identity.play_requested.connect(
@@ -4122,7 +4250,10 @@ class MainWindow(QMainWindow):
         if self.store.get_track(track_id) is None:
             return
 
-        self._start_library_queue(track_id)
+        self._start_library_queue(
+            track_id,
+            preserve_manual_queue=False,
+        )
 
     def _start_track_radio_from_context(self, track_id: str) -> None:
         """Start track radio directly from a library row's context menu."""
@@ -5186,6 +5317,7 @@ class MainWindow(QMainWindow):
         smart: bool = False,
         playlist_id: str | None = None,
         start_track_id: str | None = None,
+        preserve_manual_queue: bool = True,
     ) -> None:
         playlist = self._resolve_playlist(playlist_id)
 
@@ -5207,7 +5339,27 @@ class MainWindow(QMainWindow):
             )
             return
 
-        manual_track_ids = self._manual_queue_snapshot()
+        _, skipped_track_ids = suppressed_track_ids(
+            self.user_id,
+            list(self.store.list_interactions(user_id=self.user_id)),
+            now=datetime.now(UTC),
+            context=f"playlist:{playlist.id.casefold()}",
+        )
+        if skipped_track_ids:
+            filtered_tracks = [
+                track
+                for track in tracks
+                if track.id not in skipped_track_ids
+                or track.id == start_track_id
+            ]
+            if filtered_tracks:
+                tracks = filtered_tracks
+
+        manual_track_ids = (
+            self._manual_queue_snapshot()
+            if preserve_manual_queue
+            else ()
+        )
         track_ids = [track.id for track in tracks]
 
         if start_track_id is not None and start_track_id in track_ids:
@@ -5488,7 +5640,7 @@ class MainWindow(QMainWindow):
                 user_id=self.user_id,
                 track_id=self.current_track_id,
                 interaction_type=interaction_type,
-                mood_context=self._get_active_mood_context(),
+                mood_context=self._get_active_recommendation_context(),
                 recommendation_session_id=(
                     self._get_active_recommendation_session_id()
                 ),
@@ -5511,7 +5663,7 @@ class MainWindow(QMainWindow):
         self._record_playback_signal(InteractionType.PLAYED_30S)
 
     def _record_completed_listen(self, position_ms: int) -> None:
-        """Record a completed listen at 80% of real playback progress."""
+        """Record a completed listen at the 80% position threshold."""
 
         if self._current_track_listen_recorded or self.current_track_id is None:
             return
@@ -5519,9 +5671,12 @@ class MainWindow(QMainWindow):
         if duration_ms <= 0:
             track = self.store.get_track(self.current_track_id)
             duration_ms = track.duration_ms if track is not None else 0
-        if duration_ms <= 0 or position_ms * 100 < duration_ms * 80:
+        if not reached_completion_threshold(position_ms, duration_ms):
             return
-        if self._current_track_played_ms < duration_ms * 0.8:
+        if (
+            not self._current_track_seeked_to_completion
+            and self._current_track_played_ms < duration_ms * 0.8
+        ):
             return
 
         self._current_track_listen_recorded = True
@@ -5539,6 +5694,9 @@ class MainWindow(QMainWindow):
         self.media_player.setPosition(position_ms)
         self._current_track_last_position_ms = position_ms
         self._record_playback_signal(InteractionType.SEEK)
+        if reached_completion_threshold(position_ms, self._player_duration_ms):
+            self._current_track_seeked_to_completion = True
+            self._record_completed_listen(position_ms)
 
     def _import_track(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -7111,6 +7269,7 @@ class MainWindow(QMainWindow):
         self._mood_recommendation_pool.clear()
         self._radio_recommendation_pool.clear()
         self._genre_analysis_pool.waitForDone()
+        self._release_cancelled_genre_models()
         self._music_map_pool.waitForDone(3_000)
         self._recommendation_pool.waitForDone(3_000)
         self._mood_recommendation_pool.waitForDone(3_000)
@@ -8736,6 +8895,9 @@ class MainWindow(QMainWindow):
             self._set_genre_status(track.id, "Completed")
             return
 
+        self._genre_model_release_requested = False
+        self._genre_model_release_timer.stop()
+
         if not self._analysis_pending_track_ids:
             self._analysis_total = 0
             self._analysis_completed = 0
@@ -8765,18 +8927,23 @@ class MainWindow(QMainWindow):
         self._update_analysis_progress()
         self.statusBar().showMessage(f"Track analysis queued: {track.title}")
 
-    def _get_genre_analysis_service(self) -> "GenreAnalysisService":
-        if self._genre_analysis_service is None:
-            from app.ml.genre_analysis import GenreAnalysisService
-
-            service = GenreAnalysisService(
-                top_k=10,
-                min_score=0.1,
-            )
-            self._genre_analysis_service = service
-            self._genre_analysis_pool.setMaxThreadCount(service.analysis_worker_count)
-
+    def _get_genre_analysis_service(self) -> LazyGenreAnalysisService:
         return self._genre_analysis_service
+
+    @staticmethod
+    def _create_genre_analysis_service(
+        *,
+        gpu_optimized: bool = False,
+    ) -> "GenreAnalysisService":
+        """Import ML dependencies only when the worker starts analysis."""
+
+        from app.ml.genre_analysis import GenreAnalysisService
+
+        return GenreAnalysisService(
+            top_k=10,
+            min_score=0.1,
+            gpu_optimized=gpu_optimized,
+        )
 
     def _forget_genre_analysis_task(
         self,
@@ -8876,11 +9043,31 @@ class MainWindow(QMainWindow):
         )
 
     def _cancel_genre_analysis_tasks(self) -> None:
+        self._genre_model_release_requested = True
         for task in tuple(self._genre_analysis_tasks):
             task.cancel()
 
         self._genre_analysis_pool.clear()
         self._genre_analysis_tasks.clear()
+        self._release_cancelled_genre_models()
+
+    def _release_cancelled_genre_models(self) -> None:
+        """Unload models once every cancelled inference has actually stopped."""
+
+        if not self._genre_model_release_requested:
+            return
+
+        if (
+            self._genre_analysis_pool.activeThreadCount() != 0
+            or self._genre_analysis_tasks
+        ):
+            if not self._is_shutting_down:
+                self._genre_model_release_timer.start()
+            return
+
+        self._genre_model_release_requested = False
+        self._genre_model_release_timer.stop()
+        self._genre_analysis_service.unload()
 
     def _analyze_selected_track(self) -> None:
         if self.selected_track_id is None:
@@ -9266,7 +9453,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._start_library_queue(self.selected_track_id)
+        self._start_library_queue(
+            self.selected_track_id,
+            preserve_manual_queue=False,
+        )
 
     def _go_previous(self) -> None:
         if self.media_player.position() >= PREVIOUS_RESTART_THRESHOLD_MS:
@@ -9410,6 +9600,7 @@ class MainWindow(QMainWindow):
         self._current_track_played_30s_recorded = False
         self._current_track_listen_recorded = False
         self._current_track_early_exit_recorded = False
+        self._current_track_seeked_to_completion = False
         self.media_player.setSource(source_url)
         if autoplay:
             self.media_player.play()
@@ -9506,7 +9697,7 @@ class MainWindow(QMainWindow):
                     user_id=self.user_id,
                     track_id=self.current_track_id,
                     interaction_type=InteractionType.LIKE,
-                    mood_context=self._get_active_mood_context(),
+                    mood_context=self._get_active_recommendation_context(),
                 )
                 message = "Added to liked tracks"
         except ValueError as error:
@@ -9540,6 +9731,7 @@ class MainWindow(QMainWindow):
                 self._current_track_played_30s_recorded = False
                 self._current_track_played_ms = 0
                 self._current_track_last_position_ms = 0
+                self._current_track_seeked_to_completion = False
                 self.media_player.setPosition(0)
                 self.media_player.play()
                 self._record_playback_signal(InteractionType.REPEAT)
@@ -9607,10 +9799,22 @@ class MainWindow(QMainWindow):
         master_gain = max(0, min(master_volume, 100)) / 100
         return response * MAX_AUDIO_GAIN * master_gain
 
-    def _get_active_mood_context(self) -> str | None:
+    def _get_active_recommendation_context(self) -> str | None:
         queue = self.playback_queue_service.queue
 
-        if queue is None or queue.mode != QueueMode.SESSION:
+        if queue is None:
+            return None
+
+        if queue.source_playlist_id is not None:
+            return f"playlist:{queue.source_playlist_id.casefold()}"
+
+        if (
+            queue.mode == QueueMode.RECOMMENDATIONS
+            and self._radio_anchor_track_id is not None
+        ):
+            return f"track_radio:{self._radio_anchor_track_id.casefold()}"
+
+        if queue.mode != QueueMode.SESSION:
             return None
 
         if self.session_genre_name is not None:
@@ -9683,7 +9887,7 @@ class MainWindow(QMainWindow):
                 user_id=self.user_id,
                 track_id=track_id,
                 interaction_type=interaction_type,
-                mood_context=self._get_active_mood_context(),
+                mood_context=self._get_active_recommendation_context(),
                 recommendation_session_id=(
                     self._get_active_recommendation_session_id()
                     if track_id == self.current_track_id

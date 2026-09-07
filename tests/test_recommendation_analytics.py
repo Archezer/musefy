@@ -181,6 +181,8 @@ def test_impression_positions_continue_across_batches() -> None:
     impressions = list(store.list_recommendation_impressions())
     assert [impression.position for impression in impressions] == [1, 2]
     assert {impression.session_id for impression in impressions} == {"mood-1"}
+    assert all(impression.feature_snapshot for impression in impressions)
+    assert dict(impressions[0].feature_snapshot)["baseline_score"] == 0.9
 
 
 def test_linked_playback_only_attributes_to_its_recommendation_session() -> None:

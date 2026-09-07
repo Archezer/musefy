@@ -16,6 +16,7 @@ from app.recommenders.feedback import (
     POSITIVE_PREFERENCE_TYPES,
     aggregate_playback_weights,
     effective_weight,
+    filter_contextual_interactions,
     latest_user_preference_states,
     suppressed_track_ids,
 )
@@ -88,6 +89,7 @@ class MoodRecommender:
             user_id,
             interactions,
             now=current_time,
+            context=mood_name,
         )
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
@@ -195,6 +197,12 @@ class MoodRecommender:
         user_interactions = list(
             self.store.list_interactions(user_id=user_id)
         )
+        contextual_interactions = filter_contextual_interactions(
+            user_id,
+            user_interactions,
+            context="my_wave",
+            include_global=True,
+        )
         self._check_cancelled(should_cancel)
         tracks = list(self.store.list_tracks())
         self._check_cancelled(should_cancel)
@@ -202,10 +210,17 @@ class MoodRecommender:
             user_id,
             user_interactions,
             now=current_time,
+            context="my_wave",
         )
-        cooldown_track_ids = self._get_cooldown_track_ids(
+        _, global_temporary_track_ids = suppressed_track_ids(
             user_id,
             user_interactions,
+            now=current_time,
+        )
+        temporary_track_ids |= global_temporary_track_ids
+        cooldown_track_ids = self._get_cooldown_track_ids(
+            user_id,
+            contextual_interactions,
             should_cancel=should_cancel,
         )
         excluded_track_ids = (
@@ -238,7 +253,7 @@ class MoodRecommender:
         )
         profile_weights = aggregate_playback_weights(
             user_id,
-            user_interactions,
+            contextual_interactions,
             now=current_time,
         )
         for track_id, interaction in preference_states.items():

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QRunnable, QThread, Signal
@@ -139,12 +139,56 @@ class GenreAnalysisSignals(QObject):
     finished = Signal()
 
 
+class LazyGenreAnalysisService:
+    """Create the heavy ML service only inside the analysis worker."""
+
+    def __init__(self, factory: Callable[[], GenreAnalysisService]) -> None:
+        self._factory = factory
+        self._service: GenreAnalysisService | None = None
+        self._lock = Lock()
+
+    def get(self) -> GenreAnalysisService:
+        service = self._service
+        if service is not None:
+            return service
+
+        with self._lock:
+            service = self._service
+            if service is None:
+                service = self._factory()
+                self._service = service
+        return service
+
+    def unload_idle_models(self) -> bool:
+        service = self._service
+        if service is None:
+            return False
+        return service.unload_idle_models()
+
+    def unload(self) -> bool:
+        """Release the shared model service immediately when it is safe."""
+
+        with self._lock:
+            service = self._service
+            if service is None:
+                return False
+            service.unload()
+        return True
+
+    def set_gpu_optimized(self, enabled: bool) -> None:
+        """Apply the GPU batching option when the service is already loaded."""
+
+        service = self._service
+        if service is not None:
+            service.set_gpu_optimized(enabled)
+
+
 class GenreAnalysisTask(QRunnable):
     """Analyze one track using the shared genre-analysis service."""
 
     def __init__(
         self,
-        service: GenreAnalysisService,
+        service: GenreAnalysisService | LazyGenreAnalysisService,
         track_id: str,
         audio_path: Path,
     ) -> None:
@@ -166,7 +210,14 @@ class GenreAnalysisTask(QRunnable):
         try:
             if self.is_cancelled():
                 return
-            analysis_result = self.service.analyze_track_result(
+            service = (
+                self.service.get()
+                if isinstance(self.service, LazyGenreAnalysisService)
+                else self.service
+            )
+            if self.is_cancelled():
+                return
+            analysis_result = service.analyze_track_result(
                 self.audio_path,
                 is_cancelled=self.is_cancelled,
             )

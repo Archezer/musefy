@@ -15,6 +15,8 @@ from app.domain.models import (
 from app.ml.feature_snapshot import RECOMMENDATION_FEATURE_NAMES
 from app.storage.protocols import MusicStore
 
+DEFAULT_MIN_RANKER_EXAMPLES = 100
+
 POSITIVE_INTERACTION_TYPES = frozenset(
     {
         InteractionType.LIKE.value,
@@ -64,6 +66,67 @@ class RankerDataset:
                 tuple(values.get(name, 0.0) for name in self.feature_names)
             )
         return tuple(rows)
+
+
+@dataclass(frozen=True)
+class RankerDataReadiness:
+    """Data-collection status used before starting a real training run."""
+
+    total_impressions: int
+    snapshot_impressions: int
+    labelled_examples: int
+    positive_examples: int
+    negative_examples: int
+    user_count: int
+    feature_names: tuple[str, ...]
+    minimum_examples: int
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.labelled_examples >= self.minimum_examples
+            and self.positive_examples > 0
+            and self.negative_examples > 0
+        )
+
+    @property
+    def status(self) -> str:
+        return "ready" if self.ready else "collecting_data"
+
+
+def inspect_ranker_data(
+    store: MusicStore,
+    *,
+    user_id: str | None = None,
+    attribution_days: int = 1,
+    minimum_examples: int = DEFAULT_MIN_RANKER_EXAMPLES,
+) -> RankerDataReadiness:
+    """Summarize whether stored impressions are useful for training."""
+
+    if minimum_examples <= 0:
+        raise ValueError("Minimum examples must be positive")
+    impressions = list(
+        store.list_recommendation_impressions(user_id=user_id)
+    )
+    dataset = build_ranker_dataset(
+        store,
+        user_id=user_id,
+        attribution_days=attribution_days,
+    )
+    labels = dataset.labels
+    return RankerDataReadiness(
+        total_impressions=len(impressions),
+        snapshot_impressions=sum(
+            bool(impression.feature_snapshot)
+            for impression in impressions
+        ),
+        labelled_examples=len(dataset.examples),
+        positive_examples=sum(label == 1 for label in labels),
+        negative_examples=sum(label == 0 for label in labels),
+        user_count=len({example.user_id for example in dataset.examples}),
+        feature_names=dataset.feature_names,
+        minimum_examples=minimum_examples,
+    )
 
 
 def build_ranker_dataset(

@@ -301,6 +301,34 @@ def latest_user_interactions(
     return latest
 
 
+def filter_contextual_interactions(
+    user_id: str,
+    interactions: list[Interaction],
+    *,
+    context: str | None,
+    include_global: bool = False,
+) -> list[Interaction]:
+    """Ignore transient feedback recorded in a different context."""
+
+    normalized_context = (
+        context.strip().casefold()
+        if context and context.strip()
+        else None
+    )
+    return [
+        interaction
+        for interaction in interactions
+        if interaction.user_id != user_id
+        or interaction.interaction_type not in TEMPORARY_SUPPRESSION_TYPES
+        or interaction.mood_context == normalized_context
+        or (
+            include_global
+            and normalized_context is not None
+            and interaction.mood_context is None
+        )
+    ]
+
+
 def _cooldown_for(interaction_type: InteractionType) -> int:
     if interaction_type == InteractionType.SKIP_UNDER_30S:
         return DEFAULT_SHORT_SKIP_COOLDOWN_DAYS
@@ -314,15 +342,35 @@ def suppressed_track_ids(
     interactions: list[Interaction],
     *,
     now: datetime,
+    context: str | None = None,
 ) -> tuple[set[str], set[str]]:
     """Return ``(permanent, temporary)`` recommendation exclusions.
 
     A newer action replaces an older one.  ``DO_NOT_RECOMMEND`` is permanent;
     skips and snoozes expire automatically, after which the track may return
     through exploration (with its decayed negative signal still accounted for).
+
+    Temporary feedback is scoped to the active recommendation context.  A
+    ``None`` context represents the base library; named contexts are used by
+    mood, genre, and playlist sessions.  Permanent hide decisions remain
+    global for the user.
     """
 
-    latest = latest_user_interactions(user_id, interactions)
+    normalized_context = (
+        context.strip().casefold()
+        if context and context.strip()
+        else None
+    )
+    contextual_interactions = [
+        interaction
+        for interaction in interactions
+        if interaction.user_id == user_id
+        and interaction.mood_context == normalized_context
+    ]
+    latest = latest_user_interactions(
+        user_id,
+        contextual_interactions,
+    )
     permanent_decisions: dict[str, Interaction] = {}
     for interaction in interactions:
         if (

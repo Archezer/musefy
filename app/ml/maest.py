@@ -116,6 +116,13 @@ class MaestClassifier:
         )
         self.labels: list[str] = metadata["classes"]
 
+    def unload(self) -> None:
+        """Release the ONNX session and its execution-provider resources."""
+
+        self.session = None
+        if self.torch_cuda_available:
+            torch.cuda.empty_cache()
+
 
     def _extract_cls_embeddings(
         self,

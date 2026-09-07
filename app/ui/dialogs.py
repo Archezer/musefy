@@ -450,7 +450,9 @@ class SpotifySettingsDialog(QDialog):
             if authenticated
             else "Connect Spotify (OAuth)"
         )
-        self.sync_now_button.setEnabled(authenticated)
+        self.sync_now_button.setEnabled(
+            authenticated and not self.track_range_checkbox.isChecked()
+        )
         self.sync_all_button.setEnabled(authenticated)
         self.import_favorites_button.setEnabled(authenticated)
         self.import_history_button.setEnabled(True)
@@ -481,6 +483,11 @@ class SpotifySettingsDialog(QDialog):
     def _set_track_range_enabled(self, enabled: bool) -> None:
         self.track_range_start.setEnabled(enabled)
         self.track_range_end.setEnabled(enabled)
+        if hasattr(self, "sync_all_button"):
+            self.sync_now_button.setEnabled(
+                self._is_authenticated() and not enabled
+            )
+            self.sync_all_button.setEnabled(self._is_authenticated())
 
     def set_busy(self, busy: bool, message: str) -> None:
         self.authenticate_button.setEnabled(not busy)
@@ -490,7 +497,9 @@ class SpotifySettingsDialog(QDialog):
             not busy and self.track_range_checkbox.isChecked()
         )
         self.sync_now_button.setEnabled(
-            not busy and self._is_authenticated()
+            not busy
+            and self._is_authenticated()
+            and not self.track_range_checkbox.isChecked()
         )
         self.sync_all_button.setEnabled(
             not busy and self._is_authenticated()

@@ -855,11 +855,13 @@ class MarqueeLabel(QLabel):
         self,
         text: str = "",
         *,
+        pause_seconds: float = 1.7,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._full_text = ""
         self._offset = 0
+        self._pause_seconds = max(0.0, float(pause_seconds))
         self._pause_until = 0.0
         self._scroll_step = 1
         self._gap = 36
@@ -878,7 +880,7 @@ class MarqueeLabel(QLabel):
     def setText(self, text: str) -> None:
         self._full_text = str(text)
         self._offset = 0
-        self._pause_until = time.monotonic() + 1.7
+        self._pause_until = time.monotonic() + self._pause_seconds
         super().setText("")
         self._update_timer_state()
         self.update()
@@ -950,7 +952,7 @@ class MarqueeLabel(QLabel):
         self._offset += self._scroll_step
         if self._offset >= text_width + self._gap:
             self._offset = 0
-            self._pause_until = time.monotonic() + 1.7
+            self._pause_until = time.monotonic() + self._pause_seconds
         self.update()
 
 
@@ -1565,7 +1567,7 @@ class PlaylistCard(_PlaylistHoverMixin, QFrame):
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(self.cover_label)
 
-        self.name_label = MarqueeLabel(name)
+        self.name_label = MarqueeLabel(name, pause_seconds=5.0)
         self.name_label.setObjectName("playlistCardName")
         self.name_label.setWordWrap(False)
         self.name_label.setFixedHeight(16)
@@ -1735,7 +1737,7 @@ class UtilityPlaylistCard(_PlaylistHoverMixin, QFrame):
         self._card_surface.set_colors(self._cover_colors)
         layout.addWidget(cover)
 
-        name_label = MarqueeLabel(title)
+        name_label = MarqueeLabel(title, pause_seconds=5.0)
         name_label.setObjectName("playlistCardName")
         name_label.setWordWrap(False)
         name_label.setFixedHeight(16)
@@ -2175,7 +2177,7 @@ def track_cover_pixmap(
     cover_path: str | None,
     size: int,
 ) -> QPixmap:
-    """Load a stored cover or draw the deliberately dark fallback tile."""
+    """Load a stored cover or draw one consistent light fallback tile."""
 
     cache_key = f"track-cover:{cover_path or '<fallback>'}:{title}:{size}"
     if cover_path:
@@ -2203,9 +2205,8 @@ def track_cover_pixmap(
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    shade = 25 + sum(ord(character) for character in title) % 18
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(shade, shade, shade))
+    painter.setBrush(QColor("#1F1F1F"))
     painter.drawRoundedRect(pixmap.rect(), 6, 6)
     painter.setPen(QColor(130, 130, 130))
     font = painter.font()

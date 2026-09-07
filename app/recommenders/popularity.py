@@ -21,6 +21,7 @@ from app.recommenders.feedback import (
     PLAYBACK_SESSION_TYPES,
     aggregate_user_track_weights,
     effective_weight,
+    filter_contextual_interactions,
     latest_preference_state_indices,
     suppressed_track_ids,
 )
@@ -281,16 +282,23 @@ class MostPopularRecommender(Recommender):
         user_interactions = list(
             self.store.list_interactions(user_id=user_id)
         )
+        context_key = f"genre:{normalized_genre}"
+        contextual_interactions = filter_contextual_interactions(
+            user_id,
+            user_interactions,
+            context=context_key,
+        )
         tracks = list(self.store.list_tracks())
         self._check_cancelled(should_cancel)
         permanent_track_ids, temporary_track_ids = suppressed_track_ids(
             user_id,
             user_interactions,
             now=current_time,
+            context=context_key,
         )
         cooldown_track_ids = self._get_cooldown_track_ids(
             user_id,
-            user_interactions,
+            contextual_interactions,
         )
 
         matching_tracks: list[Track] = []
@@ -321,7 +329,7 @@ class MostPopularRecommender(Recommender):
 
         user_track_weights = aggregate_user_track_weights(
             user_id,
-            user_interactions,
+            contextual_interactions,
             now=current_time,
         )
         candidates.sort(

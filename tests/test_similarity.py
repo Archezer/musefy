@@ -10,6 +10,7 @@ from app.domain.models import (
 from app.domain.recommendations import RecommendationMode
 from app.recommenders.radio import build_radio_sequence
 from app.recommenders.similarity import (
+    SimilarTrack,
     TrackSimilarityIndex,
     cosine_similarity,
 )
@@ -135,6 +136,85 @@ def test_similarity_service_returns_recommendations_for_seed() -> None:
     assert recommendations[0].reason == (
         "Similar to the selected track"
     )
+
+
+def test_track_radio_skip_is_scoped_to_the_radio_seed() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="skipped",
+            title="Skipped",
+            artist="Artist",
+            track_embedding=(0.99, 0.1),
+        )
+    )
+    store.add_track(
+        Track(
+            id="fallback",
+            title="Fallback",
+            artist="Artist",
+            track_embedding=(0.8, 0.6),
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="skipped",
+            interaction_type=InteractionType.SKIP,
+            mood_context="track_radio:seed",
+        )
+    )
+
+    recommendations = TrackSimilarityService(store).recommendations_for(
+        "seed",
+        limit=1,
+        user_id="user-1",
+    )
+
+    assert [item.track.id for item in recommendations] == ["fallback"]
+
+
+def test_track_radio_expands_confident_candidate_pool() -> None:
+    neighbors = tuple(
+        SimilarTrack(
+            track_id=f"track-{index}",
+            score=0.90 - index * 0.006,
+        )
+        for index in range(24)
+    )
+
+    pool = TrackSimilarityService._select_candidate_pool(
+        neighbors,
+        limit=4,
+    )
+
+    assert len(pool) == 20
+
+
+def test_track_radio_keeps_weak_candidate_pool_compact() -> None:
+    neighbors = tuple(
+        SimilarTrack(
+            track_id=f"track-{index}",
+            score=0.50 - index * 0.006,
+        )
+        for index in range(24)
+    )
+
+    pool = TrackSimilarityService._select_candidate_pool(
+        neighbors,
+        limit=4,
+    )
+
+    assert len(pool) == 10
 
 
 def test_track_radio_search_is_lazy_and_skips_occupied_tracks() -> None:

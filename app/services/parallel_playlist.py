@@ -5,7 +5,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.domain.models import Track
 
-DEFAULT_PLAYLIST_IMPORT_WORKERS = 6
+DEFAULT_DOWNLOAD_WORKERS = 6
+# Keep the old name for callers that import the playlist-specific constant.
+DEFAULT_PLAYLIST_IMPORT_WORKERS = DEFAULT_DOWNLOAD_WORKERS
 MAX_PLAYLIST_IMPORT_WORKERS = 16
 
 def parallel_playlist_import[CandidateT](
