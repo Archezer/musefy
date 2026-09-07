@@ -1969,6 +1969,7 @@ class TrackNumberPlayWidget(QWidget):
         )
         self._play_button.clicked.connect(self.play_requested)
         self._play_button.hide()
+        self._play_visible = False
 
     def resizeEvent(self, event: object) -> None:
         super().resizeEvent(event)
@@ -1993,6 +1994,9 @@ class TrackNumberPlayWidget(QWidget):
         )
 
     def set_play_visible(self, visible: bool) -> None:
+        if visible == self._play_visible:
+            return
+        self._play_visible = visible
         self._number_label.setVisible(not visible)
         self._play_button.setVisible(visible)
 

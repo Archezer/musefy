@@ -5,7 +5,6 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -52,7 +51,7 @@ def main() -> None:
     _ensure_current_user(store)
 
     ingestion_service = AudioIngestionService(store)
-    demo_track = _ensure_demo_track(ingestion_service, store)
+    _ensure_demo_track(ingestion_service, store)
     interaction_service = InteractionService(store)
     playback_queue_service = PlaybackQueueService()
     playlist_management_service = PlaylistManagementService(store)
@@ -116,14 +115,11 @@ def main() -> None:
     window.setWindowIcon(musefy_icon)
     window.show()
     _apply_windows_taskbar_icon(window)
-    if demo_track is not None:
-        # Bootstrap the bundled example once.  The analysis writes its
-        # embedding, genres, and mood back to the track record; subsequent
-        # launches skip it because the embedding is already present.
-        QTimer.singleShot(
-            0,
-            lambda track=demo_track: window._enqueue_genre_analysis(track),
-        )
+    # Do not start ML analysis while the window is becoming interactive.
+    # The bundled demo track is still available, and can be analyzed through
+    # the normal library action when the user explicitly requests it.  Model
+    # warm-up during startup was competing with scrolling and playback for
+    # CPU for the first several seconds.
     sys.exit(qt_application.exec())
 
 

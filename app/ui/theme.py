@@ -338,7 +338,7 @@ QLabel#trackCellArtist {
     color: #96969E;
     font-size: 12px;
 }
-QTableWidget#libraryTable {
+QTableView#libraryTable {
     font-size: 12px;
 }
 QWidget#trackRowCell[rowState="hover"] {
@@ -565,7 +565,7 @@ QTableWidget, QListWidget {
     outline: none;
     padding: 3px;
 }
-QTableWidget#libraryTable {
+QTableView#libraryTable {
     background: transparent;
     border: none;
     border-radius: 0;
@@ -583,10 +583,10 @@ QTableWidget QHeaderView, QHeaderView,
 QTableCornerButton::section {
     background: transparent;
 }
-QTableWidget#libraryTable QHeaderView::section {
+QTableView#libraryTable QHeaderView::section {
     background: transparent;
 }
-QTableWidget#libraryTable QHeaderView::section:hover {
+QTableView#libraryTable QHeaderView::section:hover {
     background: transparent;
     color: #F3F5F4;
     font-weight: 700;
@@ -595,7 +595,7 @@ QTableWidget::item, QListWidget::item {
     padding: 5px 7px;
     border-radius: 0;
 }
-QTableWidget#libraryTable::item {
+QTableView#libraryTable::item {
     padding-left: 4px;
 }
 QTableWidget::item {
@@ -770,12 +770,12 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0px;
     height: 0px;
 }
-QTableWidget#libraryTable QScrollBar:vertical {
+QTableView#libraryTable QScrollBar:vertical {
     background: transparent;
     width: 14px;
     margin: 8px 1px 8px 0;
 }
-QTableWidget#libraryTable QScrollBar::handle:vertical {
+QTableView#libraryTable QScrollBar::handle:vertical {
     background: qlineargradient(
         x1: 0, y1: 0, x2: 1, y2: 0,
         stop: 0 rgba(93, 151, 137, 160),
@@ -786,7 +786,7 @@ QTableWidget#libraryTable QScrollBar::handle:vertical {
     min-height: 44px;
     border-radius: 7px;
 }
-QTableWidget#libraryTable QScrollBar::handle:vertical:hover {
+QTableView#libraryTable QScrollBar::handle:vertical:hover {
     background: qlineargradient(
         x1: 0, y1: 0, x2: 1, y2: 0,
         stop: 0 rgba(115, 188, 169, 190),
@@ -794,8 +794,8 @@ QTableWidget#libraryTable QScrollBar::handle:vertical:hover {
         stop: 1 rgba(84, 150, 135, 190)
     );
 }
-QTableWidget#libraryTable QScrollBar::add-page:vertical,
-QTableWidget#libraryTable QScrollBar::sub-page:vertical {
+QTableView#libraryTable QScrollBar::add-page:vertical,
+QTableView#libraryTable QScrollBar::sub-page:vertical {
     background: transparent;
 }
 QFrame#playlistCard {
