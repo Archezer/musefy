@@ -108,6 +108,10 @@ from app.services.spotify_fav_sync import (
     SpotifyFavSyncResult,
     SpotifyFavSyncService,
 )
+from app.services.spotify_favorites_import import (
+    SpotifyFavoritesImportResult,
+    SpotifyFavoritesImportService,
+)
 from app.services.statistics import ListeningStatisticsService
 from app.services.tracks import TrackManagementService
 from app.services.watch_folder import (
@@ -323,6 +327,12 @@ class MainWindow(QMainWindow):
         self.youtube_import_service = youtube_import_service
         self.spotify_fav_sync_service = SpotifyFavSyncService(
             youtube_import_service.spotify_provider
+        )
+        self.spotify_favorites_import_service = (
+            SpotifyFavoritesImportService(
+                store,
+                youtube_import_service.spotify_provider,
+            )
         )
         self.soundcloud_import_service = soundcloud_import_service
         self.mp3party_import_service = mp3party_import_service
@@ -7185,6 +7195,9 @@ class MainWindow(QMainWindow):
         settings_dialog.authenticate_requested.connect(
             lambda: self._start_spotify_settings_auth(settings_dialog)
         )
+        settings_dialog.spotify_favorites_import_requested.connect(
+            lambda: self._start_spotify_favorites_import(settings_dialog)
+        )
         settings_dialog.sync_requested.connect(
             lambda: self._start_spotify_sync_last(settings_dialog)
         )
@@ -7506,6 +7519,110 @@ class MainWindow(QMainWindow):
         """Run one explicit incremental Spotify sync from the UI."""
 
         self._start_spotify_sync_requested(dialog, sync_all=False)
+
+    def _start_spotify_favorites_import(
+        self,
+        dialog: SpotifySettingsDialog,
+    ) -> None:
+        """Import Spotify favorites as recommendation metadata only."""
+
+        if self._youtube_thread is not None:
+            return
+
+        provider = self.youtube_import_service.spotify_provider
+        if not provider.has_saved_credentials():
+            dialog.set_authenticated(False)
+            dialog.set_busy(False, "Connect Spotify with OAuth first.")
+            self.statusBar().showMessage(
+                "Connect Spotify with OAuth before importing favorites."
+            )
+            return
+
+        message = (
+            "Importing Spotify favorite metadata for recommendations..."
+        )
+        dialog.set_busy(True, message)
+        dialog.start_progress(message)
+
+        def import_favorites() -> SpotifyFavoritesImportResult:
+            return self.spotify_favorites_import_service.import_all(
+                self.user_id,
+                on_progress=(
+                    lambda completed, total, current: (
+                        thread.search_progress_updated.emit(
+                            completed,
+                            total,
+                            completed,
+                            0,
+                            current,
+                        )
+                    )
+                ),
+                should_cancel=thread.is_cancelled,
+            )
+
+        thread = YouTubeTaskThread(import_favorites, self)
+        thread.search_progress_updated.connect(
+            lambda completed, total, _found, _failed, current: (
+                dialog.update_metadata_import_progress(
+                    completed,
+                    total,
+                    current,
+                )
+            )
+        )
+        thread.result_ready.connect(
+            lambda result: self._handle_spotify_favorites_import_result(
+                dialog,
+                result,
+            )
+        )
+        thread.error_occurred.connect(
+            lambda error: self._handle_spotify_favorites_import_error(
+                dialog,
+                error,
+            )
+        )
+        self._start_youtube_thread(thread, dialog)
+
+    def _handle_spotify_favorites_import_result(
+        self,
+        dialog: SpotifySettingsDialog,
+        result: object,
+    ) -> None:
+        if not isinstance(result, SpotifyFavoritesImportResult):
+            self._handle_spotify_favorites_import_error(
+                dialog,
+                "Spotify favorites import returned an invalid result.",
+            )
+            return
+
+        message = (
+            f"Imported {result.active_preferences} Spotify favorite metadata "
+            "record(s) for recommendations. Audio was not downloaded."
+        )
+        if result.deactivated_preferences:
+            message += (
+                f" Deactivated {result.deactivated_preferences} removed "
+                "favorite(s)."
+            )
+        dialog.set_busy(False, message)
+        dialog.finish_progress(message)
+        self.statusBar().showMessage(message)
+
+    def _handle_spotify_favorites_import_error(
+        self,
+        dialog: SpotifySettingsDialog,
+        message: str,
+    ) -> None:
+        failure_message = "Spotify metadata import failed."
+        dialog.set_busy(False, failure_message)
+        dialog.finish_progress(failure_message)
+        QMessageBox.warning(
+            dialog,
+            "Spotify metadata import failed",
+            message,
+        )
 
     def _start_spotify_sync_all(
         self,

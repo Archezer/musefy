@@ -199,6 +199,7 @@ class SpotifySettingsDialog(QDialog):
 
     closed = Signal()
     authenticate_requested = Signal()
+    spotify_favorites_import_requested = Signal()
     sync_requested = Signal()
     sync_all_requested = Signal()
 
@@ -266,6 +267,33 @@ class SpotifySettingsDialog(QDialog):
         sync_description.setObjectName("spotifySettingsDescription")
         sync_description.setWordWrap(True)
         sync_layout.addWidget(sync_description)
+
+        metadata_description = QLabel(
+            "Import Spotify favorite metadata to improve recommendations. "
+            "No audio is downloaded."
+        )
+        metadata_description.setObjectName("spotifySettingsDescription")
+        metadata_description.setWordWrap(True)
+        sync_layout.addWidget(metadata_description)
+
+        self.import_favorites_button = QPushButton(
+            "Import Favorites for Recommendations"
+        )
+        self.import_favorites_button.setObjectName(
+            "spotifyImportFavoritesButton"
+        )
+        self.import_favorites_button.setToolTip(
+            "Import Spotify favorite metadata for better recommendations. "
+            "No audio is downloaded."
+        )
+        self.import_favorites_button.clicked.connect(
+            self.spotify_favorites_import_requested
+        )
+        sync_layout.addWidget(
+            self.import_favorites_button,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
 
         self.preserve_dates_checkbox = QCheckBox("Keep Spotify added dates")
         self.preserve_dates_checkbox.setObjectName(
@@ -395,6 +423,7 @@ class SpotifySettingsDialog(QDialog):
         )
         self.sync_now_button.setEnabled(authenticated)
         self.sync_all_button.setEnabled(authenticated)
+        self.import_favorites_button.setEnabled(authenticated)
         self.auth_status_label.style().unpolish(self.auth_status_label)
         self.auth_status_label.style().polish(self.auth_status_label)
 
@@ -434,6 +463,9 @@ class SpotifySettingsDialog(QDialog):
             not busy and self._is_authenticated()
         )
         self.sync_all_button.setEnabled(
+            not busy and self._is_authenticated()
+        )
+        self.import_favorites_button.setEnabled(
             not busy and self._is_authenticated()
         )
         if message:
@@ -502,6 +534,30 @@ class SpotifySettingsDialog(QDialog):
                 current = f"{current[:51].rstrip()}…"
             parts.append(current)
         self.status_label.setText(" · ".join(parts))
+
+    def update_metadata_import_progress(
+        self,
+        completed: int,
+        total: int,
+        current: str = "",
+    ) -> None:
+        """Show progress for the metadata-only Spotify favorite import."""
+
+        total = max(total, 0)
+        if total:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(min(max(completed, 0), total))
+        else:
+            self.progress_bar.setRange(0, 0)
+        self.progress_bar.show()
+
+        message = f"Importing metadata: {completed}/{total}"
+        if current:
+            current = " ".join(current.split())
+            if len(current) > 52:
+                current = f"{current[:51].rstrip()}…"
+            message += f" · {current}"
+        self.status_label.setText(message)
 
     def finish_progress(self, message: str) -> None:
         """Complete the visual indicator while retaining the final summary."""

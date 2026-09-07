@@ -14,6 +14,7 @@ from app.domain.models import (
     Playlist,
     PlaylistEntry,
     RecommendationImpression,
+    SpotifyFavorite,
     Track,
     User,
 )
@@ -24,6 +25,7 @@ from app.storage.models import (
     PlaylistEntryRecord,
     PlaylistRecord,
     RecommendationImpressionRecord,
+    SpotifyFavoriteRecord,
     TrackRecord,
     UserRecord,
 )
@@ -72,6 +74,62 @@ class SQLAlchemyMusicStore:
             records = session.scalars(statement).all()
 
         return [self._to_user(record) for record in records]
+
+    def upsert_spotify_favorite(
+        self,
+        favorite: SpotifyFavorite,
+    ) -> None:
+        statement = (
+            select(SpotifyFavoriteRecord)
+            .where(
+                SpotifyFavoriteRecord.user_id == favorite.user_id,
+                SpotifyFavoriteRecord.spotify_id == favorite.spotify_id,
+            )
+            .limit(1)
+        )
+
+        with self.session_factory() as session:
+            record = session.scalar(statement)
+            if record is None:
+                session.add(
+                    SpotifyFavoriteRecord(
+                        user_id=favorite.user_id,
+                        track_id=favorite.track_id,
+                        spotify_id=favorite.spotify_id,
+                        added_at=favorite.added_at,
+                        imported_at=favorite.imported_at,
+                        album=favorite.album,
+                        isrc=favorite.isrc,
+                        active=favorite.active,
+                    )
+                )
+            else:
+                record.track_id = favorite.track_id
+                record.added_at = favorite.added_at
+                record.imported_at = favorite.imported_at
+                record.album = favorite.album
+                record.isrc = favorite.isrc
+                record.active = favorite.active
+            session.commit()
+
+    def list_spotify_favorites(
+        self,
+        user_id: str,
+        *,
+        active_only: bool = False,
+    ) -> list[SpotifyFavorite]:
+        statement = (
+            select(SpotifyFavoriteRecord)
+            .where(SpotifyFavoriteRecord.user_id == user_id)
+            .order_by(SpotifyFavoriteRecord.added_at, SpotifyFavoriteRecord.id)
+        )
+        if active_only:
+            statement = statement.where(SpotifyFavoriteRecord.active.is_(True))
+
+        with self.session_factory() as session:
+            records = session.scalars(statement).all()
+
+        return [self._to_spotify_favorite(record) for record in records]
 
     def add_track(self, track: Track) -> None:
         record = TrackRecord(
@@ -204,6 +262,11 @@ class SQLAlchemyMusicStore:
                     f"Track does not exist: {track_id}"
                 )
 
+            session.execute(
+                delete(SpotifyFavoriteRecord).where(
+                    SpotifyFavoriteRecord.track_id == track_id
+                )
+            )
             session.delete(record)
             session.commit()
 
@@ -257,6 +320,14 @@ class SQLAlchemyMusicStore:
                 update(RecommendationImpressionRecord)
                 .where(
                     RecommendationImpressionRecord.track_id
+                    == duplicate_track_id
+                )
+                .values(track_id=survivor_track_id)
+            )
+            session.execute(
+                update(SpotifyFavoriteRecord)
+                .where(
+                    SpotifyFavoriteRecord.track_id
                     == duplicate_track_id
                 )
                 .values(track_id=survivor_track_id)
@@ -710,6 +781,29 @@ class SQLAlchemyMusicStore:
             reason=record.reason,
             shown_at=shown_at,
             session_id=record.session_id,
+        )
+
+    @staticmethod
+    def _to_spotify_favorite(
+        record: SpotifyFavoriteRecord,
+    ) -> SpotifyFavorite:
+        added_at = record.added_at
+        if added_at is not None and added_at.tzinfo is None:
+            added_at = added_at.replace(tzinfo=UTC)
+
+        imported_at = record.imported_at
+        if imported_at.tzinfo is None:
+            imported_at = imported_at.replace(tzinfo=UTC)
+
+        return SpotifyFavorite(
+            user_id=record.user_id,
+            track_id=record.track_id,
+            spotify_id=record.spotify_id,
+            added_at=added_at,
+            imported_at=imported_at,
+            album=record.album,
+            isrc=record.isrc,
+            active=record.active,
         )
 
     @staticmethod

@@ -5,6 +5,7 @@ from app.domain.models import (
     Playlist,
     PlaylistEntry,
     RecommendationImpression,
+    SpotifyFavorite,
     Track,
     User,
 )
@@ -26,6 +27,9 @@ class InMemoryMusicStore:
     playlist_entries: dict[str, list[PlaylistEntry]] = field(
         default_factory=dict
     )
+    spotify_favorites: dict[tuple[str, str], SpotifyFavorite] = field(
+        default_factory=dict
+    )
 
     def add_user(self, user: User) -> None:
         if user.id in self.users:
@@ -40,6 +44,35 @@ class InMemoryMusicStore:
 
     def list_users(self) -> list[User]:
         return list(self.users.values())
+
+    def upsert_spotify_favorite(
+        self,
+        favorite: SpotifyFavorite,
+    ) -> None:
+        self.spotify_favorites[(favorite.user_id, favorite.spotify_id)] = (
+            favorite
+        )
+
+    def list_spotify_favorites(
+        self,
+        user_id: str,
+        *,
+        active_only: bool = False,
+    ) -> list[SpotifyFavorite]:
+        favorites = [
+            favorite
+            for favorite in self.spotify_favorites.values()
+            if favorite.user_id == user_id
+            and (not active_only or favorite.active)
+        ]
+        return sorted(
+            favorites,
+            key=lambda favorite: (
+                favorite.added_at is None,
+                favorite.added_at or favorite.imported_at,
+                favorite.spotify_id,
+            ),
+        )
 
     def add_track(self, track: Track) -> None:
         if track.id in self.tracks:
@@ -89,6 +122,11 @@ class InMemoryMusicStore:
             for impression in self.recommendation_impressions
             if impression.track_id != track_id
         ]
+        self.spotify_favorites = {
+            key: favorite
+            for key, favorite in self.spotify_favorites.items()
+            if favorite.track_id != track_id
+        }
         for playlist_id, entries in self.playlist_entries.items():
             remaining_entries = [
                 entry
@@ -142,6 +180,15 @@ class InMemoryMusicStore:
             else impression
             for impression in self.recommendation_impressions
         ]
+        self.spotify_favorites = {
+            key: replace(
+                favorite,
+                track_id=survivor_track_id,
+            )
+            if favorite.track_id == duplicate_track_id
+            else favorite
+            for key, favorite in self.spotify_favorites.items()
+        }
 
         for playlist_id, entries in self.playlist_entries.items():
             self.playlist_entries[playlist_id] = [

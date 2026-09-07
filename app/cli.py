@@ -9,8 +9,12 @@ from app.domain.models import (
 from app.ingestion.audio import AudioIngestionService
 from app.ml.genre_analysis import GenreAnalysisService
 from app.services.interactions import InteractionService
+from app.services.spotify_favorites_import import (
+    SpotifyFavoritesImportService,
+)
 from app.services.tracks import TrackManagementService
 from app.services.youtube_import import YouTubeImportService
+from app.sources.spotify import SpotifyMetadataProvider
 from app.sources.youtube import (
     YouTubeCandidate,
     YouTubeSearchProvider,
@@ -104,6 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="YouTube video URL",
     )
 
+    spotify_import_favorites_command = commands.add_parser(
+        "spotify-import-favorites",
+        help="Import Spotify favorite metadata for recommendations",
+    )
+    spotify_import_favorites_command.add_argument(
+        "--user-id",
+        default="user-1",
+        help="Musefy user identifier (default: user-1)",
+    )
+
     return parser
 
 
@@ -137,6 +151,34 @@ def import_track(arguments: argparse.Namespace) -> None:
     print(f"Artist: {track.artist}")
     print(f"Duration: {format_duration(track.duration_ms)}")
     print(f"Genres: {', '.join(track.genres) or 'Not specified'}")
+
+
+def import_spotify_favorites(arguments: argparse.Namespace) -> None:
+    """Import Spotify favorites without downloading or analyzing audio."""
+
+    create_database()
+
+    store = SQLAlchemyMusicStore(create_session)
+    if store.get_user(arguments.user_id) is None:
+        raise SystemExit(
+            f"User does not exist: {arguments.user_id}. "
+            "Use the user ID configured by the desktop app."
+        )
+
+    provider = SpotifyMetadataProvider()
+    service = SpotifyFavoritesImportService(store, provider)
+    result = service.import_all(arguments.user_id)
+
+    print(
+        "Spotify favorite metadata imported for recommendations. "
+        "Audio was not downloaded."
+    )
+    print(f"Fetched: {result.fetched}")
+    print(f"New tracks: {result.imported_tracks}")
+    print(f"Updated tracks: {result.updated_tracks}")
+    print(f"Active preferences: {result.active_preferences}")
+    print(f"Deactivated preferences: {result.deactivated_preferences}")
+    print(f"Skipped: {result.skipped_tracks}")
 
 
 def record_interaction(
@@ -428,6 +470,8 @@ def main() -> None:
         import_youtube_track(arguments)
     elif arguments.command == "youtube-import-url":
         import_youtube_url(arguments)
+    elif arguments.command == "spotify-import-favorites":
+        import_spotify_favorites(arguments)
 
 
 if __name__ == "__main__":

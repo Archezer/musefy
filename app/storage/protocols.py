@@ -6,6 +6,7 @@ from app.domain.models import (
     Playlist,
     PlaylistEntry,
     RecommendationImpression,
+    SpotifyFavorite,
     Track,
     User,
 )
@@ -20,6 +21,20 @@ class MusicStore(Protocol):
         ...
 
     def list_users(self) -> Iterable[User]:
+        ...
+
+    def upsert_spotify_favorite(
+        self,
+        favorite: SpotifyFavorite,
+    ) -> None:
+        ...
+
+    def list_spotify_favorites(
+        self,
+        user_id: str,
+        *,
+        active_only: bool = False,
+    ) -> Iterable[SpotifyFavorite]:
         ...
 
     def add_track(self, track: Track) -> None:

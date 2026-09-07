@@ -94,6 +94,22 @@ class User:
 
 
 @dataclass(frozen=True)
+class SpotifyFavorite:
+    """A user's current Spotify saved-track preference."""
+
+    user_id: str
+    track_id: str
+    spotify_id: str
+    added_at: datetime | None = None
+    imported_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC)
+    )
+    album: str | None = None
+    isrc: str | None = None
+    active: bool = True
+
+
+@dataclass(frozen=True)
 class Interaction:
     user_id: str
     track_id: str

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -8,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -42,6 +44,62 @@ class UserRecord(Base):
     ] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+
+
+class SpotifyFavoriteRecord(Base):
+    __tablename__ = "spotify_favorites"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "spotify_id",
+            name="uq_spotify_favorites_user_spotify",
+        ),
+        Index(
+            "ix_spotify_favorites_user_active",
+            "user_id",
+            "active",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        )
+    )
+    track_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "tracks.id",
+            ondelete="CASCADE",
+        )
+    )
+    spotify_id: Mapped[str] = mapped_column(String(100))
+    added_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+    )
+    album: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+    isrc: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
     )
 
 
