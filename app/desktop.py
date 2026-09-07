@@ -5,6 +5,7 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -13,7 +14,6 @@ from app.ingestion.audio import AudioIngestionService
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.popularity import MostPopularRecommender
 from app.services.interactions import InteractionService
-from app.services.library_maintenance import LibraryHealthService
 from app.services.mp3party_import import Mp3PartyImportService
 from app.services.playback_queue import PlaybackQueueService
 from app.services.playlist_bridge import PlaylistBridgeServer
@@ -50,13 +50,6 @@ def main() -> None:
 
     store = SQLAlchemyMusicStore(create_session)
     _ensure_current_user(store)
-
-    removed_duplicates = LibraryHealthService(store).remove_exact_duplicates()
-    if removed_duplicates:
-        print(
-            f"Removed {removed_duplicates} exact duplicate track record(s).",
-            file=sys.stderr,
-        )
 
     ingestion_service = AudioIngestionService(store)
     demo_track = _ensure_demo_track(ingestion_service, store)
@@ -126,7 +119,10 @@ def main() -> None:
         # Bootstrap the bundled example once.  The analysis writes its
         # embedding, genres, and mood back to the track record; subsequent
         # launches skip it because the embedding is already present.
-        window._enqueue_genre_analysis(demo_track)
+        QTimer.singleShot(
+            0,
+            lambda track=demo_track: window._enqueue_genre_analysis(track),
+        )
     sys.exit(qt_application.exec())
 
 

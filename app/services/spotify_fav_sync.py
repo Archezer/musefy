@@ -10,6 +10,7 @@ from app.sources.spotify import SpotifyMetadataProvider, SpotifyTrack
 from app.storage.paths import DATA_DIR
 
 DEFAULT_STATE_PATH = DATA_DIR / "spotify_fav_sync.json"
+SpotifyTrackRange = tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -56,12 +57,19 @@ class SpotifyFavSyncService:
 
         self._save_state(state)
 
-    def sync_new_saved_tracks(self) -> SpotifyFavSyncResult:
+    def sync_new_saved_tracks(
+        self,
+        track_range: SpotifyTrackRange | None = None,
+    ) -> SpotifyFavSyncResult:
         """Backward-compatible alias for the manual ``Sync Last`` action."""
 
-        return self.sync_last_saved_tracks()
+        return self.sync_last_saved_tracks(track_range=track_range)
 
-    def sync_last_saved_tracks(self) -> SpotifyFavSyncResult:
+    def sync_last_saved_tracks(
+        self,
+        *,
+        track_range: SpotifyTrackRange | None = None,
+    ) -> SpotifyFavSyncResult:
         """Return tracks added since the previous manual synchronization.
 
         The cursor is written only after Spotify successfully returns its
@@ -70,6 +78,7 @@ class SpotifyFavSyncService:
         bound.
         """
 
+        track_range = _validate_track_range(track_range)
         state = self._load_state()
         sync_started_at = _now_iso()
         sync_started = _parse_timestamp(sync_started_at)
@@ -89,7 +98,7 @@ class SpotifyFavSyncService:
         }
         new_tracks: list[SpotifyTrack] = []
 
-        for track in self._get_saved_tracks_since(sync_cursor):
+        for track in self._get_saved_tracks_since(sync_cursor, track_range):
             if not track.spotify_id or not track.added_at:
                 continue
 
@@ -115,7 +124,27 @@ class SpotifyFavSyncService:
     def _get_saved_tracks_since(
         self,
         sync_cursor: datetime | None,
+        track_range: SpotifyTrackRange | None = None,
     ) -> tuple[SpotifyTrack, ...]:
+        if track_range is not None:
+            ranged_getter = getattr(
+                self.provider,
+                "get_saved_tracks_range",
+                None,
+            )
+            if callable(ranged_getter):
+                return tuple(
+                    ranged_getter(
+                        track_range[0],
+                        track_range[1],
+                        cursor=sync_cursor,
+                    )
+                )
+
+            # Keep compatibility with providers that predate ranged reads.
+            tracks = tuple(self.provider.get_saved_tracks())
+            return tracks[track_range[0] - 1 : track_range[1]]
+
         incremental_getter = getattr(
             self.provider,
             "get_saved_tracks_since",
@@ -128,11 +157,33 @@ class SpotifyFavSyncService:
         # and tests that only implement the original method.
         return tuple(self.provider.get_saved_tracks())
 
-    def sync_all_saved_tracks(self) -> SpotifyFavSyncResult:
+    def sync_all_saved_tracks(
+        self,
+        *,
+        track_range: SpotifyTrackRange | None = None,
+    ) -> SpotifyFavSyncResult:
         """Read the complete saved-track library for an explicit sync-all."""
 
+        track_range = _validate_track_range(track_range)
         synced_at = _now_iso()
-        tracks = self.provider.get_saved_tracks()
+        if track_range is None:
+            tracks = self.provider.get_saved_tracks()
+        else:
+            ranged_getter = getattr(
+                self.provider,
+                "get_saved_tracks_range",
+                None,
+            )
+            if callable(ranged_getter):
+                tracks = ranged_getter(
+                    track_range[0],
+                    track_range[1],
+                )
+            else:
+                all_tracks = tuple(self.provider.get_saved_tracks())
+                tracks = all_tracks[
+                    track_range[0] - 1 : track_range[1]
+                ]
         state = self._load_state()
         state["last_sync_at"] = synced_at
         state["seen_track_ids"] = sorted(
@@ -181,3 +232,22 @@ def _parse_timestamp(value: object) -> datetime | None:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
     return timestamp.astimezone(UTC)
+
+
+def _validate_track_range(
+    track_range: SpotifyTrackRange | None,
+) -> SpotifyTrackRange | None:
+    if track_range is None:
+        return None
+
+    start_track, end_track = track_range
+    if (
+        not isinstance(start_track, int)
+        or not isinstance(end_track, int)
+        or start_track < 1
+        or end_track < start_track
+    ):
+        raise ValueError(
+            "Spotify track range must start at 1 and end after start."
+        )
+    return start_track, end_track

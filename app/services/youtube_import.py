@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
@@ -373,6 +374,7 @@ class YouTubeImportService:
                 requested_title=spotify_track.title,
                 requested_artist=spotify_track.artist,
                 playlist_position=position,
+                spotify_added_at=spotify_track.added_at,
             )
             if not _durations_match(
                 spotify_track.duration_ms,
@@ -531,7 +533,18 @@ class YouTubeImportService:
         candidate: YouTubeCandidate,
         *,
         source: str = "youtube",
+        preserve_added_dates: bool = False,
     ) -> Track:
+        created_at = (
+            _parse_spotify_added_at(candidate.spotify_added_at)
+            if preserve_added_dates
+            else None
+        )
+        date_kwargs = (
+            {"created_at": created_at}
+            if created_at is not None
+            else {}
+        )
         existing_track = self._find_existing_youtube_track(
             candidate.video_id
         )
@@ -572,6 +585,7 @@ class YouTubeImportService:
                     source=existing_track.source,
                     source_id=candidate.video_id,
                     source_url=candidate.url,
+                    **date_kwargs,
                 )
 
             return self.ingestion_service.ingest(
@@ -582,6 +596,7 @@ class YouTubeImportService:
                 source=source,
                 source_id=candidate.video_id,
                 source_url=candidate.url,
+                **date_kwargs,
             )
 
     def _find_existing_youtube_track(
@@ -636,6 +651,7 @@ class YouTubeImportService:
         candidates: list[YouTubeCandidate],
         *,
         source: str = "youtube",
+        preserve_added_dates: bool = False,
         on_progress: Callable[[int, int], None] | None = None,
         on_track_imported: Callable[[YouTubeCandidate, Track], None]
         | None = None,
@@ -645,6 +661,7 @@ class YouTubeImportService:
             lambda candidate: self.download_and_import(
                 candidate,
                 source=source,
+                preserve_added_dates=preserve_added_dates,
             ),
             max_workers=min(
                 self.search_workers,
@@ -659,3 +676,19 @@ class YouTubeImportService:
             failed=failed,
             imported_candidates=imported_candidates,
         )
+
+
+def _parse_spotify_added_at(value: object) -> datetime | None:
+    """Convert Spotify's ``added_at`` value into the library's UTC time."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    try:
+        timestamp = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)

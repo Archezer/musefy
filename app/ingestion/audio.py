@@ -1,6 +1,7 @@
 import hashlib
 import shutil
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.domain.models import Track
@@ -43,6 +44,7 @@ class AudioIngestionService:
         source: str = "local_upload",
         source_id: str | None = None,
         source_url: str | None = None,
+        created_at: datetime | None = None,
     ) -> Track:
         self._validate_file(file_path)
 
@@ -86,6 +88,7 @@ class AudioIngestionService:
                 source=source,
                 source_id=source_id,
                 source_url=source_url,
+                created_at=created_at,
             )
 
         internal_path = self._copy_to_library(
@@ -103,6 +106,11 @@ class AudioIngestionService:
             id=resolved_track_id,
             title=resolved_title,
             artist=resolved_artist,
+            created_at=(
+                created_at
+                if created_at is not None
+                else datetime.now(UTC)
+            ),
             genres=genres,
             duration_ms=metadata.duration_ms,
             source=source,
@@ -126,6 +134,7 @@ class AudioIngestionService:
         source: str,
         source_id: str | None,
         source_url: str | None,
+        created_at: datetime | None = None,
     ) -> Track:
         self._validate_file(file_path)
 
@@ -146,6 +155,11 @@ class AudioIngestionService:
             existing_track,
             title=title,
             artist=artist,
+            created_at=(
+                created_at
+                if created_at is not None
+                else existing_track.created_at
+            ),
             duration_ms=metadata.duration_ms,
             source=source,
             source_id=source_id,

@@ -354,3 +354,42 @@ def test_saved_spotify_tracks_stop_paging_at_incremental_cursor() -> None:
 
     assert [track.spotify_id for track in tracks] == ["new-track"]
     assert len(oauth_client.requests) == 1
+
+
+def test_saved_spotify_tracks_can_read_an_inclusive_range() -> None:
+    oauth_client = FakeSpotifyOAuthClient(
+        [
+            {
+                "items": [
+                    {
+                        "added_at": "2026-09-04T10:00:00Z",
+                        "track": {
+                            "id": f"track-{index}",
+                            "type": "track",
+                            "name": f"Track {index}",
+                            "artists": [{"name": "Artist"}],
+                        },
+                    }
+                    for index in range(5, 11)
+                ],
+                "next": None,
+            }
+        ]
+    )
+
+    tracks = SpotifyMetadataProvider(
+        oauth_client=oauth_client,
+    ).get_saved_tracks_range(5, 10)
+
+    assert [track.spotify_id for track in tracks] == [
+        "track-5",
+        "track-6",
+        "track-7",
+        "track-8",
+        "track-9",
+        "track-10",
+    ]
+    assert oauth_client.requests[0][1] == {
+        "limit": "6",
+        "offset": "4",
+    }

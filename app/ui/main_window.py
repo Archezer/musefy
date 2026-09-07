@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from PySide6.QtCore import (
@@ -79,13 +80,6 @@ from app.ingestion.audio import (
     AudioIngestionService,
 )
 from app.ingestion.metadata import read_audio_metadata
-from app.ml.genre_analysis import (
-    GenreAnalysisService,
-    TrackAnalysisResult,
-)
-from app.ml.maest import (
-    GenrePrediction,
-)
 from app.recommenders.radio import build_radio_sequence
 from app.recommenders.similarity import TrackSimilarityIndex
 from app.recommenders.smart_shuffle import SmartShuffleBuilder
@@ -210,6 +204,9 @@ from app.ui.workers import (
     WatchFolderTaskThread,
     YouTubeTaskThread,
 )
+
+if TYPE_CHECKING:
+    from app.ml.genre_analysis import GenreAnalysisService
 
 MAX_AUDIO_GAIN = 0.3432
 DEFAULT_VOLUME_PERCENT = 50
@@ -442,12 +439,7 @@ class MainWindow(QMainWindow):
                 type=bool,
             )
         )
-        self._genre_analysis_service = (
-            GenreAnalysisService(
-                top_k=10,
-                min_score=0.1,
-            )
-        )
+        self._genre_analysis_service = None
         self.library_health_service = LibraryHealthService(store)
         self.library_backup_service = LibraryBackupService(store)
         self.statistics_service = ListeningStatisticsService(store)
@@ -462,9 +454,6 @@ class MainWindow(QMainWindow):
         self._watch_folder_timer.timeout.connect(self._sync_watch_folder)
         self._watch_folder_timer.start()
         self._genre_analysis_pool = QThreadPool(self)
-        self._genre_analysis_pool.setMaxThreadCount(
-            self._genre_analysis_service.analysis_worker_count
-        )
         self._track_batch_timer = QTimer(self)
         self._track_batch_timer.setInterval(TRACK_BATCH_INTERVAL_MS)
         self._track_batch_timer.timeout.connect(self._append_track_batch)
@@ -7187,6 +7176,11 @@ class MainWindow(QMainWindow):
         settings_dialog = SpotifySettingsDialog(
             parent=self,
             authenticated=provider.has_saved_credentials(),
+            preserve_added_dates=(
+                source_dialog.preserve_spotify_added_dates
+                if source_dialog is not None
+                else False
+            ),
         )
         settings_dialog.authenticate_requested.connect(
             lambda: self._start_spotify_settings_auth(settings_dialog)
@@ -7198,7 +7192,10 @@ class MainWindow(QMainWindow):
             lambda: self._start_spotify_sync_all(settings_dialog)
         )
         settings_dialog.finished.connect(
-            lambda _result: self._handle_spotify_settings_closed(source_dialog)
+            lambda _result: self._handle_spotify_settings_closed(
+                source_dialog,
+                settings_dialog,
+            )
         )
 
         self._show_auxiliary_dialog(settings_dialog)
@@ -7206,11 +7203,15 @@ class MainWindow(QMainWindow):
     def _handle_spotify_settings_closed(
         self,
         source_dialog: YouTubeSearchDialog | None,
+        settings_dialog: SpotifySettingsDialog,
     ) -> None:
         if source_dialog is not None:
             provider = self.youtube_import_service.spotify_provider
             source_dialog.set_spotify_authenticated(
                 provider.has_saved_credentials()
+            )
+            source_dialog.set_preserve_spotify_added_dates(
+                settings_dialog.preserve_added_dates
             )
 
     def _show_auxiliary_dialog(self, dialog: QDialog) -> None:
@@ -7536,7 +7537,26 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._start_spotify_sync(dialog, sync_all=sync_all)
+        preserve_added_dates = (
+            dialog.preserve_spotify_added_dates
+            if isinstance(dialog, YouTubeSearchDialog)
+            else (
+                dialog.preserve_added_dates
+                if isinstance(dialog, SpotifySettingsDialog)
+                else False
+            )
+        )
+        track_range = (
+            dialog.track_range
+            if isinstance(dialog, SpotifySettingsDialog)
+            else None
+        )
+        self._start_spotify_sync(
+            dialog,
+            sync_all=sync_all,
+            preserve_added_dates=preserve_added_dates,
+            track_range=track_range,
+        )
 
     def _start_spotify_settings_auth(
         self,
@@ -7590,11 +7610,19 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
         *,
         sync_all: bool = False,
+        preserve_added_dates: bool = False,
+        track_range: tuple[int, int] | None = None,
     ) -> None:
         sync_label = "Sync All" if sync_all else "Sync Last"
         if dialog is not None:
+            range_suffix = (
+                f" ({track_range[0]}–{track_range[1]})"
+                if sync_all and track_range is not None
+                else ""
+            )
             message = (
-                "Reading all Spotify saved tracks in their Spotify order..."
+                "Reading Spotify saved tracks"
+                f"{range_suffix} in their Spotify order..."
                 if sync_all
                 else "Reading tracks added since the previous Sync Last..."
             )
@@ -7603,7 +7631,9 @@ class MainWindow(QMainWindow):
 
         def sync() -> object:
             sync_method = (
-                self.spotify_fav_sync_service.sync_all_saved_tracks
+                lambda: self.spotify_fav_sync_service.sync_all_saved_tracks(
+                    track_range=track_range,
+                )
                 if sync_all
                 else self.spotify_fav_sync_service.sync_last_saved_tracks
             )
@@ -7642,6 +7672,7 @@ class MainWindow(QMainWindow):
                 dialog,
                 result,
                 sync_label,
+                preserve_added_dates,
             )
         )
         thread.error_occurred.connect(
@@ -7679,6 +7710,7 @@ class MainWindow(QMainWindow):
         dialog: YouTubeSearchDialog | SpotifySettingsDialog | None,
         result: object,
         sync_label: str,
+        preserve_added_dates: bool = False,
     ) -> None:
         if isinstance(result, SpotifyFavSyncResult):
             if result.new_tracks:
@@ -7755,6 +7787,7 @@ class MainWindow(QMainWindow):
                     if isinstance(dialog, YouTubeSearchDialog)
                     else None
                 ),
+                preserve_added_dates=preserve_added_dates,
             ),
         )
 
@@ -7784,11 +7817,14 @@ class MainWindow(QMainWindow):
         self,
         result: SpotifyPlaylistSearchResult,
         dialog: YouTubeSearchDialog | None = None,
+        *,
+        preserve_added_dates: bool = False,
     ) -> None:
         if dialog is None:
             dialog = YouTubeSearchDialog(
                 self,
                 spotify_authenticated=True,
+                spotify_preserve_added_dates=preserve_added_dates,
             )
             dialog.set_import_source("spotify_favorite")
             dialog.playlist_import_requested.connect(
@@ -7808,6 +7844,7 @@ class MainWindow(QMainWindow):
             )
 
         dialog.set_import_source("spotify_favorite")
+        dialog.set_preserve_spotify_added_dates(preserve_added_dates)
         dialog.set_search_query(result.playlist_name)
         dialog.set_candidates(
             list(result.candidates),
@@ -7857,11 +7894,16 @@ class MainWindow(QMainWindow):
             total=len(selected_candidates),
         )
         import_source = dialog.import_source
+        preserve_added_dates = (
+            import_source == "spotify_favorite"
+            and dialog.preserve_spotify_added_dates
+        )
 
         def import_playlist() -> YouTubePlaylistImportResult:
             return self.youtube_import_service.download_and_import_playlist(
                 selected_candidates,
                 source=import_source,
+                preserve_added_dates=preserve_added_dates,
                 on_progress=thread.progress_updated.emit,
                 on_track_imported=thread.track_imported.emit,
             )
@@ -7926,7 +7968,11 @@ class MainWindow(QMainWindow):
             retry_tracks.append(
                 (
                     allocate_position(candidate.playlist_position),
-                    SpotifyTrack(title=title, artist=artist),
+                    SpotifyTrack(
+                        title=title,
+                        artist=artist,
+                        added_at=candidate.spotify_added_at,
+                    ),
                 )
             )
 
@@ -8935,8 +8981,9 @@ class MainWindow(QMainWindow):
         if self.selected_track_id == track.id:
             self.analyze_genres_button.setEnabled(False)
 
+        analysis_service = self._get_genre_analysis_service()
         task = GenreAnalysisTask(
-            service=self._genre_analysis_service,
+            service=analysis_service,
             track_id=track.id,
             audio_path=Path(track.local_path),
         )
@@ -8957,6 +9004,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Track analysis queued: {track.title}"
         )
+
+    def _get_genre_analysis_service(self) -> "GenreAnalysisService":
+        if self._genre_analysis_service is None:
+            from app.ml.genre_analysis import GenreAnalysisService
+
+            service = GenreAnalysisService(
+                top_k=10,
+                min_score=0.1,
+            )
+            self._genre_analysis_service = service
+            self._genre_analysis_pool.setMaxThreadCount(
+                service.analysis_worker_count
+            )
+
+        return self._genre_analysis_service
 
     def _forget_genre_analysis_task(
         self,
@@ -9200,6 +9262,9 @@ class MainWindow(QMainWindow):
         track_id: str,
         analysis_result: object,
     ) -> None:
+        from app.ml.genre_analysis import TrackAnalysisResult
+        from app.ml.maest import GenrePrediction
+
         if track_id not in self._analysis_pending_track_ids:
             return
 
@@ -9296,7 +9361,8 @@ class MainWindow(QMainWindow):
         if self._genre_analysis_pool.activeThreadCount() != 0:
             return
 
-        self._genre_analysis_service.unload_idle_models()
+        if self._genre_analysis_service is not None:
+            self._genre_analysis_service.unload_idle_models()
 
     def _handle_genre_analysis_error(
         self,

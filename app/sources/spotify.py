@@ -502,14 +502,58 @@ class SpotifyMetadataProvider:
         library every time.
         """
 
+        return self._get_saved_tracks_since(cursor)
+
+    def get_saved_tracks_range(
+        self,
+        start_track: int,
+        end_track: int,
+        *,
+        cursor: datetime | None = None,
+    ) -> tuple[SpotifyTrack, ...]:
+        """Read an inclusive 1-based range in Spotify's saved-track order."""
+
+        if (
+            not isinstance(start_track, int)
+            or not isinstance(end_track, int)
+            or start_track < 1
+            or end_track < start_track
+        ):
+            raise ValueError(
+                "Spotify track range must start at 1 and end after start."
+            )
+
+        return self._get_saved_tracks_since(
+            cursor,
+            start_index=start_track - 1,
+            end_index=end_track,
+        )
+
+    def _get_saved_tracks_since(
+        self,
+        cursor: datetime | None,
+        *,
+        start_index: int = 0,
+        end_index: int | None = None,
+    ) -> tuple[SpotifyTrack, ...]:
+        """Read saved tracks with optional zero-based paging bounds."""
+
         tracks: list[SpotifyTrack] = []
-        offset = 0
+        offset = start_index
 
         while True:
+            remaining = (
+                end_index - offset
+                if end_index is not None
+                else None
+            )
+            if remaining is not None and remaining <= 0:
+                break
+            limit = min(50, remaining) if remaining is not None else 50
             payload = self.oauth_client.get_json(
                 "/v1/me/tracks",
                 {
-                    "limit": "50",
+                    "limit": str(limit),
                     "offset": str(offset),
                 },
             )
@@ -528,7 +572,16 @@ class SpotifyMetadataProvider:
                         continue
                     tracks.append(track)
 
-            if not items or reached_cursor or not payload.get("next"):
+            reached_end = (
+                end_index is not None
+                and offset + len(items) >= end_index
+            )
+            if (
+                not items
+                or reached_cursor
+                or reached_end
+                or not payload.get("next")
+            ):
                 break
             offset += len(items)
 

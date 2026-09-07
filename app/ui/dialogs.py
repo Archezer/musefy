@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -84,7 +85,7 @@ def _format_elapsed(milliseconds: int) -> str:
 
 
 class SpotifySyncRow(QFrame):
-    """A compact manual action for the Spotify saved-track library."""
+    """A compact entry point for Spotify settings."""
 
     settings_requested = Signal()
     sync_requested = Signal()
@@ -95,6 +96,7 @@ class SpotifySyncRow(QFrame):
         *,
         authenticated: bool = False,
         sync_enabled: bool = False,
+        preserve_added_dates: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -113,28 +115,12 @@ class SpotifySyncRow(QFrame):
         self.title_label = QLabel("Sync Spotify favorites")
         self.title_label.setObjectName("spotifySyncTitle")
         self.subtitle_label = QLabel(
-            "Sync the latest additions or the complete library in Spotify order"
+            "Open Spotify settings to choose what to sync"
         )
         self.subtitle_label.setObjectName("spotifySyncSubtitle")
         text_layout.addWidget(self.title_label)
         text_layout.addWidget(self.subtitle_label)
         layout.addLayout(text_layout, 1)
-
-        self.sync_button = QPushButton("Sync Last")
-        self.sync_button.setObjectName("spotifySyncLastButton")
-        self.sync_button.setToolTip(
-            "Read Spotify tracks added since the previous manual sync."
-        )
-        self.sync_button.clicked.connect(self.sync_requested)
-        layout.addWidget(self.sync_button)
-
-        self.sync_all_button = QPushButton("Sync All")
-        self.sync_all_button.setObjectName("spotifySyncAllButton")
-        self.sync_all_button.setToolTip(
-            "Read all Spotify saved tracks in their Spotify order."
-        )
-        self.sync_all_button.clicked.connect(self.sync_all_requested)
-        layout.addWidget(self.sync_all_button)
 
         self.auth_status_label = QLabel()
         self.auth_status_label.setObjectName("spotifyAuthStatus")
@@ -156,9 +142,10 @@ class SpotifySyncRow(QFrame):
         ):
             child.installEventFilter(self)
 
-        # Keep the old parameter for integrations that still construct this
-        # row directly; synchronization is now always explicitly manual.
+        # Keep the old parameters for integrations that still construct this
+        # row directly; synchronization controls now live in settings.
         del sync_enabled
+        del preserve_added_dates
         self.set_authenticated(authenticated)
 
     def eventFilter(self, watched: object, event: object) -> bool:
@@ -188,18 +175,6 @@ class SpotifySyncRow(QFrame):
         super().mouseReleaseEvent(event)
 
     def set_authenticated(self, authenticated: bool) -> None:
-        self.sync_button.setEnabled(authenticated)
-        self.sync_button.setToolTip(
-            "Read Spotify tracks added since the previous manual sync."
-            if authenticated
-            else "Connect Spotify with OAuth before using Sync Last."
-        )
-        self.sync_all_button.setEnabled(authenticated)
-        self.sync_all_button.setToolTip(
-            "Read all Spotify saved tracks in their Spotify order."
-            if authenticated
-            else "Connect Spotify with OAuth before using Sync All."
-        )
         self.auth_status_label.setProperty("connected", authenticated)
         self.auth_status_label.setText(
             "✓ Connected" if authenticated else "Connect in settings"
@@ -208,8 +183,7 @@ class SpotifySyncRow(QFrame):
         self.auth_status_label.style().polish(self.auth_status_label)
 
     def set_busy(self, busy: bool) -> None:
-        self.sync_button.setEnabled(not busy and self._is_authenticated())
-        self.sync_all_button.setEnabled(not busy and self._is_authenticated())
+        self.setEnabled(not busy)
 
     def _is_authenticated(self) -> bool:
         return bool(self.auth_status_label.property("connected"))
@@ -233,6 +207,7 @@ class SpotifySettingsDialog(QDialog):
         *,
         authenticated: bool = False,
         sync_enabled: bool = False,
+        preserve_added_dates: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -240,7 +215,7 @@ class SpotifySettingsDialog(QDialog):
         self._close_notified = False
         self.setObjectName("spotifySettingsDialog")
         self.setWindowTitle("Spotify settings")
-        self.resize(500, 300)
+        self.resize(500, 360)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -285,11 +260,54 @@ class SpotifySettingsDialog(QDialog):
 
         sync_description = QLabel(
             "Sync Last reads additions since the previous manual sync. "
-            "Sync All reads the complete saved-track library in Spotify order."
+            "Sync All reads the complete saved-track library in Spotify order. "
+            "An optional range applies to Sync All."
         )
         sync_description.setObjectName("spotifySettingsDescription")
         sync_description.setWordWrap(True)
         sync_layout.addWidget(sync_description)
+
+        self.preserve_dates_checkbox = QCheckBox("Keep Spotify added dates")
+        self.preserve_dates_checkbox.setObjectName(
+            "spotifyPreserveAddedDates"
+        )
+        self.preserve_dates_checkbox.setToolTip(
+            "Use Spotify's added_at date as the track's Added date in the library."
+        )
+        self.preserve_dates_checkbox.setChecked(preserve_added_dates)
+        sync_layout.addWidget(self.preserve_dates_checkbox)
+
+        range_layout = QHBoxLayout()
+        self.track_range_checkbox = QCheckBox("Select track range")
+        self.track_range_checkbox.setObjectName("spotifyTrackRange")
+        self.track_range_checkbox.setToolTip(
+            "Use Spotify order. For example, 5–10 means tracks 5 through 10."
+        )
+        self.track_range_checkbox.toggled.connect(
+            self._set_track_range_enabled
+        )
+        range_layout.addWidget(self.track_range_checkbox)
+
+        range_layout.addWidget(QLabel("From"))
+        self.track_range_start = QSpinBox()
+        self.track_range_start.setRange(1, 1_000_000)
+        self.track_range_start.setValue(1)
+        self.track_range_start.setToolTip(
+            "First track position in Spotify order (inclusive)."
+        )
+        range_layout.addWidget(self.track_range_start)
+
+        range_layout.addWidget(QLabel("to"))
+        self.track_range_end = QSpinBox()
+        self.track_range_end.setRange(1, 1_000_000)
+        self.track_range_end.setValue(10)
+        self.track_range_end.setToolTip(
+            "Last track position in Spotify order (inclusive)."
+        )
+        range_layout.addWidget(self.track_range_end)
+        range_layout.addStretch()
+        sync_layout.addLayout(range_layout)
+        self._set_track_range_enabled(False)
 
         sync_buttons_layout = QHBoxLayout()
         sync_buttons_layout.setSpacing(8)
@@ -385,8 +403,33 @@ class SpotifySettingsDialog(QDialog):
 
         del enabled
 
+    @property
+    def preserve_added_dates(self) -> bool:
+        return self.preserve_dates_checkbox.isChecked()
+
+    def set_preserve_added_dates(self, enabled: bool) -> None:
+        self.preserve_dates_checkbox.setChecked(bool(enabled))
+
+    @property
+    def track_range(self) -> tuple[int, int] | None:
+        if not self.track_range_checkbox.isChecked():
+            return None
+        return (
+            self.track_range_start.value(),
+            self.track_range_end.value(),
+        )
+
+    def _set_track_range_enabled(self, enabled: bool) -> None:
+        self.track_range_start.setEnabled(enabled)
+        self.track_range_end.setEnabled(enabled)
+
     def set_busy(self, busy: bool, message: str) -> None:
         self.authenticate_button.setEnabled(not busy)
+        self.preserve_dates_checkbox.setEnabled(not busy)
+        self.track_range_checkbox.setEnabled(not busy)
+        self._set_track_range_enabled(
+            not busy and self.track_range_checkbox.isChecked()
+        )
         self.sync_now_button.setEnabled(
             not busy and self._is_authenticated()
         )
@@ -763,6 +806,7 @@ class YouTubeSearchDialog(QDialog):
         *,
         spotify_authenticated: bool = False,
         spotify_sync_enabled: bool = False,
+        spotify_preserve_added_dates: bool = False,
     ) -> None:
         super().__init__(parent)
         prepare_dialog(self)
@@ -774,6 +818,9 @@ class YouTubeSearchDialog(QDialog):
         # regular search flow stays labelled as YouTube, while Spotify
         # favourite sync can opt into its own import-log method.
         self._import_source = "youtube"
+        self._preserve_spotify_added_dates = bool(
+            spotify_preserve_added_dates
+        )
         self._playlist_name: str | None = None
         self._playlist_cover_url: str | None = None
         self._unmatched_playlist_tracks: tuple[
@@ -855,6 +902,7 @@ class YouTubeSearchDialog(QDialog):
         self.spotify_sync_row = SpotifySyncRow(
             authenticated=spotify_authenticated,
             sync_enabled=spotify_sync_enabled,
+            preserve_added_dates=spotify_preserve_added_dates,
             parent=self,
         )
         self.spotify_sync_row.settings_requested.connect(
@@ -1012,6 +1060,13 @@ class YouTubeSearchDialog(QDialog):
 
     def set_spotify_sync_enabled(self, enabled: bool) -> None:
         self.spotify_sync_row.set_sync_enabled(enabled)
+
+    @property
+    def preserve_spotify_added_dates(self) -> bool:
+        return self._preserve_spotify_added_dates
+
+    def set_preserve_spotify_added_dates(self, enabled: bool) -> None:
+        self._preserve_spotify_added_dates = bool(enabled)
 
     @property
     def import_source(self) -> str:

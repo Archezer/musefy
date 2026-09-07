@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from time import sleep
@@ -93,6 +94,7 @@ class FakeIngestionService:
         source: str,
         source_id: str,
         source_url: str,
+        created_at: datetime | None = None,
     ) -> Track:
         if title == "Broken track":
             raise ValueError("duplicate track")
@@ -101,6 +103,7 @@ class FakeIngestionService:
             id=track_id,
             title=title,
             artist=artist,
+            created_at=created_at or datetime.now(UTC),
             source=source,
             source_id=source_id,
             source_url=source_url,
@@ -117,11 +120,13 @@ class FakeIngestionService:
         source: str,
         source_id: str,
         source_url: str,
+        created_at: datetime | None = None,
     ) -> Track:
         return Track(
             id=existing_track.id,
             title=title,
             artist=artist,
+            created_at=created_at or existing_track.created_at,
             source=source,
             source_id=source_id,
             source_url=source_url,
@@ -520,7 +525,11 @@ class FakeSpotifyProvider:
         return SpotifyPlaylist(
             name="Imported playlist",
             tracks=(
-                SpotifyTrack("First track", "Artist One"),
+                SpotifyTrack(
+                    "First track",
+                    "Artist One",
+                    added_at="2026-09-04T10:00:00Z",
+                ),
                 SpotifyTrack("Second track", "Artist Two"),
             ),
         )
@@ -579,6 +588,41 @@ def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
         0,
         1,
     ]
+    assert result.candidates[0].spotify_added_at == (
+        "2026-09-04T10:00:00Z"
+    )
+
+
+def test_spotify_favorite_import_can_preserve_added_at() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeDownloadProvider(),
+    )
+    candidate = YouTubeCandidate(
+        video_id="video-1",
+        title="YouTube title",
+        channel_title="YouTube channel",
+        duration_ms=None,
+        view_count=None,
+        url="https://youtu.be/video-1",
+        requested_title="Spotify title",
+        requested_artist="Spotify artist",
+        spotify_added_at="2026-09-04T10:00:00Z",
+    )
+
+    imported = service.download_and_import(
+        candidate,
+        source="spotify_favorite",
+        preserve_added_dates=True,
+    )
+
+    assert imported.created_at == datetime(
+        2026,
+        9,
+        4,
+        10,
+        tzinfo=UTC,
+    )
 
 
 def test_retry_playlist_search_preserves_original_positions() -> None:

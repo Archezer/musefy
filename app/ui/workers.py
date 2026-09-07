@@ -11,13 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QRunnable, QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 from app.domain.models import Track
 from app.ml.cancellation import AnalysisCancelled
-from app.ml.genre_analysis import GenreAnalysisService
 from app.services.library_maintenance import LibraryHealthService
 from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
@@ -25,6 +25,9 @@ from app.services.youtube_import import OperationCancelled
 from app.sources.spotify import SpotifyTrack
 from app.sources.youtube import YouTubeCandidate
 from app.ui.music_map import MapBuildResult, MusicMapWidget
+
+if TYPE_CHECKING:
+    from app.ml.genre_analysis import GenreAnalysisService
 
 
 @dataclass(frozen=True)

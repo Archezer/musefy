@@ -51,6 +51,9 @@ class YouTubeCandidate:
     requested_title: str | None = None
     requested_artist: str | None = None
     playlist_position: int | None = None
+    # Spotify's saved-track date is carried through the YouTube match so the
+    # importer can optionally use it as the library date.
+    spotify_added_at: str | None = None
 
 
 class YouTubeSearchProvider:

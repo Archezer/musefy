@@ -158,3 +158,28 @@ def test_sync_all_returns_every_saved_track(tmp_path) -> None:
 
     assert result.new_tracks == tracks
     assert provider.calls == 1
+
+
+def test_sync_all_can_read_an_inclusive_spotify_track_range(tmp_path) -> None:
+    tracks = tuple(
+        SpotifyTrack(
+            f"Track {index}",
+            "Artist",
+            spotify_id=f"track-{index}",
+        )
+        for index in range(1, 9)
+    )
+    provider = FakeSpotifyProvider(tracks)
+    service = SpotifyFavSyncService(
+        provider,
+        state_path=tmp_path / "spotify-sync.json",
+    )
+
+    result = service.sync_all_saved_tracks(track_range=(5, 10))
+
+    assert [track.spotify_id for track in result.new_tracks] == [
+        "track-5",
+        "track-6",
+        "track-7",
+        "track-8",
+    ]
