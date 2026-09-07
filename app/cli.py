@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Musefy user identifier (default: user-1)",
     )
 
+    commands.add_parser(
+        "spotify-reauthorize",
+        help="Refresh Spotify OAuth authorization and saved token",
+    )
+
     return parser
 
 
@@ -179,6 +184,14 @@ def import_spotify_favorites(arguments: argparse.Namespace) -> None:
     print(f"Active preferences: {result.active_preferences}")
     print(f"Deactivated preferences: {result.deactivated_preferences}")
     print(f"Skipped: {result.skipped_tracks}")
+
+
+def reauthorize_spotify(_arguments: argparse.Namespace) -> None:
+    """Force a fresh Spotify OAuth flow and save the new token."""
+
+    provider = SpotifyMetadataProvider()
+    provider.reauthorize()
+    print("Spotify OAuth completed. Token was refreshed.")
 
 
 def record_interaction(
@@ -472,6 +485,8 @@ def main() -> None:
         import_youtube_url(arguments)
     elif arguments.command == "spotify-import-favorites":
         import_spotify_favorites(arguments)
+    elif arguments.command == "spotify-reauthorize":
+        reauthorize_spotify(arguments)
 
 
 if __name__ == "__main__":
