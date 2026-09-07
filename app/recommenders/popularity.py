@@ -28,6 +28,7 @@ from app.recommenders.feedback import (
     suppressed_track_ids,
 )
 from app.recommenders.protocols import Recommender
+from app.recommenders.recency import recency_bonus
 from app.storage.protocols import MusicStore
 
 DEFAULT_REPLAY_COOLDOWN = 30
@@ -334,9 +335,14 @@ class MostPopularRecommender(Recommender):
             contextual_interactions,
             now=current_time,
         )
+        ranking_scores = {
+            track.id: user_track_weights.get(track.id, 0.0)
+            + recency_bonus(track, now=current_time)
+            for track in candidates
+        }
         candidates.sort(
             key=lambda track: (
-                -user_track_weights.get(track.id, 0.0),
+                -ranking_scores[track.id],
                 track.artist.casefold(),
                 track.title.casefold(),
             )
@@ -508,6 +514,12 @@ class MostPopularRecommender(Recommender):
 
             track_scores[track.id] += genre_bonus
 
+        ranking_scores = {
+            track.id: track_scores[track.id]
+            + recency_bonus(track, now=current_time)
+            for track in tracks
+        }
+
         cooldown_track_ids = (
             self._get_cooldown_track_ids(
                 user_id=user_id,
@@ -553,7 +565,7 @@ class MostPopularRecommender(Recommender):
                         track.id,
                         float("-inf"),
                     ),
-                    -track_scores[track.id],
+                    -ranking_scores[track.id],
                     track.artist,
                     track.title,
                 )
@@ -561,7 +573,7 @@ class MostPopularRecommender(Recommender):
         else:
             candidate_tracks.sort(
                 key=lambda track: (
-                    -track_scores[track.id],
+                    -ranking_scores[track.id],
                     track.artist,
                     track.title,
                 )
@@ -570,7 +582,7 @@ class MostPopularRecommender(Recommender):
         selected_tracks = (
             self._select_with_exploration(
                 candidates=candidate_tracks,
-                track_scores=track_scores,
+                track_scores=ranking_scores,
                 limit=limit,
             )
         )

@@ -22,6 +22,7 @@ from app.recommenders.feedback import (
     latest_user_preference_states,
     suppressed_track_ids,
 )
+from app.recommenders.recency import recency_bonus
 from app.storage.protocols import MusicStore
 
 DEFAULT_REPLAY_COOLDOWN = 30
@@ -151,7 +152,11 @@ class MoodRecommender:
             )
         scored_tracks.sort(
             key=lambda item: (
-                -(item[1] + item[2]),
+                -(
+                    item[1]
+                    + item[2]
+                    + recency_bonus(item[0], now=current_time)
+                ),
                 item[0].artist.casefold(),
                 item[0].title.casefold(),
             )
@@ -160,7 +165,12 @@ class MoodRecommender:
         effective_scores = [
             (
                 track,
-                min(1.0, similarity + feedback_bonus),
+                min(
+                    1.0,
+                    similarity
+                    + feedback_bonus
+                    + recency_bonus(track, now=current_time),
+                ),
             )
             for track, similarity, feedback_bonus in scored_tracks
         ]
@@ -403,6 +413,7 @@ class MoodRecommender:
                 + 0.40 * embedding_similarity
                 + 0.15 * affinity
                 + feedback_scores.get(track.id, 0.0)
+                + recency_bonus(track, now=current_time)
             )
             scored_tracks.append(
                 (

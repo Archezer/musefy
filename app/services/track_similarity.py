@@ -11,6 +11,7 @@ from app.recommenders.similarity import (
     SimilarTrack,
     TrackSimilarityIndex,
 )
+from app.recommenders.recency import recency_bonus
 from app.storage.protocols import MusicStore
 
 RADIO_BASE_POOL_EXTRA = 6
@@ -170,9 +171,19 @@ class TrackSimilarityService:
             if neighbor.track_id not in excluded_ids
         ]
         candidate_pool = self._select_candidate_pool(neighbors, limit)
+        current_time = datetime.now(UTC)
         candidate_pool.sort(
             key=lambda neighbor: (
-                neighbor.score + self.random.uniform(-0.02, 0.02)
+                neighbor.score
+                + (
+                    recency_bonus(
+                        tracks_by_id[neighbor.track_id],
+                        now=current_time,
+                    )
+                    if neighbor.track_id in tracks_by_id
+                    else 0.0
+                )
+                + self.random.uniform(-0.02, 0.02)
             ),
             reverse=True,
         )
