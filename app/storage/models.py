@@ -386,6 +386,10 @@ class RecommendationImpressionRecord(Base):
         String(64),
         nullable=True,
     )
+    playlist_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     feature_snapshot_json: Mapped[str] = mapped_column(
         Text,
         default="{}",

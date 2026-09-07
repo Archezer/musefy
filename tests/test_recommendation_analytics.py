@@ -241,12 +241,14 @@ def test_sqlalchemy_impressions_round_trip_and_track_cleanup(
         "user-1",
         [recommendation],
         session_id="wave-1",
+        playlist_id="playlist-1",
     )
 
     impressions = list(sql_store.list_recommendation_impressions())
     assert len(impressions) == 1
     assert impressions[0].mode == RecommendationMode.MY_WAVE
     assert impressions[0].session_id == "wave-1"
+    assert impressions[0].playlist_id == "playlist-1"
 
     sql_store.delete_track("track-1")
     assert list(sql_store.list_recommendation_impressions()) == []

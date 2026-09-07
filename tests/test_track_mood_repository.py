@@ -43,6 +43,10 @@ def test_track_mood_round_trip(
             mood_tags=(("mood/theme---dark", 0.91),),
             mood_profiles=(("dark", 0.88), ("energetic", 0.54)),
             mood_analysis_version="music2emo-v1",
+            loudness_lufs=-16.2,
+            loudness_true_peak_db=-1.4,
+            loudness_gain_db=2.2,
+            loudness_analysis_version="ffmpeg-ebur128-v1",
         )
     )
 
@@ -59,6 +63,10 @@ def test_track_mood_round_trip(
         ("energetic", 0.54),
     )
     assert loaded_track.mood_analysis_version == "music2emo-v1"
+    assert loaded_track.loudness_lufs == pytest.approx(-16.2)
+    assert loaded_track.loudness_true_peak_db == pytest.approx(-1.4)
+    assert loaded_track.loudness_gain_db == pytest.approx(2.2)
+    assert loaded_track.loudness_analysis_version == "ffmpeg-ebur128-v1"
 
 
 def test_recommendation_session_round_trip(

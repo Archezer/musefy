@@ -37,6 +37,7 @@ class HybridRecommendationRanker:
         recommendations: list[Recommendation],
         *,
         shown_at: datetime | None = None,
+        playlist_id: str | None = None,
     ) -> list[Recommendation]:
         """Return ML-ranked candidates, or the unchanged baseline on failure."""
 
@@ -58,6 +59,7 @@ class HybridRecommendationRanker:
                     recommendation=recommendation,
                     position=position,
                     shown_at=timestamp,
+                    playlist_id=playlist_id,
                 )
                 model_logit = score_feature_snapshot(
                     self.model.model,

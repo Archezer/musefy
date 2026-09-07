@@ -89,6 +89,10 @@ from app.services.library_maintenance import (
     LibraryHealthReport,
     LibraryHealthService,
 )
+from app.services.loudness import (
+    LOUDNESS_ANALYSIS_VERSION,
+    LoudnessAnalysis,
+)
 from app.services.mp3party_import import (
     Mp3PartyCandidate,
     Mp3PartyImportService,
@@ -209,6 +213,7 @@ from app.ui.workers import (
     GenreAnalysisTask,
     LazyGenreAnalysisService,
     LibraryHealthTaskThread,
+    LoudnessAnalysisTask,
     MusicMapTask,
     RecommendationTask,
     WatchFolderTaskThread,
@@ -399,10 +404,12 @@ class MainWindow(QMainWindow):
         self._recommendation_generation = 0
         self._recommendation_impression_session_id: str | None = None
         self._recommendation_impression_position = 0
+        self._recommendation_impression_playlist_id: str | None = None
         self._mood_session_task: RecommendationTask | None = None
         self._mood_session_generation = 0
         self._mood_session_impression_session_id: str | None = None
         self._mood_session_impression_position = 0
+        self._mood_session_playlist_id: str | None = None
         self._mood_session_result_generation: int | None = None
         self._mood_session_pending_name: str | None = None
         self._mood_session_pending_mode: RecommendationMode | None = None
@@ -419,6 +426,7 @@ class MainWindow(QMainWindow):
         self._radio_recommendation_inflight = False
         self._radio_impression_session_id: str | None = None
         self._radio_impression_position = 0
+        self._radio_impression_playlist_id: str | None = None
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id: str | None = None
         self._queue_render_generation = 0
@@ -454,6 +462,7 @@ class MainWindow(QMainWindow):
         self._repeat_mode = RepeatMode.OFF
         self._player_duration_ms = 0
         self._pending_restore_position_ms: int | None = None
+        self._current_track_loudness_gain_db = 0.0
         self._volume_settings = QSettings("Musefy", "Musefy")
         self._master_volume_percent = self._clamp_master_volume_percent(
             self._volume_settings.value(
@@ -477,6 +486,18 @@ class MainWindow(QMainWindow):
                 type=bool,
             )
         )
+        self._loudness_normalization_enabled = bool(
+            self._volume_settings.value(
+                "playback/loudness_normalization",
+                True,
+                type=bool,
+            )
+        )
+        self._loudness_analysis_tasks: set[LoudnessAnalysisTask] = set()
+        self._loudness_pending_track_ids: set[str] = set()
+        self._loudness_analysis_total = 0
+        self._loudness_analysis_completed = 0
+        self._loudness_analysis_failed = 0
         self._parallel_genre_analysis_enabled = bool(
             self._playback_state_settings.value(
                 "performance/parallel_genre_analysis",
@@ -540,6 +561,8 @@ class MainWindow(QMainWindow):
         self._mood_recommendation_pool.setMaxThreadCount(1)
         self._radio_recommendation_pool = QThreadPool(self)
         self._radio_recommendation_pool.setMaxThreadCount(1)
+        self._loudness_analysis_pool = QThreadPool(self)
+        self._loudness_analysis_pool.setMaxThreadCount(1)
         self._model_idle_timer = QTimer(self)
         self._model_idle_timer.setInterval(60_000)
         self._model_idle_timer.timeout.connect(self._unload_idle_models)
@@ -633,6 +656,10 @@ class MainWindow(QMainWindow):
 
     def _finish_initial_load(self) -> None:
         self._restore_playback_state()
+        # Loudness measurement is lightweight compared with ML analysis, but
+        # still decode-bound.  Start it after the first window paint so it
+        # cannot delay the initial UI or playback restoration.
+        QTimer.singleShot(1_000, self._analyze_missing_loudness)
 
     def _build_interface(self) -> None:
         app_root = QWidget()
@@ -971,15 +998,35 @@ class MainWindow(QMainWindow):
         playlist_header.setSpacing(4)
         playlist_header.addStretch()
 
-        playlist_menu_button = HoverCircleMenuButton()
-        playlist_menu_button.setObjectName("plainActionButton")
-        playlist_menu_button.setText("•••")
-        playlist_menu_button.setToolTip("Playlist actions")
-        playlist_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        playlist_menu = QMenu(playlist_menu_button)
-        playlist_menu.addAction("New playlist", self._create_playlist)
-        playlist_menu.addSeparator()
-        master_volume_menu = playlist_menu.addMenu("Master volume")
+        audio_menu_button = HoverCircleMenuButton()
+        audio_menu_button.setObjectName("plainActionButton")
+        audio_menu_button.setIcon(svg_icon(VOLUME_ICON, size=18))
+        audio_menu_button.setIconSize(QSize(18, 18))
+        audio_menu_button.setToolTip("Audio settings")
+        audio_menu_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        audio_menu = QMenu(audio_menu_button)
+        audio_menu.addAction(
+            "Analyze loudness of library",
+            lambda _checked=False: self._analyze_missing_loudness(),
+        )
+        audio_menu.addSeparator()
+        self.loudness_normalization_action = audio_menu.addAction(
+            "Loudness normalization",
+        )
+        self.loudness_normalization_action.setCheckable(True)
+        self.loudness_normalization_action.setChecked(
+            self._loudness_normalization_enabled
+        )
+        self.loudness_normalization_action.setToolTip(
+            "Match track loudness while protecting against clipping"
+        )
+        self.loudness_normalization_action.toggled.connect(
+            self._set_loudness_normalization_enabled
+        )
+        audio_menu.addSeparator()
+        master_volume_menu = audio_menu.addMenu("Master volume")
         master_volume_widget = QWidget(master_volume_menu)
         master_volume_widget.setMinimumWidth(212)
         master_volume_layout = QVBoxLayout(master_volume_widget)
@@ -993,12 +1040,29 @@ class MainWindow(QMainWindow):
         )
         self.master_volume_slider.setRange(0, 100)
         self.master_volume_slider.setValue(self._master_volume_percent)
-        self.master_volume_slider.valueChanged.connect(self._set_master_volume_percent)
+        self.master_volume_slider.valueChanged.connect(
+            self._set_master_volume_percent
+        )
         master_volume_layout.addWidget(self.master_volume_slider)
         self._update_master_volume_label()
         master_volume_action = QWidgetAction(master_volume_menu)
         master_volume_action.setDefaultWidget(master_volume_widget)
         master_volume_menu.addAction(master_volume_action)
+        audio_menu_button.setMenu(audio_menu)
+        audio_menu_button.setProperty("topMenu", True)
+        audio_menu_button.setFixedSize(32, 32)
+        self._search_actions_layout.addWidget(
+            audio_menu_button,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        playlist_menu_button = HoverCircleMenuButton()
+        playlist_menu_button.setObjectName("plainActionButton")
+        playlist_menu_button.setText("•••")
+        playlist_menu_button.setToolTip("Playlist actions")
+        playlist_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        playlist_menu = QMenu(playlist_menu_button)
         self.liquid_glass_action = playlist_menu.addAction(
             "Liquid glass panels",
         )
@@ -2918,6 +2982,7 @@ class MainWindow(QMainWindow):
         else:
             self._library_tracks.append(track)
 
+        self._enqueue_loudness_analysis(track)
         self._schedule_library_refresh()
 
     def _track_table_text(
@@ -3069,6 +3134,8 @@ class MainWindow(QMainWindow):
             f"sidebar-{generation}-{uuid4().hex}"
         )
         self._recommendation_impression_position = 0
+        playlist_id = self._active_playlist_context_id()
+        self._recommendation_impression_playlist_id = playlist_id
         if self._recommendation_task is not None:
             self._recommendation_task.cancel()
 
@@ -3079,6 +3146,7 @@ class MainWindow(QMainWindow):
             user_id=self.user_id,
             limit=10,
             context=context,
+            playlist_id=playlist_id,
         )
         cancellable_fetcher = None
         if context.mode in {
@@ -3091,6 +3159,7 @@ class MainWindow(QMainWindow):
                     user_id=self.user_id,
                     limit=10,
                     context=context,
+                    playlist_id=playlist_id,
                     should_cancel=should_cancel,
                 )
             )
@@ -3139,6 +3208,7 @@ class MainWindow(QMainWindow):
             shown_recommendations,
             session_id=self._recommendation_impression_session_id,
             position_offset=self._recommendation_impression_position,
+            playlist_id=self._recommendation_impression_playlist_id,
         ):
             self._recommendation_impression_position += len(shown_recommendations)
 
@@ -3148,6 +3218,7 @@ class MainWindow(QMainWindow):
         *,
         session_id: str | None = None,
         position_offset: int = 0,
+        playlist_id: str | None = None,
     ) -> bool:
         if not recommendations:
             return False
@@ -3156,6 +3227,7 @@ class MainWindow(QMainWindow):
                 self.user_id,
                 recommendations,
                 session_id=session_id,
+                playlist_id=playlist_id,
                 position_offset=position_offset,
             )
         except (OSError, RuntimeError, ValueError):
@@ -3256,6 +3328,7 @@ class MainWindow(QMainWindow):
         generation = self._mood_session_generation
         self._mood_session_impression_session_id = f"mood-{generation}-{uuid4().hex}"
         self._mood_session_impression_position = 0
+        self._mood_session_playlist_id = self._active_playlist_context_id()
         self._mood_session_result_generation = None
         self._mood_session_pending_name = session_name
         self._mood_session_pending_mode = context.mode
@@ -3275,6 +3348,7 @@ class MainWindow(QMainWindow):
                     user_id=self.user_id,
                     limit=initial_limit,
                     context=context,
+                    playlist_id=self._mood_session_playlist_id,
                     should_cancel=should_cancel,
                 )
             ),
@@ -3355,6 +3429,7 @@ class MainWindow(QMainWindow):
             shown_recommendations,
             session_id=self._mood_session_impression_session_id,
             position_offset=self._mood_session_impression_position,
+            playlist_id=self._mood_session_playlist_id,
         ):
             self._mood_session_impression_position += len(shown_recommendations)
         self.selected_mood_name = (
@@ -3719,6 +3794,9 @@ class MainWindow(QMainWindow):
         if track is None:
             return
 
+        self._radio_impression_playlist_id = (
+            self._active_playlist_context_id()
+        )
         self._cancel_mood_session()
         if manual_track_ids is None:
             manual_track_ids = self._manual_queue_snapshot()
@@ -3855,6 +3933,7 @@ class MainWindow(QMainWindow):
                 shown_recommendations,
                 session_id=self._radio_impression_session_id,
                 position_offset=self._radio_impression_position,
+                playlist_id=self._radio_impression_playlist_id,
             ):
                 self._radio_impression_position += len(shown_recommendations)
             self.playback_queue_service.append_remaining(additions)
@@ -3923,6 +4002,7 @@ class MainWindow(QMainWindow):
                     user_id=self.user_id,
                     limit=limit,
                     context=RecommendationContext(),
+                    playlist_id=self._radio_impression_playlist_id,
                 )
             except (RuntimeError, ValueError):
                 fallback = []
@@ -3970,6 +4050,7 @@ class MainWindow(QMainWindow):
                     context=RecommendationContext.track_radio(seed_track_id),
                     excluded_track_ids=excluded_track_ids,
                     should_cancel=should_cancel,
+                    playlist_id=self._radio_impression_playlist_id,
                 )
             )
         except RuntimeError:
@@ -4024,6 +4105,7 @@ class MainWindow(QMainWindow):
                     context=context,
                     should_cancel=should_cancel,
                     excluded_track_ids=excluded_track_ids,
+                    playlist_id=self._mood_session_playlist_id,
                 )
             ),
         )
@@ -4078,6 +4160,7 @@ class MainWindow(QMainWindow):
             shown_recommendations,
             session_id=self._mood_session_impression_session_id,
             position_offset=self._mood_session_impression_position,
+            playlist_id=self._mood_session_playlist_id,
         ):
             self._mood_session_impression_position += len(shown_recommendations)
         if shown_recommendations:
@@ -5611,6 +5694,24 @@ class MainWindow(QMainWindow):
             return None
 
         return playlist
+
+    def _active_playlist_context_id(self) -> str | None:
+        """Return the explicit playlist context active at recommendation time."""
+
+        if (
+            self.selected_playlist_id is not None
+            and self.store.get_playlist(self.selected_playlist_id) is not None
+        ):
+            return self.selected_playlist_id
+
+        queue = self.playback_queue_service.queue
+        playlist_id = queue.source_playlist_id if queue is not None else None
+        if (
+            playlist_id is not None
+            and self.store.get_playlist(playlist_id) is not None
+        ):
+            return playlist_id
+        return None
 
     def _resolve_playlist(
         self,
@@ -7430,6 +7531,7 @@ class MainWindow(QMainWindow):
         self._cancel_mood_session()
         self._cancel_radio_recommendations()
         self._cancel_genre_analysis_tasks()
+        self._cancel_loudness_analysis()
         self._cancel_track_materialization()
         self._music_map_pool.clear()
         self._recommendation_pool.clear()
@@ -7441,6 +7543,7 @@ class MainWindow(QMainWindow):
         self._recommendation_pool.waitForDone(3_000)
         self._mood_recommendation_pool.waitForDone(3_000)
         self._radio_recommendation_pool.waitForDone(3_000)
+        self._loudness_analysis_pool.waitForDone(3_000)
         if self.music_map.has_map_data_for(self._music_map_signature):
             self.music_map.capture_snapshot()
             self._save_music_map_snapshot()
@@ -9031,6 +9134,159 @@ class MainWindow(QMainWindow):
 
         self._load_playlists()
 
+    @staticmethod
+    def _track_has_loudness_analysis(track: Track) -> bool:
+        return (
+            track.loudness_lufs is not None
+            and track.loudness_true_peak_db is not None
+            and track.loudness_gain_db is not None
+            and track.loudness_analysis_version == LOUDNESS_ANALYSIS_VERSION
+        )
+
+    def _analyze_missing_loudness(self) -> None:
+        """Queue loudness analysis for local tracks that have no measurement."""
+
+        if self._is_shutting_down:
+            return
+        if self._loudness_pending_track_ids:
+            self.statusBar().showMessage("Loudness analysis is already running")
+            return
+
+        tracks = [
+            track
+            for track in self.store.list_tracks()
+            if (
+                track.local_path
+                and Path(track.local_path).is_file()
+                and not self._track_has_loudness_analysis(track)
+            )
+        ]
+        if not tracks:
+            self.statusBar().showMessage(
+                "The library has no unanalyzed local loudness tracks."
+            )
+            return
+
+        for track in tracks:
+            self._enqueue_loudness_analysis(track)
+
+        self.statusBar().showMessage(
+            f"Loudness analysis queued: {len(tracks)} track(s)"
+        )
+
+    def _enqueue_loudness_analysis(self, track: Track) -> None:
+        if self._is_shutting_down:
+            return
+
+        stored_track = self.store.get_track(track.id)
+        if stored_track is not None:
+            track = stored_track
+
+        if (
+            not track.local_path
+            or not Path(track.local_path).is_file()
+            or self._track_has_loudness_analysis(track)
+            or track.id in self._loudness_pending_track_ids
+        ):
+            return
+
+        if not self._loudness_pending_track_ids:
+            self._loudness_analysis_total = 0
+            self._loudness_analysis_completed = 0
+            self._loudness_analysis_failed = 0
+
+        self._loudness_pending_track_ids.add(track.id)
+        self._loudness_analysis_total += 1
+        task = LoudnessAnalysisTask(
+            track_id=track.id,
+            audio_path=Path(track.local_path),
+        )
+        task.signals.result_ready.connect(self._handle_loudness_analysis_result)
+        task.signals.error_occurred.connect(self._handle_loudness_analysis_error)
+        task.signals.finished.connect(self._handle_loudness_analysis_finished)
+        task.signals.finished.connect(
+            lambda _track_id, task=task: self._forget_loudness_analysis_task(task)
+        )
+        self._loudness_analysis_tasks.add(task)
+        self._loudness_analysis_pool.start(task)
+
+    def _forget_loudness_analysis_task(
+        self,
+        task: LoudnessAnalysisTask,
+    ) -> None:
+        self._loudness_analysis_tasks.discard(task)
+
+    def _handle_loudness_analysis_result(
+        self,
+        track_id: str,
+        analysis_result: object,
+    ) -> None:
+        if track_id not in self._loudness_pending_track_ids:
+            return
+        if not isinstance(analysis_result, LoudnessAnalysis):
+            self._handle_loudness_analysis_error(
+                track_id,
+                "Loudness analysis returned an invalid result.",
+            )
+            return
+
+        try:
+            updated_track = self.track_management_service.update_loudness(
+                track_id=track_id,
+                loudness_lufs=analysis_result.integrated_lufs,
+                loudness_true_peak_db=analysis_result.true_peak_db,
+                loudness_gain_db=analysis_result.gain_db,
+                loudness_analysis_version=LOUDNESS_ANALYSIS_VERSION,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            self._handle_loudness_analysis_error(track_id, str(error))
+            return
+
+        self._update_library_track_row(updated_track)
+        if self.current_track_id == track_id:
+            self._apply_track_loudness_gain(updated_track)
+
+    def _handle_loudness_analysis_error(
+        self,
+        track_id: str,
+        message: str,
+    ) -> None:
+        if track_id not in self._loudness_pending_track_ids:
+            return
+        self._loudness_analysis_failed += 1
+        self.statusBar().showMessage(
+            f"Loudness analysis failed for {track_id}: {message}"
+        )
+
+    def _handle_loudness_analysis_finished(self, track_id: str) -> None:
+        if track_id not in self._loudness_pending_track_ids:
+            return
+
+        self._loudness_pending_track_ids.remove(track_id)
+        self._loudness_analysis_completed += 1
+        if self._loudness_pending_track_ids:
+            self.statusBar().showMessage(
+                "Loudness analysis progress: "
+                f"{self._loudness_analysis_completed}/"
+                f"{self._loudness_analysis_total}"
+            )
+            return
+
+        analyzed_count = (
+            self._loudness_analysis_total - self._loudness_analysis_failed
+        )
+        self.statusBar().showMessage(
+            "Loudness analysis completed: "
+            f"{analyzed_count}/{self._loudness_analysis_total} tracks"
+        )
+
+    def _cancel_loudness_analysis(self) -> None:
+        for task in tuple(self._loudness_analysis_tasks):
+            task.cancel()
+        self._loudness_analysis_pool.clear()
+        self._loudness_analysis_tasks.clear()
+        self._loudness_pending_track_ids.clear()
+
     def _enqueue_genre_analysis(
         self,
         track: Track,
@@ -9813,6 +10069,7 @@ class MainWindow(QMainWindow):
 
         source_url = QUrl.fromLocalFile(str(audio_path.resolve()))
         self.current_track_id = track.id
+        self._apply_track_loudness_gain(track)
         # A stale EndOfMedia event from the previous source can arrive while
         # Qt is switching to this one. Do not let it advance the new queue
         # item before the new source has reached a loaded state.
@@ -10004,11 +10261,21 @@ class MainWindow(QMainWindow):
         self,
         value: int,
     ) -> None:
-        self.audio_output.setVolume(
-            self._output_volume(value, self._master_volume_percent)
-        )
+        self._apply_audio_output_volume(value)
 
         self.statusBar().showMessage(f"Volume: {value}%")
+
+    def _set_loudness_normalization_enabled(self, enabled: bool) -> None:
+        self._loudness_normalization_enabled = bool(enabled)
+        self._volume_settings.setValue(
+            "playback/loudness_normalization",
+            self._loudness_normalization_enabled,
+        )
+        self._apply_audio_output_volume()
+        self.statusBar().showMessage(
+            "Loudness normalization "
+            f"{'enabled' if self._loudness_normalization_enabled else 'disabled'}"
+        )
 
     def _set_master_volume_percent(self, value: int) -> None:
         """Persist the master gain and apply it to the current volume."""
@@ -10021,7 +10288,7 @@ class MainWindow(QMainWindow):
         )
         self._update_master_volume_label()
         if hasattr(self, "volume_slider"):
-            self._handle_volume_changed(self.volume_slider.value())
+            self._apply_audio_output_volume(self.volume_slider.value())
 
     def _update_master_volume_label(self) -> None:
         if hasattr(self, "master_volume_label"):
@@ -10033,8 +10300,40 @@ class MainWindow(QMainWindow):
     def _clamp_master_volume_percent(value: int) -> int:
         return max(0, min(int(value), 100))
 
+    def _apply_track_loudness_gain(self, track: Track) -> None:
+        self._current_track_loudness_gain_db = (
+            track.loudness_gain_db
+            if self._track_has_loudness_analysis(track)
+            else 0.0
+        )
+        self._apply_audio_output_volume()
+
+    def _apply_audio_output_volume(self, value: int | None = None) -> None:
+        if value is None:
+            value = (
+                self.volume_slider.value()
+                if hasattr(self, "volume_slider")
+                else DEFAULT_VOLUME_PERCENT
+            )
+        gain_db = (
+            self._current_track_loudness_gain_db
+            if self._loudness_normalization_enabled
+            else 0.0
+        )
+        self.audio_output.setVolume(
+            self._output_volume(
+                value,
+                self._master_volume_percent,
+                gain_db,
+            )
+        )
+
     @staticmethod
-    def _output_volume(value: int, master_volume: int = 100) -> float:
+    def _output_volume(
+        value: int,
+        master_volume: int = 100,
+        track_gain_db: float = 0.0,
+    ) -> float:
         normalized = max(0, min(value, 100)) / 100
         if normalized <= 0.5:
             # The first half is deliberately gentle, giving the user a
@@ -10047,7 +10346,11 @@ class MainWindow(QMainWindow):
             loud_position = (normalized - 0.5) / 0.5
             response = 0.5 + 0.5 * loud_position**0.72
         master_gain = max(0, min(master_volume, 100)) / 100
-        return response * MAX_AUDIO_GAIN * master_gain
+        normalization_gain = 10 ** (track_gain_db / 20)
+        return min(
+            1.0,
+            response * MAX_AUDIO_GAIN * master_gain * normalization_gain,
+        )
 
     def _get_active_recommendation_context(self) -> str | None:
         queue = self.playback_queue_service.queue

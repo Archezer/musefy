@@ -185,6 +185,7 @@ class RecommendationImpression:
     reason: str = ""
     shown_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str | None = None
+    playlist_id: str | None = None
     # Immutable point-in-time features used by a future ranker.
     # An empty snapshot keeps legacy callers and baseline recommenders valid.
     feature_snapshot: tuple[tuple[str, float], ...] = ()

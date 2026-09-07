@@ -161,6 +161,14 @@ def create_database() -> None:
                 )
             )
 
+        if "playlist_id" not in impression_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE recommendation_impressions "
+                    "ADD COLUMN playlist_id VARCHAR(64)"
+                )
+            )
+
         columns = {
             column["name"]
             for column in inspect(connection).get_columns(

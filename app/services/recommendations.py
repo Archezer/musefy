@@ -48,6 +48,7 @@ class RecommendationService:
         target_mood: MoodVector | None = None,
         should_cancel: Callable[[], bool] | None = None,
         excluded_track_ids: Collection[str] | None = None,
+        playlist_id: str | None = None,
     ) -> list[Recommendation]:
         normalized_user_id = user_id.strip()
 
@@ -88,6 +89,7 @@ class RecommendationService:
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
+                playlist_id=playlist_id,
             )
 
         if context.mode == RecommendationMode.MY_WAVE:
@@ -109,6 +111,7 @@ class RecommendationService:
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
+                playlist_id=playlist_id,
             )
 
         if context.mode == RecommendationMode.GENRE:
@@ -129,6 +132,7 @@ class RecommendationService:
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
+                playlist_id=playlist_id,
             )
 
         if context.mode == RecommendationMode.TRACK_RADIO:
@@ -145,6 +149,7 @@ class RecommendationService:
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
+                playlist_id=playlist_id,
             )
 
         recommendations = self.recommender.recommend(
@@ -154,13 +159,20 @@ class RecommendationService:
         return self._apply_hybrid_ranker(
             normalized_user_id,
             recommendations,
+            playlist_id=playlist_id,
         )
 
     def _apply_hybrid_ranker(
         self,
         user_id: str,
         recommendations: list[Recommendation],
+        *,
+        playlist_id: str | None = None,
     ) -> list[Recommendation]:
         if self.hybrid_ranker is None:
             return recommendations
-        return self.hybrid_ranker.rerank(user_id, recommendations)
+        return self.hybrid_ranker.rerank(
+            user_id,
+            recommendations,
+            playlist_id=playlist_id,
+        )

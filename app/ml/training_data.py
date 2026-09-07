@@ -191,13 +191,15 @@ def build_ranker_dataset(
             )
         )
 
+    observed_feature_names = {
+        name
+        for example in examples
+        for name, _ in example.feature_snapshot
+    }
     feature_names = tuple(
         sorted(
-            {
-                name
-                for example in examples
-                for name, _ in example.feature_snapshot
-            }
+            set(RECOMMENDATION_FEATURE_NAMES)
+            | observed_feature_names
         )
     )
     return RankerDataset(
@@ -243,10 +245,31 @@ def make_synthetic_ranker_dataset(
             has_history = float(play_count > 0.1)
             track_has_mood = float(mood_similarity > 0.2)
             position = float((item_index % 10) + 1)
+            playlist_context_available = float(random.random() > 0.25)
+            playlist_embedding_similarity = (
+                random.random() * playlist_context_available
+            )
+            playlist_genre_similarity = (
+                random.random() * playlist_context_available
+            )
+            playlist_mood_similarity = (
+                random.random() * playlist_context_available
+            )
+            playlist_track_membership = float(
+                playlist_context_available > 0.0
+                and random.random() > 0.45
+            )
+            playlist_position = (
+                random.random() * playlist_track_membership
+            )
             logit = (
                 0.6 * baseline_score
                 + 0.5 * mood_similarity
                 + 0.4 * embedding_similarity
+                + 0.25 * playlist_mood_similarity
+                + 0.2 * playlist_embedding_similarity
+                + 0.15 * playlist_genre_similarity
+                + 0.1 * playlist_track_membership
                 + 0.7 * user_affinity
                 + 0.45 * completion_rate
                 + 0.2 * log_play_count
@@ -273,6 +296,22 @@ def make_synthetic_ranker_dataset(
                                     embedding_similarity
                                 ),
                                 "mood_similarity": mood_similarity,
+                                "playlist_context_available": (
+                                    playlist_context_available
+                                ),
+                                "playlist_embedding_similarity": (
+                                    playlist_embedding_similarity
+                                ),
+                                "playlist_genre_similarity": (
+                                    playlist_genre_similarity
+                                ),
+                                "playlist_mood_similarity": (
+                                    playlist_mood_similarity
+                                ),
+                                "playlist_position": playlist_position,
+                                "playlist_track_membership": (
+                                    playlist_track_membership
+                                ),
                                 "position": position,
                                 "popularity_score": baseline_score,
                                 "spotify_completion_count": (

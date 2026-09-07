@@ -515,6 +515,13 @@ open [notebooks/maest_pipeline.ipynb](notebooks/maest_pipeline.ipynb).
   session, manually queued tracks play next after the current item.
 - Use **Reanalyze all** after replacing models or changing analysis logic.
 
+The separate audio settings button contains **Loudness normalization** and
+**Master volume**. Musefy measures local tracks with FFmpeg's EBU R128 filter,
+stores the safe per-track gain and applies it during playback without
+rewriting or recompressing the audio files. Missing loudness measurements are
+queued automatically in the background; the same button can start the scan
+again after importing additional files.
+
 When the main window is closed, Musefy first saves the current track, its
 position, the remaining queue, manually queued tracks and the repeat mode.
 Track analysis is cancelled cooperatively and the analysis worker pool is

@@ -3,12 +3,15 @@ from datetime import UTC, datetime, timedelta
 from app.domain.models import (
     Interaction,
     InteractionType,
+    Playlist,
+    PlaylistEntry,
     Recommendation,
     RecommendationImpression,
     SpotifyListeningStats,
     Track,
     User,
 )
+from app.domain.mood import MoodVector
 from app.domain.recommendations import RecommendationMode
 from app.ml.feature_snapshot import (
     RECOMMENDATION_FEATURE_NAMES,
@@ -180,3 +183,52 @@ def test_feature_snapshot_contains_only_data_known_at_show_time() -> None:
     assert values["user_interaction_count_before_show"] == 1.0
     assert values["user_track_interaction_count_before_show"] == 1.0
     assert values["spotify_play_count"] == 4.0
+
+
+def test_feature_snapshot_contains_playlist_context_features() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_playlist(Playlist(id="playlist-1", name="Ambient set"))
+    store.add_track(
+        Track(
+            id="playlist-track",
+            title="Playlist track",
+            artist="Artist",
+            genres=("ambient",),
+            mood=MoodVector(valence=0.2, arousal=0.3),
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    candidate = Track(
+        id="candidate",
+        title="Candidate",
+        artist="Artist",
+        genres=("ambient",),
+        mood=MoodVector(valence=0.2, arousal=0.3),
+        track_embedding=(1.0, 0.0),
+    )
+    store.add_track(candidate)
+    store.replace_playlist_entries(
+        "playlist-1",
+        [PlaylistEntry(playlist_id="playlist-1", track_id="playlist-track", position=0)],
+    )
+
+    snapshot = build_recommendation_feature_snapshot(
+        store,
+        user_id="user-1",
+        recommendation=Recommendation(
+            track=candidate,
+            score=0.7,
+            reason="playlist context",
+        ),
+        position=1,
+        shown_at=datetime(2026, 1, 1, tzinfo=UTC),
+        playlist_id="playlist-1",
+    )
+    values = dict(snapshot)
+
+    assert values["playlist_context_available"] == 1.0
+    assert values["playlist_track_membership"] == 0.0
+    assert values["playlist_mood_similarity"] == 1.0
+    assert values["playlist_embedding_similarity"] == 1.0
+    assert values["playlist_genre_similarity"] > 0.0

@@ -770,6 +770,7 @@ class SQLAlchemyMusicStore:
                     reason=impression.reason,
                     shown_at=impression.shown_at,
                     session_id=impression.session_id,
+                    playlist_id=impression.playlist_id,
                     feature_snapshot_json=json.dumps(
                         dict(impression.feature_snapshot),
                         sort_keys=True,
@@ -931,6 +932,7 @@ class SQLAlchemyMusicStore:
             reason=record.reason,
             shown_at=shown_at,
             session_id=record.session_id,
+            playlist_id=record.playlist_id,
             feature_snapshot=feature_snapshot,
         )
 

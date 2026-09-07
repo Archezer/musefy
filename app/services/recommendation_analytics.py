@@ -87,6 +87,7 @@ class RecommendationAnalyticsService:
         recommendations: list[Recommendation] | tuple[Recommendation, ...],
         *,
         session_id: str | None = None,
+        playlist_id: str | None = None,
         position_offset: int = 0,
         shown_at: datetime | None = None,
     ) -> str:
@@ -114,12 +115,14 @@ class RecommendationAnalyticsService:
                     reason=recommendation.reason,
                     shown_at=timestamp,
                     session_id=batch_id,
+                    playlist_id=playlist_id,
                     feature_snapshot=build_recommendation_feature_snapshot(
                         self.store,
                         user_id=normalized_user_id,
                         recommendation=recommendation,
                         position=position,
                         shown_at=timestamp,
+                        playlist_id=playlist_id,
                     ),
                 )
             )
