@@ -8,6 +8,11 @@ from app.domain.models import (
 )
 from app.ingestion.audio import AudioIngestionService
 from app.ml.genre_analysis import GenreAnalysisService
+from app.ml.training_data import (
+    build_ranker_dataset,
+    make_synthetic_ranker_dataset,
+    split_ranker_dataset_by_time,
+)
 from app.services.interactions import InteractionService
 from app.services.spotify_favorites_import import (
     SpotifyFavoritesImportService,
@@ -25,6 +30,11 @@ from app.sources.youtube import (
 from app.storage.database import (
     create_database,
     create_session,
+)
+from app.storage.paths import (
+    LOGISTIC_RANKER_MODEL_PATH,
+    RANKER_MODEL_PATH,
+    SYNTHETIC_RANKER_MODEL_PATH,
 )
 from app.storage.repository import SQLAlchemyMusicStore
 
@@ -136,6 +146,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to Spotify Extended Streaming History JSON or ZIP",
     )
 
+    ranker_command = commands.add_parser(
+        "train-synthetic-ranker",
+        help="Smoke-test all rankers on a synthetic multi-user dataset",
+    )
+    ranker_command.add_argument(
+        "--user-count",
+        type=int,
+        default=8,
+        help="Number of synthetic users (default: 8)",
+    )
+    ranker_command.add_argument(
+        "--examples-per-user",
+        type=int,
+        default=80,
+        help="Examples per user (default: 80)",
+    )
+    ranker_command.add_argument(
+        "--epochs",
+        type=int,
+        default=30,
+        help="Training epochs for PyTorch rankers (default: 30)",
+    )
+    ranker_command.add_argument(
+        "--output",
+        type=Path,
+        default=SYNTHETIC_RANKER_MODEL_PATH,
+        help="Output MLP artifact path",
+    )
+    real_ranker_command = commands.add_parser(
+        "train-ranker",
+        help="Train a ranker from stored recommendation impressions",
+    )
+    real_ranker_command.add_argument(
+        "--backend",
+        choices=("logistic", "mlp", "pairwise"),
+        default="mlp",
+        help="Ranker backend (default: mlp)",
+    )
+    real_ranker_command.add_argument(
+        "--user-id",
+        help="Train for one user; omit to use all users",
+    )
+    real_ranker_command.add_argument(
+        "--attribution-days",
+        type=int,
+        default=1,
+        help="Reaction attribution window (default: 1)",
+    )
+    real_ranker_command.add_argument(
+        "--epochs",
+        type=int,
+        default=30,
+        help="Training epochs for PyTorch backends (default: 30)",
+    )
+    real_ranker_command.add_argument(
+        "--output",
+        type=Path,
+        help="Artifact path; defaults by backend",
+    )
+
     return parser
 
 
@@ -216,6 +286,107 @@ def import_spotify_history(arguments: argparse.Namespace) -> None:
     print(f"New stats rows: {result.imported_stats}")
     print(f"Updated stats rows: {result.updated_stats}")
     print(f"Skipped entries: {result.skipped_entries}")
+
+
+def train_synthetic_ranker(arguments: argparse.Namespace) -> None:
+    """Exercise all ranker backends without reading or changing the DB."""
+
+    from app.ml.artifacts import save_mlp_ranker
+    from app.ml.logistic_ranker import train_logistic_ranker
+    from app.ml.ranker import train_mlp_ranker, train_pairwise_mlp_ranker
+
+    dataset = make_synthetic_ranker_dataset(
+        user_count=arguments.user_count,
+        examples_per_user=arguments.examples_per_user,
+    )
+    train, validation = split_ranker_dataset_by_time(dataset)
+    logistic = train_logistic_ranker(train)
+    mlp = train_mlp_ranker(
+        train,
+        validation_dataset=validation,
+        epochs=arguments.epochs,
+    )
+    pairwise = train_pairwise_mlp_ranker(
+        train,
+        validation_dataset=validation,
+        epochs=arguments.epochs,
+    )
+    save_mlp_ranker(mlp, arguments.output)
+
+    print("Synthetic ranker pipeline completed.")
+    print(f"Examples: {len(dataset.examples)}")
+    print(
+        "Train/validation: "
+        f"{len(train.examples)}/{len(validation.examples)}"
+    )
+    print(f"Features: {', '.join(dataset.feature_names)}")
+    print(f"Logistic scores: {len(logistic.predict_scores(validation))}")
+    print(f"MLP final train loss: {mlp.train_losses[-1]:.4f}")
+    print(f"Pairwise final train loss: {pairwise.train_losses[-1]:.4f}")
+    print(f"MLP artifact: {arguments.output}")
+
+
+def train_ranker(arguments: argparse.Namespace) -> None:
+    """Train from labelled impressions already stored by Musefy."""
+
+    from app.ml.artifacts import (
+        save_logistic_ranker,
+        save_mlp_ranker,
+    )
+    from app.ml.logistic_ranker import train_logistic_ranker
+    from app.ml.ranker import train_mlp_ranker, train_pairwise_mlp_ranker
+
+    create_database()
+    store = SQLAlchemyMusicStore(create_session)
+    dataset = build_ranker_dataset(
+        store,
+        user_id=arguments.user_id,
+        attribution_days=arguments.attribution_days,
+    )
+    if not dataset.examples:
+        raise SystemExit(
+            "No labelled impressions with feature snapshots yet. "
+            "Show recommendations and collect explicit reactions first."
+        )
+
+    train, validation = split_ranker_dataset_by_time(dataset)
+    output = arguments.output
+    if arguments.backend == "logistic":
+        ranker = train_logistic_ranker(train)
+        if output is None:
+            output = LOGISTIC_RANKER_MODEL_PATH
+        save_logistic_ranker(ranker, output)
+        validation_scores = ranker.predict_scores(validation)
+        print(f"Validation scores: {len(validation_scores)}")
+    elif arguments.backend == "pairwise":
+        result = train_pairwise_mlp_ranker(
+            train,
+            validation_dataset=validation,
+            epochs=arguments.epochs,
+        )
+        if output is None:
+            output = RANKER_MODEL_PATH
+        save_mlp_ranker(result, output)
+        print(f"Final pairwise train loss: {result.train_losses[-1]:.4f}")
+    else:
+        result = train_mlp_ranker(
+            train,
+            validation_dataset=validation,
+            epochs=arguments.epochs,
+        )
+        if output is None:
+            output = RANKER_MODEL_PATH
+        save_mlp_ranker(result, output)
+        print(f"Final MLP train loss: {result.train_losses[-1]:.4f}")
+
+    print("Real ranker training completed.")
+    print(f"Examples: {len(dataset.examples)}")
+    print(
+        "Train/validation: "
+        f"{len(train.examples)}/{len(validation.examples)}"
+    )
+    print(f"Features: {', '.join(dataset.feature_names)}")
+    print(f"Artifact: {output}")
 
 
 def record_interaction(
@@ -513,6 +684,10 @@ def main() -> None:
         reauthorize_spotify(arguments)
     elif arguments.command == "spotify-import-history":
         import_spotify_history(arguments)
+    elif arguments.command == "train-synthetic-ranker":
+        train_synthetic_ranker(arguments)
+    elif arguments.command == "train-ranker":
+        train_ranker(arguments)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from app.domain.recommendations import (
 )
 from app.recommenders.mood import MoodRecommender
 from app.recommenders.protocols import Recommender
+from app.services.hybrid_recommendations import HybridRecommendationRanker
 from app.services.track_similarity import TrackSimilarityService
 
 
@@ -17,10 +18,12 @@ class RecommendationService:
         recommender: Recommender,
         mood_recommender: MoodRecommender | None = None,
         track_radio: TrackSimilarityService | None = None,
+        hybrid_ranker: HybridRecommendationRanker | None = None,
     ) -> None:
         self.recommender = recommender
         self.mood_recommender = mood_recommender
         self.track_radio = track_radio
+        self.hybrid_ranker = hybrid_ranker
 
     def refresh(self) -> None:
         if self.track_radio is not None:
@@ -68,32 +71,42 @@ class RecommendationService:
                 raise RuntimeError("Mood recommender is not configured.")
             assert context.target_mood is not None
             if should_cancel is None:
-                return self.mood_recommender.recommend(
+                recommendations = self.mood_recommender.recommend(
                     user_id=normalized_user_id,
                     target_mood=context.target_mood,
                     limit=limit,
                     mood_name=context.mood_name,
                 )
-            return self.mood_recommender.recommend(
-                user_id=normalized_user_id,
-                target_mood=context.target_mood,
-                limit=limit,
-                mood_name=context.mood_name,
-                should_cancel=should_cancel,
+            else:
+                recommendations = self.mood_recommender.recommend(
+                    user_id=normalized_user_id,
+                    target_mood=context.target_mood,
+                    limit=limit,
+                    mood_name=context.mood_name,
+                    should_cancel=should_cancel,
+                )
+            return self._apply_hybrid_ranker(
+                normalized_user_id,
+                recommendations,
             )
 
         if context.mode == RecommendationMode.MY_WAVE:
             if self.mood_recommender is None:
                 raise RuntimeError("Mood recommender is not configured.")
             if should_cancel is None:
-                return self.mood_recommender.recommend_my_wave(
+                recommendations = self.mood_recommender.recommend_my_wave(
                     user_id=normalized_user_id,
                     limit=limit,
                 )
-            return self.mood_recommender.recommend_my_wave(
-                user_id=normalized_user_id,
-                limit=limit,
-                should_cancel=should_cancel,
+            else:
+                recommendations = self.mood_recommender.recommend_my_wave(
+                    user_id=normalized_user_id,
+                    limit=limit,
+                    should_cancel=should_cancel,
+                )
+            return self._apply_hybrid_ranker(
+                normalized_user_id,
+                recommendations,
             )
 
         if context.mode == RecommendationMode.GENRE:
@@ -105,26 +118,47 @@ class RecommendationService:
             if genre_recommender is None:
                 raise RuntimeError("Genre recommender is not configured.")
             assert context.genre_name is not None
-            return genre_recommender(
+            recommendations = genre_recommender(
                 user_id=normalized_user_id,
                 genre_name=context.genre_name,
                 limit=limit,
                 should_cancel=should_cancel,
+            )
+            return self._apply_hybrid_ranker(
+                normalized_user_id,
+                recommendations,
             )
 
         if context.mode == RecommendationMode.TRACK_RADIO:
             if self.track_radio is None:
                 raise RuntimeError("Track radio is not configured.")
             assert context.seed_track_id is not None
-            return self.track_radio.recommendations_for(
+            recommendations = self.track_radio.recommendations_for(
                 context.seed_track_id,
                 limit=limit,
                 user_id=normalized_user_id,
                 excluded_track_ids=excluded_track_ids,
                 should_cancel=should_cancel,
             )
+            return self._apply_hybrid_ranker(
+                normalized_user_id,
+                recommendations,
+            )
 
-        return self.recommender.recommend(
+        recommendations = self.recommender.recommend(
             user_id=normalized_user_id,
             limit=limit,
         )
+        return self._apply_hybrid_ranker(
+            normalized_user_id,
+            recommendations,
+        )
+
+    def _apply_hybrid_ranker(
+        self,
+        user_id: str,
+        recommendations: list[Recommendation],
+    ) -> list[Recommendation]:
+        if self.hybrid_ranker is None:
+            return recommendations
+        return self.hybrid_ranker.rerank(user_id, recommendations)

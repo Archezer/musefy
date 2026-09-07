@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.domain.models import Track
-from app.ingestion.artwork import save_embedded_artwork
+from app.ingestion.artwork import (
+    save_embedded_artwork,
+    save_remote_artwork,
+)
 from app.ingestion.filenames import (
     add_collision_suffix,
     build_library_filename,
@@ -45,6 +48,7 @@ class AudioIngestionService:
         source_id: str | None = None,
         source_url: str | None = None,
         created_at: datetime | None = None,
+        cover_url: str | None = None,
     ) -> Track:
         self._validate_file(file_path)
 
@@ -78,6 +82,24 @@ class AudioIngestionService:
             ):
                 # The content hash is the track ID, so importing the same
                 # audio from another source must reuse the existing record.
+                if (
+                    cover_url
+                    and (
+                        not existing_track.cover_path
+                        or not Path(existing_track.cover_path).is_file()
+                    )
+                ):
+                    downloaded_cover = save_remote_artwork(
+                        cover_url,
+                        existing_track.id,
+                    )
+                    if downloaded_cover is not None:
+                        updated_track = replace(
+                            existing_track,
+                            cover_path=downloaded_cover,
+                        )
+                        self.store.update_track(updated_track)
+                        return updated_track
                 return existing_track
 
             return self.restore_missing_track(
@@ -89,6 +111,7 @@ class AudioIngestionService:
                 source_id=source_id,
                 source_url=source_url,
                 created_at=created_at,
+                cover_url=cover_url,
             )
 
         internal_path = self._copy_to_library(
@@ -101,6 +124,11 @@ class AudioIngestionService:
             file_path,
             resolved_track_id,
         )
+        if cover_path is None and cover_url:
+            cover_path = save_remote_artwork(
+                cover_url,
+                resolved_track_id,
+            )
 
         track = Track(
             id=resolved_track_id,
@@ -135,6 +163,7 @@ class AudioIngestionService:
         source_id: str | None,
         source_url: str | None,
         created_at: datetime | None = None,
+        cover_url: str | None = None,
     ) -> Track:
         self._validate_file(file_path)
 
@@ -150,6 +179,11 @@ class AudioIngestionService:
             file_path,
             existing_track.id,
         )
+        if cover_path is None and cover_url:
+            cover_path = save_remote_artwork(
+                cover_url,
+                existing_track.id,
+            )
 
         restored_track = replace(
             existing_track,

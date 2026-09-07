@@ -110,6 +110,7 @@ class SpotifyFavoritesImportService:
             duration_ms=spotify_track.duration_ms,
             added_at=_parse_timestamp(spotify_track.added_at),
             isrc=spotify_track.isrc,
+            cover_url=spotify_track.cover_url,
             imported_at=imported_at,
         )
 

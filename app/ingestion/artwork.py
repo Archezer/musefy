@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from mutagen import File, MutagenError
 from mutagen.flac import Picture
@@ -9,6 +11,7 @@ from mutagen.flac import Picture
 from app.storage.paths import TRACK_COVERS_DIR, ensure_storage_directories
 
 MAX_ARTWORK_BYTES = 12 * 1024 * 1024
+REMOTE_ARTWORK_TIMEOUT_SECONDS = 12
 
 
 def save_embedded_artwork(
@@ -26,6 +29,52 @@ def save_embedded_artwork(
         return None
 
     image_data, mime_type = artwork
+    if not image_data or len(image_data) > MAX_ARTWORK_BYTES:
+        return None
+
+    ensure_storage_directories()
+    destination = TRACK_COVERS_DIR / (
+        f"{track_id}{_image_suffix(image_data, mime_type)}"
+    )
+
+    try:
+        destination.write_bytes(image_data)
+    except OSError:
+        return None
+
+    return str(destination.resolve())
+
+
+def save_remote_artwork(
+    artwork_url: str,
+    track_id: str,
+) -> str | None:
+    """Download remote artwork into the managed track-cover directory.
+
+    Remote artwork is deliberately a best-effort fallback. A failed image
+    request must never make an otherwise valid audio import fail.
+    """
+
+    normalized_url = artwork_url.strip()
+    parsed_url = urlparse(normalized_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        return None
+
+    request = Request(
+        normalized_url,
+        headers={"User-Agent": "Musefy/1.0"},
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=REMOTE_ARTWORK_TIMEOUT_SECONDS,
+        ) as response:
+            image_data = response.read(MAX_ARTWORK_BYTES + 1)
+            mime_type = response.headers.get_content_type()
+    except (OSError, ValueError):
+        return None
+
     if not image_data or len(image_data) > MAX_ARTWORK_BYTES:
         return None
 

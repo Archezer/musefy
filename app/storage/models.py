@@ -72,6 +72,10 @@ class SpotifyTrackMetadataRecord(Base):
         String(50),
         nullable=True,
     )
+    cover_url: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
     )
@@ -365,6 +369,11 @@ class RecommendationImpressionRecord(Base):
     session_id: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
+    )
+    feature_snapshot_json: Mapped[str] = mapped_column(
+        Text,
+        default="{}",
+        nullable=False,
     )
 
     track: Mapped[TrackRecord] = relationship(

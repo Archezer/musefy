@@ -18,6 +18,9 @@ from app.domain.models import (
     Recommendation,
     RecommendationImpression,
 )
+from app.ml.feature_snapshot import (
+    build_recommendation_feature_snapshot,
+)
 from app.recommenders.feedback import COMPLETION_INTERACTION_TYPES
 from app.storage.protocols import MusicStore
 
@@ -111,6 +114,13 @@ class RecommendationAnalyticsService:
                     reason=recommendation.reason,
                     shown_at=timestamp,
                     session_id=batch_id,
+                    feature_snapshot=build_recommendation_feature_snapshot(
+                        self.store,
+                        user_id=normalized_user_id,
+                        recommendation=recommendation,
+                        position=position,
+                        shown_at=timestamp,
+                    ),
                 )
             )
         return batch_id

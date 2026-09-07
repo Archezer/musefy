@@ -54,6 +54,9 @@ class YouTubeCandidate:
     # Spotify's saved-track date is carried through the YouTube match so the
     # importer can optionally use it as the library date.
     spotify_added_at: str | None = None
+    # Spotify artwork is carried through a matched import and downloaded only
+    # when the local audio file has no embedded cover.
+    cover_url: str | None = None
 
 
 class YouTubeSearchProvider:

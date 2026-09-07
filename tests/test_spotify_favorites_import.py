@@ -49,6 +49,7 @@ def test_import_favorites_stores_metadata_without_tracks_or_interactions() -> No
             duration_ms=123_000,
             added_at="2026-09-01T10:00:00Z",
             isrc="US-AAA-26-00001",
+            cover_url="https://i.scdn.co/image/cover-1",
         ),
         SpotifyTrack(
             "Second",
@@ -81,6 +82,7 @@ def test_import_favorites_stores_metadata_without_tracks_or_interactions() -> No
     assert metadata[0].album == "Album"
     assert metadata[0].duration_ms == 123_000
     assert metadata[0].isrc == "US-AAA-26-00001"
+    assert metadata[0].cover_url == "https://i.scdn.co/image/cover-1"
     assert metadata[0].added_at == datetime(
         2026,
         9,

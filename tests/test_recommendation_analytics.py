@@ -10,6 +10,7 @@ from app.domain.models import (
     Interaction,
     InteractionType,
     Recommendation,
+    RecommendationImpression,
     Track,
     User,
 )
@@ -247,3 +248,31 @@ def test_sqlalchemy_impressions_round_trip_and_track_cleanup(
 
     sql_store.delete_track("track-1")
     assert list(sql_store.list_recommendation_impressions()) == []
+
+
+def test_impression_keeps_point_in_time_feature_snapshot(
+    sql_store: SQLAlchemyMusicStore,
+) -> None:
+    sql_store.add_user(User(id="user-1", display_name="Test User"))
+    track = Track(id="track-1", title="One", artist="Artist")
+    sql_store.add_track(track)
+
+    sql_store.add_recommendation_impression(
+        RecommendationImpression(
+            user_id="user-1",
+            track_id=track.id,
+            mode=RecommendationMode.POPULARITY,
+            position=1,
+            score=0.5,
+            feature_snapshot=(
+                ("log_play_count", 2.0),
+                ("spotify_has_history", 1.0),
+            ),
+        )
+    )
+
+    impressions = list(sql_store.list_recommendation_impressions())
+    assert impressions[0].feature_snapshot == (
+        ("log_play_count", 2.0),
+        ("spotify_has_history", 1.0),
+    )

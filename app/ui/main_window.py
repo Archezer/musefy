@@ -222,9 +222,8 @@ DEFAULT_MASTER_VOLUME_PERCENT = 100
 RECOMMENDATION_QUEUE_SIZE = 12
 RECOMMENDATION_REFILL_THRESHOLD = 4
 RADIO_RECOMMENDATION_BATCH_SIZE = 4
-INITIAL_TRACK_BATCH_SIZE = 12
-DEFERRED_TRACK_BATCH_SIZE = 4
-TRACK_BATCH_INTERVAL_MS = 16
+TRACK_WIDGET_BUFFER_ROWS = 8
+TRACK_MATERIALIZE_INTERVAL_MS = 16
 QUEUE_RENDER_BATCH_SIZE = 12
 QUEUE_RENDER_INTERVAL_MS = 12
 # A carousel page never shows more than seven playlist-sized cards.  The
@@ -363,10 +362,10 @@ class MainWindow(QMainWindow):
         self._library_tracks: list[Track] = []
         self._track_scope_tracks: list[Track] = []
         self._visible_tracks: list[Track] = []
+        self._materialized_track_rows: set[int] = set()
+        self._materializing_track_rows = False
+        self._selected_track_row = -1
         self._library_search_query = ""
-        self._track_table_generation = 0
-        self._track_batch_generation = -1
-        self._track_batch_next_index = 0
         self._music_map_tracks: list[Track] = []
         self._music_map_signature: tuple[tuple[str, int], ...] = ()
         self._music_map_generation = 0
@@ -432,6 +431,7 @@ class MainWindow(QMainWindow):
         self._analysis_total = 0
         self._analysis_completed = 0
         self._playlist_import_active = False
+        self._library_refresh_pending = False
         self._music_map_mode = "background"
         self._liquid_glass_enabled = True
         self._playback_mode = QueueMode.NORMAL
@@ -456,6 +456,13 @@ class MainWindow(QMainWindow):
                 type=bool,
             )
         )
+        self._show_track_covers = bool(
+            self._playback_state_settings.value(
+                "appearance/library_track_covers",
+                True,
+                type=bool,
+            )
+        )
         self._genre_analysis_service = None
         self.library_health_service = LibraryHealthService(store)
         self.library_backup_service = LibraryBackupService(store)
@@ -471,9 +478,20 @@ class MainWindow(QMainWindow):
         self._watch_folder_timer.timeout.connect(self._sync_watch_folder)
         self._watch_folder_timer.start()
         self._genre_analysis_pool = QThreadPool(self)
-        self._track_batch_timer = QTimer(self)
-        self._track_batch_timer.setInterval(TRACK_BATCH_INTERVAL_MS)
-        self._track_batch_timer.timeout.connect(self._append_track_batch)
+        self._track_materialize_timer = QTimer(self)
+        self._track_materialize_timer.setSingleShot(True)
+        self._track_materialize_timer.setInterval(
+            TRACK_MATERIALIZE_INTERVAL_MS
+        )
+        self._track_materialize_timer.timeout.connect(
+            self._materialize_visible_track_rows
+        )
+        self._library_refresh_timer = QTimer(self)
+        self._library_refresh_timer.setSingleShot(True)
+        self._library_refresh_timer.setInterval(80)
+        self._library_refresh_timer.timeout.connect(
+            self._flush_library_refresh
+        )
         self._music_map_pool = QThreadPool(self)
         self._music_map_pool.setMaxThreadCount(1)
         # Recommendation scoring can scan the whole library or lazily build
@@ -1033,6 +1051,14 @@ class MainWindow(QMainWindow):
         )
         self.music_map_background_action.toggled.connect(
             self._set_music_map_background_enabled
+        )
+        self.track_covers_action = playlist_menu.addAction(
+            "Track covers in library and playlists",
+        )
+        self.track_covers_action.setCheckable(True)
+        self.track_covers_action.setChecked(self._show_track_covers)
+        self.track_covers_action.toggled.connect(
+            self._set_track_covers_enabled
         )
         playlist_menu.addSeparator()
         playlist_menu.addAction(
@@ -2236,6 +2262,17 @@ class MainWindow(QMainWindow):
         self.track_table.row_clicked.connect(
             self._handle_track_row_clicked
         )
+        self.track_table.verticalScrollBar().valueChanged.connect(
+            self._schedule_visible_track_materialization
+        )
+        self.track_table.verticalScrollBar().rangeChanged.connect(
+            lambda _minimum, _maximum: (
+                self._schedule_visible_track_materialization()
+            )
+        )
+        self.track_table.viewport_changed.connect(
+            self._schedule_visible_track_materialization
+        )
         self.track_table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -2365,6 +2402,17 @@ class MainWindow(QMainWindow):
             panel.style().polish(panel)
             panel.update()
 
+    def _set_track_covers_enabled(self, enabled: bool) -> None:
+        """Toggle track artwork in library and playlist tables."""
+
+        self._show_track_covers = bool(enabled)
+        self._playback_state_settings.setValue(
+            "appearance/library_track_covers",
+            self._show_track_covers,
+        )
+        if hasattr(self, "track_table"):
+            self._render_visible_tracks(self.library_title_label.text())
+
     def _load_library(self, *, refresh_map: bool = True) -> None:
         tracks = list(self.store.list_tracks())
         self._library_tracks = tracks
@@ -2406,6 +2454,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Render either the main library or a playlist in the shared table."""
 
+        self._library_refresh_timer.stop()
+        self._library_refresh_pending = False
         self._track_scope_tracks = list(tracks)
         if hasattr(self, "track_table"):
             # Column 6 is reserved for the playlist-only remove action.  It is
@@ -2425,29 +2475,28 @@ class MainWindow(QMainWindow):
     def _render_visible_tracks(self, title: str) -> None:
         """Render the current library/playlist scope with active search."""
 
-        self._cancel_track_batch_loading()
-        self._track_table_generation += 1
-        generation = self._track_table_generation
+        self._cancel_track_materialization()
         filtered_tracks = self._filter_library_tracks(
             self._track_scope_tracks
         )
         self._visible_tracks = self._sort_tracks(filtered_tracks)
-        initial_tracks = self._visible_tracks[:INITIAL_TRACK_BATCH_SIZE]
         table_signals_blocked = self.track_table.blockSignals(True)
         table_updates_enabled = self.track_table.updatesEnabled()
         self.track_table.setUpdatesEnabled(False)
         try:
             self.track_table.clearSelection()
             self.selected_track_id = None
+            self._selected_track_row = -1
             self._hovered_track_row = -1
             self.track_table.clear_row_widgets()
+            self._materialized_track_rows.clear()
             self.track_table.setRowCount(0)
-            self.track_table.setRowCount(len(initial_tracks))
+            self.track_table.setRowCount(len(self._visible_tracks))
 
-            for row_index, track in enumerate(initial_tracks):
-                self._populate_track_row(row_index, track)
-
-            self._refresh_track_row_visuals()
+            # QTableWidgetItems are cheap enough for the complete row count;
+            # the expensive controls are attached only to the visible window.
+            for row_index, track in enumerate(self._visible_tracks):
+                self._populate_track_row_items(row_index, track)
         finally:
             self.track_table.setUpdatesEnabled(table_updates_enabled)
             self.track_table.blockSignals(table_signals_blocked)
@@ -2457,14 +2506,33 @@ class MainWindow(QMainWindow):
             f"{len(self._visible_tracks)} track"
             f"{'s' if len(self._visible_tracks) != 1 else ''}"
         )
-        if len(initial_tracks) < len(self._visible_tracks):
-            self.statusBar().showMessage(
-                f"Loading tracks… {len(initial_tracks)}/"
-                f"{len(self._visible_tracks)}"
-            )
-        self._start_track_batch_loading(generation, len(initial_tracks))
-        # Defer recommendation work until after the first batch is painted.
+        self._schedule_visible_track_materialization()
+        # Defer recommendation work until after the first visible rows paint.
         QTimer.singleShot(0, self._load_recommendations)
+
+    def _schedule_library_refresh(self) -> None:
+        """Coalesce repeated imports into one table rebuild."""
+
+        self._library_refresh_pending = True
+        if self._playlist_import_active:
+            return
+        self._library_refresh_timer.start()
+
+    def _flush_library_refresh(self) -> None:
+        """Refresh the current view after a burst of imported tracks."""
+
+        if self._playlist_import_active:
+            return
+
+        self._library_refresh_pending = False
+        if self.selected_playlist_id is not None:
+            self._load_selected_playlist_tracks()
+            return
+
+        self._set_visible_tracks(
+            self._library_tracks,
+            title=self.library_title_label.text(),
+        )
 
     def _handle_library_search_changed(self, text: str) -> None:
         self._library_search_query = text.strip()
@@ -2576,84 +2644,68 @@ class MainWindow(QMainWindow):
             reverse=self._library_sort_descending,
         )
 
-    def _cancel_track_batch_loading(self) -> None:
-        self._track_batch_timer.stop()
-        self._track_batch_generation = -1
-        self._track_batch_next_index = 0
+    def _cancel_track_materialization(self) -> None:
+        self._track_materialize_timer.stop()
 
-    def _start_track_batch_loading(
-        self,
-        generation: int,
-        start_index: int,
-    ) -> None:
-        if start_index >= len(self._visible_tracks):
+    def _schedule_visible_track_materialization(self) -> None:
+        """Schedule controls for the current viewport without scroll churn."""
+
+        if self._materializing_track_rows or not self._visible_tracks:
+            return
+        self._track_materialize_timer.start()
+
+    def _visible_track_row_indices(self) -> set[int]:
+        row_count = self.track_table.rowCount()
+        if row_count <= 0:
+            return set()
+
+        viewport_height = max(0, self.track_table.viewport().height() - 1)
+        first_row = self.track_table.rowAt(0)
+        last_row = self.track_table.rowAt(viewport_height)
+        first_row = max(first_row, 0)
+        if last_row < 0:
+            last_row = min(row_count - 1, first_row + 12)
+
+        start = max(0, first_row - TRACK_WIDGET_BUFFER_ROWS)
+        end = min(row_count, last_row + TRACK_WIDGET_BUFFER_ROWS + 1)
+        return set(range(start, end))
+
+    def _materialize_visible_track_rows(self) -> None:
+        """Keep only a small widget window alive around the viewport."""
+
+        if self._materializing_track_rows:
             return
 
-        # Rendering table widgets is inherently GUI work.  A worker can slice
-        # the list, but it cannot create QWidgets, so emitting many queued
-        # batches only moves the freeze into the event queue.  Keep one small
-        # batch in flight and let Qt paint/respond between every batch.
-        self._track_batch_generation = generation
-        self._track_batch_next_index = start_index
-        self._track_batch_timer.start()
-
-    def _append_track_batch(self) -> None:
-        generation = self._track_batch_generation
-        if generation != self._track_table_generation:
-            self._cancel_track_batch_loading()
+        desired_rows = self._visible_track_row_indices()
+        stale_rows = self._materialized_track_rows - desired_rows
+        new_rows = desired_rows - self._materialized_track_rows
+        if not stale_rows and not new_rows:
             return
 
-        start_index = self._track_batch_next_index
-        if start_index >= len(self._visible_tracks):
-            self._finish_track_batch_loading(generation)
-            return
-
-        if start_index != self.track_table.rowCount():
-            # A direct edit (import/delete) superseded this loader.
-            self._track_table_generation += 1
-            self._cancel_track_batch_loading()
-            return
-
-        tracks = tuple(
-            self._visible_tracks[
-                start_index : start_index + DEFERRED_TRACK_BATCH_SIZE
-            ]
-        )
-        if not tracks:
-            self._finish_track_batch_loading(generation)
-            return
-
-        first_row = self.track_table.rowCount()
+        self._materializing_track_rows = True
+        changed_rows = stale_rows | new_rows
         table_signals_blocked = self.track_table.blockSignals(True)
         table_updates_enabled = self.track_table.updatesEnabled()
         self.track_table.setUpdatesEnabled(False)
         try:
-            self.track_table.setRowCount(first_row + len(tracks))
-            for offset, track in enumerate(tracks):
-                self._populate_track_row(first_row + offset, track)
-            self._refresh_track_row_visuals(
-                tuple(
-                    range(first_row, first_row + len(tracks))
+            for row_index in sorted(stale_rows):
+                self._unmaterialize_track_row(row_index)
+
+            for row_index in sorted(new_rows):
+                if row_index >= len(self._visible_tracks):
+                    continue
+                self._populate_track_row_widgets(
+                    row_index,
+                    self._visible_tracks[row_index],
                 )
-            )
+                self._materialized_track_rows.add(row_index)
         finally:
             self.track_table.setUpdatesEnabled(table_updates_enabled)
             self.track_table.blockSignals(table_signals_blocked)
+            self._materializing_track_rows = False
 
-        self._track_batch_next_index = start_index + len(tracks)
-        self.statusBar().showMessage(
-            f"Loading tracks… {self.track_table.rowCount()}/"
-            f"{len(self._visible_tracks)}"
-        )
-        if self._track_batch_next_index >= len(self._visible_tracks):
-            self._finish_track_batch_loading(generation)
-
-    def _finish_track_batch_loading(self, generation: int) -> None:
-        if generation == self._track_table_generation:
-            self._track_batch_timer.stop()
-            self._track_batch_generation = -1
-            self._track_batch_next_index = 0
-            self.statusBar().showMessage("Library ready")
+        self._refresh_track_row_visuals(tuple(changed_rows))
+        self.statusBar().showMessage("Library ready")
 
     def _show_main_library(self) -> None:
         if self._add_tracks_mode:
@@ -2739,17 +2791,86 @@ class MainWindow(QMainWindow):
         row_index: int,
         track: Track,
     ) -> None:
-        number_item = QTableWidgetItem()
+        """Update one row, materializing controls only when needed."""
+
+        was_materialized = row_index in self._materialized_track_rows
+        if was_materialized:
+            self._unmaterialize_track_row(row_index)
+        self._populate_track_row_items(row_index, track)
+        if was_materialized:
+            self._populate_track_row_widgets(row_index, track)
+            self._materialized_track_rows.add(row_index)
+
+    def _populate_track_row_items(
+        self,
+        row_index: int,
+        track: Track,
+    ) -> None:
+        """Populate the lightweight data items used by every table row."""
+
+        number_item = QTableWidgetItem(str(row_index + 1))
         number_item.setData(
             Qt.ItemDataRole.UserRole,
             track.id,
         )
+        number_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignCenter
+            | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.track_table.setItem(row_index, 0, number_item)
 
         self.track_table.setItem(
             row_index,
-            0,
-            number_item,
+            2,
+            QTableWidgetItem(track.title),
         )
+        self.track_table.setItem(
+            row_index,
+            3,
+            QTableWidgetItem(
+                self._format_display_genres(track)
+            ),
+        )
+        self.track_table.setItem(
+            row_index,
+            4,
+            QTableWidgetItem(self._format_added_date(track.created_at)),
+        )
+        self.track_table.setItem(
+            row_index,
+            5,
+            QTableWidgetItem(self._format_duration(track.duration_ms)),
+        )
+        for column in (3, 4):
+            item = self.track_table.item(row_index, column)
+            if item is not None:
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft
+                    | Qt.AlignmentFlag.AlignVCenter
+                )
+        duration_item = self.track_table.item(row_index, 5)
+        if duration_item is not None:
+            duration_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+
+        self.track_table.setItem(
+            row_index,
+            7,
+            QTableWidgetItem(
+                self._genre_statuses.get(
+                    track.id,
+                    self._genre_status_for_track(track),
+                )
+            ),
+        )
+
+    def _populate_track_row_widgets(
+        self,
+        row_index: int,
+        track: Track,
+    ) -> None:
         index_widget = TrackNumberPlayWidget(row_index + 1)
         index_widget.play_requested.connect(
             lambda track_id=track.id, row=row_index: (
@@ -2791,13 +2912,13 @@ class MainWindow(QMainWindow):
             track.title,
             track.artist,
             cover_path=track.cover_path,
+            show_cover=self._show_track_covers,
             include_play_button=False,
         )
         track_identity.play_requested.connect(
             lambda track_id=track.id: self._play_track_now(track_id)
         )
         track_identity.set_search_query(self._library_search_query)
-        self.track_table.setItem(row_index, 2, QTableWidgetItem())
         self.track_table.setCellWidget(row_index, 2, track_identity)
         self.track_table.register_row_widget(track_identity, row_index)
         remove_button: QToolButton | None = None
@@ -2844,47 +2965,21 @@ class MainWindow(QMainWindow):
         queue_layout.addWidget(queue_button)
         self.track_table.setCellWidget(row_index, 8, queue_container)
         self.track_table.register_row_widget(queue_container, row_index)
-        self.track_table.setItem(
-            row_index,
-            3,
-            QTableWidgetItem(
-                self._format_display_genres(track)
-            ),
-        )
-        self.track_table.setItem(
-            row_index,
-            4,
-            QTableWidgetItem(self._format_added_date(track.created_at)),
-        )
-        self.track_table.setItem(
-            row_index,
-            5,
-            QTableWidgetItem(self._format_duration(track.duration_ms)),
-        )
-        for column in (3, 4):
-            item = self.track_table.item(row_index, column)
-            if item is not None:
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignLeft
-                    | Qt.AlignmentFlag.AlignVCenter
-                )
-        duration_item = self.track_table.item(row_index, 5)
-        if duration_item is not None:
-            duration_item.setTextAlignment(
-                Qt.AlignmentFlag.AlignCenter
-                | Qt.AlignmentFlag.AlignVCenter
-            )
 
-        self.track_table.setItem(
-            row_index,
-            7,
-            QTableWidgetItem(
-                self._genre_statuses.get(
-                    track.id,
-                    self._genre_status_for_track(track),
-                )
-            ),
-        )
+    def _unmaterialize_track_row(self, row_index: int) -> None:
+        """Remove expensive controls from one row outside the viewport."""
+
+        self.track_table.clear_row_widgets_for_row(row_index)
+        for column in (0, 1, 2, 6, 8):
+            widget = self.track_table.cellWidget(row_index, column)
+            if widget is None:
+                continue
+            self.track_table.removeCellWidget(row_index, column)
+            try:
+                widget.deleteLater()
+            except RuntimeError:
+                pass
+        self._materialized_track_rows.discard(row_index)
 
     def _append_library_track(self, track: Track) -> None:
         for index, item in enumerate(self._library_tracks):
@@ -2894,13 +2989,7 @@ class MainWindow(QMainWindow):
         else:
             self._library_tracks.append(track)
 
-        if self.selected_playlist_id is not None:
-            self._load_selected_playlist_tracks()
-            return
-        self._set_visible_tracks(
-            self._library_tracks,
-            title=self.library_title_label.text(),
-        )
+        self._schedule_library_refresh()
 
     def _update_library_track_row(self, track: Track) -> None:
         self._library_tracks = [
@@ -2950,8 +3039,7 @@ class MainWindow(QMainWindow):
             return
 
     def _remove_library_track_row(self, track_id: str) -> None:
-        self._cancel_track_batch_loading()
-        self._track_table_generation += 1
+        self._cancel_track_materialization()
         self._track_scope_tracks = [
             track
             for track in self._track_scope_tracks
@@ -2969,11 +3057,23 @@ class MainWindow(QMainWindow):
             if title_item.data(Qt.ItemDataRole.UserRole) != track_id:
                 continue
 
+            was_materialized = row_index in self._materialized_track_rows
+            if was_materialized:
+                self._unmaterialize_track_row(row_index)
             self.track_table.removeRow(row_index)
+            self.track_table.shift_row_widget_indices(row_index + 1, -1)
+            self._materialized_track_rows = {
+                materialized_row - 1
+                if materialized_row > row_index
+                else materialized_row
+                for materialized_row in self._materialized_track_rows
+                if materialized_row != row_index
+            }
             self.library_count_label.setText(
                 f"{len(self._visible_tracks)} track"
                 f"{'s' if len(self._visible_tracks) != 1 else ''}"
             )
+            self._schedule_visible_track_materialization()
             return
 
     def _track_matches_search(self, track: Track) -> bool:
@@ -5650,14 +5750,16 @@ class MainWindow(QMainWindow):
 
     def _handle_track_selection(self) -> None:
         selected_items = self.track_table.selectedItems()
+        previous_row = self._selected_track_row
 
         if not selected_items:
             self.selected_track_id = None
+            self._selected_track_row = -1
             self.edit_button.setEnabled(False)
             self.delete_button.setEnabled(False)
             self.queue_selected_button.setEnabled(False)
             self.analyze_genres_button.setEnabled(False)
-            self._refresh_track_row_visuals()
+            self._refresh_track_row_visuals((previous_row,))
             self._load_recommendations()
             return
 
@@ -5666,7 +5768,10 @@ class MainWindow(QMainWindow):
         self.selected_track_id = title_item.data(
             Qt.ItemDataRole.UserRole
         )
-        self._refresh_track_row_visuals()
+        self._selected_track_row = self.track_table.currentRow()
+        self._refresh_track_row_visuals(
+            (previous_row, self._selected_track_row)
+        )
         self.edit_button.setEnabled(True)
         self.delete_button.setEnabled(True)
         self.queue_selected_button.setEnabled(True)
@@ -7506,7 +7611,7 @@ class MainWindow(QMainWindow):
         self._cancel_mood_session()
         self._cancel_radio_recommendations()
         self._cancel_genre_analysis_tasks()
-        self._cancel_track_batch_loading()
+        self._cancel_track_materialization()
         self._music_map_pool.clear()
         self._recommendation_pool.clear()
         self._mood_recommendation_pool.clear()
@@ -8196,6 +8301,7 @@ class MainWindow(QMainWindow):
                         title=title,
                         artist=artist,
                         added_at=candidate.spotify_added_at,
+                        cover_url=candidate.cover_url,
                     ),
                 )
             )
@@ -8294,7 +8400,11 @@ class MainWindow(QMainWindow):
             retry_tracks.append(
                 (
                     allocate_position(getattr(candidate, "playlist_position", None)),
-                    SpotifyTrack(title=title, artist=artist),
+                    SpotifyTrack(
+                        title=title,
+                        artist=artist,
+                        cover_url=getattr(candidate, "cover_url", None),
+                    ),
                 )
             )
 
@@ -8790,6 +8900,7 @@ class MainWindow(QMainWindow):
         result: object,
     ) -> None:
         self._playlist_import_active = False
+        self._schedule_library_refresh()
 
         if not isinstance(result, YouTubePlaylistImportResult):
             self._handle_youtube_error(
@@ -8926,6 +9037,7 @@ class MainWindow(QMainWindow):
         result: object,
     ) -> None:
         self._playlist_import_active = False
+        self._schedule_library_refresh()
 
         if not isinstance(result, SoundCloudPlaylistImportResult):
             self._handle_youtube_error(
@@ -9019,6 +9131,7 @@ class MainWindow(QMainWindow):
         result: object,
     ) -> None:
         self._playlist_import_active = False
+        self._schedule_library_refresh()
 
         if not isinstance(result, Mp3PartyPlaylistImportResult):
             self._handle_youtube_error(
@@ -9626,6 +9739,7 @@ class MainWindow(QMainWindow):
         message: str,
     ) -> None:
         self._playlist_import_active = False
+        self._schedule_library_refresh()
         self._maybe_refresh_recommendations()
         self._handle_youtube_error(dialog, message)
 

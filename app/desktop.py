@@ -80,6 +80,7 @@ def main() -> None:
         recommender,
         mood_recommender=mood_recommender,
         track_radio=track_radio,
+        hybrid_ranker=_load_optional_hybrid_ranker(store),
     )
 
     qt_application = QApplication(sys.argv)
@@ -124,6 +125,30 @@ def main() -> None:
             lambda track=demo_track: window._enqueue_genre_analysis(track),
         )
     sys.exit(qt_application.exec())
+
+
+def _load_optional_hybrid_ranker(store):
+    """Load only a real trained artifact; otherwise keep baseline mode."""
+
+    from app.storage.paths import RANKER_MODEL_PATH
+
+    if not RANKER_MODEL_PATH.is_file():
+        return None
+
+    try:
+        from app.ml.artifacts import load_mlp_ranker
+        from app.services.hybrid_recommendations import (
+            HybridRecommendationRanker,
+        )
+
+        model = load_mlp_ranker(RANKER_MODEL_PATH)
+        return HybridRecommendationRanker(store, model)
+    except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
+        print(
+            f"ML ranker unavailable; using baseline recommenders: {error}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _redirect_windows_source_launch_to_native_host() -> None:

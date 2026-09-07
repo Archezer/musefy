@@ -113,6 +113,22 @@ def create_database() -> None:
                 )
             )
 
+        impression_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "recommendation_impressions"
+            )
+        }
+
+        if "feature_snapshot_json" not in impression_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE recommendation_impressions "
+                    "ADD COLUMN feature_snapshot_json "
+                    "TEXT NOT NULL DEFAULT '{}'"
+                )
+            )
+
         columns = {
             column["name"]
             for column in inspect(connection).get_columns(
@@ -133,6 +149,21 @@ def create_database() -> None:
                 text(
                     "ALTER TABLE tracks "
                     "ADD COLUMN cover_path VARCHAR(500)"
+                )
+            )
+
+        spotify_metadata_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns(
+                "spotify_track_metadata"
+            )
+        }
+
+        if "cover_url" not in spotify_metadata_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE spotify_track_metadata "
+                    "ADD COLUMN cover_url TEXT"
                 )
             )
 

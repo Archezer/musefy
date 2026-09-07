@@ -23,6 +23,7 @@ def test_spotify_track_metadata_builds_youtube_query(monkeypatch) -> None:
             {
                 "title": "Antarctica",
                 "author_name": "$uicideboy$",
+                "thumbnail_url": "https://i.scdn.co/image/track-cover",
             }
         ).encode()
     )
@@ -44,6 +45,7 @@ def test_spotify_track_metadata_builds_youtube_query(monkeypatch) -> None:
 
     assert track.title == "Antarctica"
     assert track.artist == "$uicideboy$"
+    assert track.cover_url == "https://i.scdn.co/image/track-cover"
     assert track.search_query == "$uicideboy$ - Antarctica"
 
 
@@ -288,7 +290,26 @@ def test_saved_spotify_tracks_keep_identity_and_added_at() -> None:
                             "type": "track",
                             "name": "Antarctica",
                             "artists": [{"name": "$uicideboy$"}],
-                            "album": {"name": "I Want to Die in New Orleans"},
+                            "album": {
+                                "name": "I Want to Die in New Orleans",
+                                "images": [
+                                    {
+                                        "url": "https://i.scdn.co/image/640",
+                                        "width": 640,
+                                        "height": 640,
+                                    },
+                                    {
+                                        "url": "https://i.scdn.co/image/300",
+                                        "width": 300,
+                                        "height": 300,
+                                    },
+                                    {
+                                        "url": "https://i.scdn.co/image/64",
+                                        "width": 64,
+                                        "height": 64,
+                                    },
+                                ],
+                            },
                             "duration_ms": 123000,
                             "external_ids": {"isrc": "US-AAA-1"},
                         },
@@ -309,6 +330,7 @@ def test_saved_spotify_tracks_keep_identity_and_added_at() -> None:
     assert tracks[0].album == "I Want to Die in New Orleans"
     assert tracks[0].duration_ms == 123000
     assert tracks[0].isrc == "US-AAA-1"
+    assert tracks[0].cover_url == "https://i.scdn.co/image/300"
     assert oauth_client.requests[0][0] == "/v1/me/tracks"
     assert oauth_client.requests[0][1]["limit"] == "50"
 

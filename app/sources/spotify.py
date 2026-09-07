@@ -76,6 +76,7 @@ class SpotifyTrack:
     duration_ms: int | None = None
     added_at: str | None = None
     isrc: str | None = None
+    cover_url: str | None = None
 
     @property
     def search_query(self) -> str:
@@ -89,6 +90,7 @@ class SpotifyTrack:
 class SpotifyPlaylist:
     name: str
     tracks: tuple[SpotifyTrack, ...]
+    cover_url: str | None = None
 
 
 class SpotifyOAuthClient:
@@ -614,6 +616,7 @@ class SpotifyMetadataProvider:
         return SpotifyTrack(
             title=title,
             artist=artist or None,
+            cover_url=_extract_image_url(payload),
         )
 
     def get_resource_type(self, url: str) -> str:
@@ -684,11 +687,12 @@ class SpotifyMetadataProvider:
         encoded_playlist_id = quote(playlist_id, safe="")
         playlist_payload = self.oauth_client.get_json(
             f"/v1/playlists/{encoded_playlist_id}",
-            {"fields": "name"},
+            {"fields": "name,images(url,width,height)"},
         )
         playlist_name = str(
             playlist_payload.get("name") or "Spotify playlist"
         ).strip()
+        playlist_cover_url = _extract_image_url(playlist_payload)
 
         tracks: list[SpotifyTrack] = []
         offset = 0
@@ -699,7 +703,8 @@ class SpotifyMetadataProvider:
                     "limit": "100",
                     "offset": str(offset),
                     "fields": (
-                        "items(is_local,item(name,artists(name),type)),"
+                        "items(is_local,item(name,artists(name),type,"
+                        "album(images(url,width,height)))),"
                         "next,total"
                     ),
                 },
@@ -708,7 +713,15 @@ class SpotifyMetadataProvider:
             for item in items:
                 spotify_track = _parse_playlist_track(item)
                 if spotify_track is not None:
-                    tracks.append(spotify_track)
+                    tracks.append(
+                        replace(
+                            spotify_track,
+                            cover_url=(
+                                spotify_track.cover_url
+                                or playlist_cover_url
+                            ),
+                        )
+                    )
 
             next_url = payload.get("next")
             if not next_url or not items:
@@ -718,6 +731,7 @@ class SpotifyMetadataProvider:
         return SpotifyPlaylist(
             name=playlist_name,
             tracks=tuple(tracks),
+            cover_url=playlist_cover_url,
         )
 
     def _get_album_from_authorized_api(
@@ -727,11 +741,12 @@ class SpotifyMetadataProvider:
         encoded_album_id = quote(album_id, safe="")
         album_payload = self.oauth_client.get_json(
             f"/v1/albums/{encoded_album_id}",
-            {"fields": "name"},
+            {"fields": "name,images(url,width,height)"},
         )
         album_name = str(
             album_payload.get("name") or "Spotify album"
         ).strip()
+        album_cover_url = _extract_image_url(album_payload)
         tracks: list[SpotifyTrack] = []
         offset = 0
         while True:
@@ -741,7 +756,10 @@ class SpotifyMetadataProvider:
             )
             items = payload.get("items") or []
             tracks.extend(
-                spotify_track
+                replace(
+                    spotify_track,
+                    cover_url=spotify_track.cover_url or album_cover_url,
+                )
                 for item in items
                 if (spotify_track := _parse_playlist_track(item)) is not None
             )
@@ -759,6 +777,7 @@ class SpotifyMetadataProvider:
         return SpotifyPlaylist(
             name=album_name or "Spotify album",
             tracks=tuple(tracks),
+            cover_url=album_cover_url,
         )
 
     def _get_playlist_from_public_page(
@@ -794,12 +813,18 @@ class SpotifyMetadataProvider:
         playlist_name = str(
             entity.get("name") or entity.get("title") or "Spotify playlist"
         ).strip()
+        playlist_cover_url = _extract_image_url(entity)
 
         tracks: list[SpotifyTrack] = []
         for item in entity.get("trackList") or []:
             spotify_track = _parse_embed_track(item)
             if spotify_track is not None:
-                tracks.append(spotify_track)
+                tracks.append(
+                    replace(
+                        spotify_track,
+                        cover_url=spotify_track.cover_url or playlist_cover_url,
+                    )
+                )
 
         if not tracks:
             raise RuntimeError(
@@ -809,6 +834,7 @@ class SpotifyMetadataProvider:
         return SpotifyPlaylist(
             name=playlist_name,
             tracks=tuple(tracks),
+            cover_url=playlist_cover_url,
         )
 
     def _get_playlist_from_partner_api(
@@ -849,6 +875,7 @@ class SpotifyMetadataProvider:
         tracks: list[SpotifyTrack] = []
         offset = 0
         album_name = "Spotify album"
+        album_cover_url: str | None = None
         total_count: int | None = None
 
         while True:
@@ -859,6 +886,9 @@ class SpotifyMetadataProvider:
             )
             album = _get_partner_album(payload)
             album_name = str(album.get("name") or album_name).strip()
+            album_cover_url = (
+                _extract_image_url(album) or album_cover_url
+            )
             tracks_data = album.get("tracksV2") or {}
             if not isinstance(tracks_data, dict):
                 raise TypeError(
@@ -874,7 +904,10 @@ class SpotifyMetadataProvider:
                 total_count = total_value
 
             tracks.extend(
-                spotify_track
+                replace(
+                    spotify_track,
+                    cover_url=spotify_track.cover_url or album_cover_url,
+                )
                 for item in raw_items
                 if (spotify_track := _parse_partner_album_track(item))
                 is not None
@@ -897,6 +930,7 @@ class SpotifyMetadataProvider:
         return SpotifyPlaylist(
             name=album_name or "Spotify album",
             tracks=tuple(tracks),
+            cover_url=album_cover_url,
         )
 
     def _get_partner_album_page(
@@ -1023,6 +1057,7 @@ class SpotifyMetadataProvider:
             playlist_name = str(
                 playlist.get("name") or playlist_name
             ).strip()
+            playlist_cover_url = _extract_image_url(playlist)
             content = playlist.get("content") or {}
             if not isinstance(content, dict):
                 raise TypeError(
@@ -1042,7 +1077,15 @@ class SpotifyMetadataProvider:
             for item in raw_items:
                 spotify_track = _parse_partner_playlist_track(item)
                 if spotify_track is not None:
-                    tracks.append(spotify_track)
+                    tracks.append(
+                        replace(
+                            spotify_track,
+                            cover_url=(
+                                spotify_track.cover_url
+                                or playlist_cover_url
+                            ),
+                        )
+                    )
 
             item_count = len(raw_items)
             offset += item_count
@@ -1061,6 +1104,7 @@ class SpotifyMetadataProvider:
         return SpotifyPlaylist(
             name=playlist_name or "Spotify playlist",
             tracks=tuple(tracks),
+            cover_url=playlist_cover_url,
         )
 
     def _get_partner_playlist_page(
@@ -1183,6 +1227,82 @@ def _resource_id(url: str, expected_type: str) -> str:
     return parts[1]
 
 
+def _extract_image_url(payload: object) -> str | None:
+    """Return the best available artwork URL from Spotify payload shapes."""
+
+    if not isinstance(payload, dict):
+        return None
+
+    direct_keys = (
+        "thumbnail_url",
+        "thumbnailUrl",
+        "image_url",
+        "imageUrl",
+        "cover_url",
+        "coverUrl",
+    )
+    candidates: list[tuple[int, int, str]] = []
+
+    for key in direct_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.append((0, 0, value.strip()))
+
+    for key in ("images", "coverArt", "cover_art"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = (
+                value.get("sources")
+                or value.get("items")
+                or value.get("images")
+                or [value]
+            )
+        if not isinstance(value, list):
+            continue
+
+        for image in value:
+            if not isinstance(image, dict):
+                continue
+            url = image.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            try:
+                width = int(image.get("width") or 0)
+            except (TypeError, ValueError):
+                width = 0
+            try:
+                height = int(image.get("height") or 0)
+            except (TypeError, ValueError):
+                height = 0
+            candidates.append((width, height, url.strip()))
+
+    valid_candidates = [
+        candidate
+        for candidate in candidates
+        if urlparse(candidate[2]).scheme in {"http", "https"}
+    ]
+    if not valid_candidates:
+        return None
+
+    # Prefer the smallest image that is still large enough for a cover tile;
+    # this avoids downloading Spotify's largest source for every track.
+    large_enough = [
+        candidate
+        for candidate in valid_candidates
+        if min(candidate[0], candidate[1]) >= 200
+    ]
+    pool = large_enough or valid_candidates
+    return min(
+        pool,
+        key=lambda candidate: (
+            candidate[0] * candidate[1]
+            if candidate[0] and candidate[1]
+            else 0,
+            candidate[0] or candidate[1],
+        ),
+    )[2]
+
+
 def _parse_playlist_track(payload: object) -> SpotifyTrack | None:
     if not isinstance(payload, dict):
         return None
@@ -1211,9 +1331,15 @@ def _parse_playlist_track(payload: object) -> SpotifyTrack | None:
     if not title:
         return None
 
+    album_payload = track.get("album")
+
     return SpotifyTrack(
         title=title,
         artist=", ".join(artist_names) or None,
+        cover_url=(
+            _extract_image_url(album_payload)
+            or _extract_image_url(track)
+        ),
     )
 
 
@@ -1379,10 +1505,19 @@ def _parse_partner_playlist_track(payload: object) -> SpotifyTrack | None:
         for artist in artist_items
         if isinstance(artist, dict)
     ]
+    album_payload = (
+        track.get("albumOfTrack")
+        or track.get("album")
+        or track.get("albumOfTrackV2")
+    )
 
     return SpotifyTrack(
         title=title,
         artist=", ".join(name for name in artist_names if name) or None,
+        cover_url=(
+            _extract_image_url(album_payload)
+            or _extract_image_url(track)
+        ),
     )
 
 
@@ -1423,4 +1558,5 @@ def _parse_embed_track(payload: object) -> SpotifyTrack | None:
     return SpotifyTrack(
         title=title,
         artist=artist or None,
+        cover_url=_extract_image_url(payload),
     )

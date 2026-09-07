@@ -46,6 +46,9 @@ PLAYLIST_COVERS_DIR = DATA_DIR / "playlist_covers"
 TRACK_COVERS_DIR = DATA_DIR / "track_covers"
 MUSIC_MAP_SNAPSHOT_PATH = DATA_DIR / "music_map_snapshot.png"
 MUSIC_MAP_SNAPSHOT_METADATA_PATH = DATA_DIR / "music_map_snapshot.json"
+RANKER_MODEL_PATH = DATA_DIR / "models" / "ranker.pt"
+SYNTHETIC_RANKER_MODEL_PATH = DATA_DIR / "models" / "synthetic-ranker.pt"
+LOGISTIC_RANKER_MODEL_PATH = DATA_DIR / "models" / "ranker.joblib"
 
 
 def resolve_mert_source(model_name: str) -> str:

@@ -32,6 +32,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QPixmapCache,
     QRadialGradient,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -441,6 +442,7 @@ class HoverTableWidget(QTableWidget):
     row_hovered = Signal(int)
     row_clicked = Signal(int)
     row_double_clicked = Signal(int)
+    viewport_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -481,6 +483,10 @@ class HoverTableWidget(QTableWidget):
         )
         painter.end()
 
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self.viewport_changed.emit()
+
     def register_row_widget(
         self,
         widget: QWidget,
@@ -507,6 +513,29 @@ class HoverTableWidget(QTableWidget):
                 # was being cleared.
                 pass
         self._row_widgets.clear()
+
+    def clear_row_widgets_for_row(self, row_index: int) -> None:
+        """Forget event filters for one lazily-rendered row."""
+
+        for child, registered_row in tuple(self._row_widgets.items()):
+            if registered_row != row_index:
+                continue
+            try:
+                child.removeEventFilter(self)
+            except RuntimeError:
+                pass
+            self._row_widgets.pop(child, None)
+
+    def shift_row_widget_indices(
+        self,
+        first_row: int,
+        delta: int,
+    ) -> None:
+        """Keep widget hit-testing rows aligned after a table row shift."""
+
+        for child, row_index in tuple(self._row_widgets.items()):
+            if row_index >= first_row:
+                self._row_widgets[child] = row_index + delta
 
     def eventFilter(self, watched: object, event: object) -> bool:
         if watched is self.viewport():
@@ -1979,6 +2008,7 @@ class TrackIdentityWidget(QWidget):
         artist: str,
         *,
         cover_path: str | None = None,
+        show_cover: bool = True,
         compact: bool = False,
         include_play_button: bool = True,
         parent: QWidget | None = None,
@@ -1988,11 +2018,26 @@ class TrackIdentityWidget(QWidget):
         self._artist = artist
         self._search_query = ""
         self._include_play_button = include_play_button
+        self._show_cover = bool(show_cover and cover_path)
+        self._cover_size = 34 if compact else 44
         self.setObjectName("trackRowCell")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6 if include_play_button else 2)
+
+        if self._show_cover:
+            cover_size = self._cover_size
+            cover_label = QLabel()
+            cover_label.setFixedSize(cover_size, cover_size)
+            cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cover_label.setPixmap(
+                track_cover_pixmap(title, cover_path, cover_size)
+            )
+            cover_label.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents
+            )
+            layout.addWidget(cover_label)
 
         if include_play_button:
             play_button = SvgIconButton(
@@ -2037,10 +2082,7 @@ class TrackIdentityWidget(QWidget):
 
     def resizeEvent(self, event: object) -> None:
         super().resizeEvent(event)
-        available_width = max(
-            8,
-            self.width() - (44 if self._include_play_button else 4),
-        )
+        available_width = self._available_text_width()
         self._set_display_text(
             self._title_label,
             self._title,
@@ -2059,10 +2101,7 @@ class TrackIdentityWidget(QWidget):
         self._refresh_display_text()
 
     def _refresh_display_text(self) -> None:
-        available_width = max(
-            8,
-            self.width() - (44 if self._include_play_button else 4),
-        )
+        available_width = self._available_text_width()
         self._set_display_text(
             self._title_label,
             self._title,
@@ -2073,6 +2112,13 @@ class TrackIdentityWidget(QWidget):
             self._artist,
             available_width,
         )
+
+    def _available_text_width(self) -> int:
+        reserved_width = 44 if self._include_play_button else 4
+        if self._show_cover:
+            reserved_width += self._cover_size
+            reserved_width += 6 if self._include_play_button else 2
+        return max(8, self.width() - reserved_width)
 
     def _set_display_text(
         self,
@@ -2127,15 +2173,27 @@ def track_cover_pixmap(
 ) -> QPixmap:
     """Load a stored cover or draw the deliberately dark fallback tile."""
 
+    cache_key = f"track-cover:{cover_path or '<fallback>'}:{title}:{size}"
+    if cover_path:
+        try:
+            cache_key += f":{Path(cover_path).stat().st_mtime_ns}"
+        except OSError:
+            pass
+    cached_pixmap = QPixmapCache.find(cache_key)
+    if cached_pixmap is not None and not cached_pixmap.isNull():
+        return cached_pixmap
+
     if cover_path:
         pixmap = QPixmap(str(Path(cover_path)))
         if not pixmap.isNull():
-            return pixmap.scaled(
+            scaled_pixmap = pixmap.scaled(
                 size,
                 size,
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation,
             )
+            QPixmapCache.insert(cache_key, scaled_pixmap)
+            return scaled_pixmap
 
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -2155,6 +2213,7 @@ def track_cover_pixmap(
         Qt.AlignmentFlag.AlignCenter,
         title[:1].upper() or "♫",
     )
+    QPixmapCache.insert(cache_key, pixmap)
     return pixmap
 
 

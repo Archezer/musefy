@@ -155,7 +155,12 @@ class YouTubeImportService:
             max_results=5,
         )
         candidates = [
-            candidate
+            replace(
+                candidate,
+                requested_title=spotify_track.title,
+                requested_artist=spotify_track.artist,
+                cover_url=spotify_track.cover_url,
+            )
             for candidate in candidates
             if _durations_match(
                 spotify_track.duration_ms,
@@ -277,6 +282,7 @@ class YouTubeImportService:
         return self._search_playlist_tracks(
             playlist.name,
             playlist.tracks,
+            cover_url=playlist.cover_url,
             on_progress=on_progress,
             should_cancel=should_cancel,
         )
@@ -375,6 +381,7 @@ class YouTubeImportService:
                 requested_artist=spotify_track.artist,
                 playlist_position=position,
                 spotify_added_at=spotify_track.added_at,
+                cover_url=spotify_track.cover_url or cover_url,
             )
             if not _durations_match(
                 spotify_track.duration_ms,
@@ -517,6 +524,7 @@ class YouTubeImportService:
         result = self._search_playlist_tracks(
             collection.name,
             tuple(collection.tracks),
+            cover_url=collection.cover_url,
             on_progress=on_progress,
             should_cancel=should_cancel,
         )
@@ -571,6 +579,11 @@ class YouTubeImportService:
                 candidate.requested_artist
                 or candidate.channel_title
             )
+            cover_kwargs = (
+                {"cover_url": candidate.cover_url}
+                if candidate.cover_url
+                else {}
+            )
 
             if existing_track is not None:
                 return self.ingestion_service.restore_missing_track(
@@ -585,6 +598,7 @@ class YouTubeImportService:
                     source=existing_track.source,
                     source_id=candidate.video_id,
                     source_url=candidate.url,
+                    **cover_kwargs,
                     **date_kwargs,
                 )
 
@@ -596,6 +610,7 @@ class YouTubeImportService:
                 source=source,
                 source_id=candidate.video_id,
                 source_url=candidate.url,
+                **cover_kwargs,
                 **date_kwargs,
             )
 

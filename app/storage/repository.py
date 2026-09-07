@@ -166,6 +166,7 @@ class SQLAlchemyMusicStore:
                         duration_ms=metadata.duration_ms,
                         added_at=metadata.added_at,
                         isrc=metadata.isrc,
+                        cover_url=metadata.cover_url,
                         imported_at=metadata.imported_at,
                     )
                 )
@@ -176,6 +177,7 @@ class SQLAlchemyMusicStore:
                 record.duration_ms = metadata.duration_ms
                 record.added_at = metadata.added_at
                 record.isrc = metadata.isrc
+                record.cover_url = metadata.cover_url
                 record.imported_at = metadata.imported_at
             session.commit()
 
@@ -761,6 +763,10 @@ class SQLAlchemyMusicStore:
                     reason=impression.reason,
                     shown_at=impression.shown_at,
                     session_id=impression.session_id,
+                    feature_snapshot_json=json.dumps(
+                        dict(impression.feature_snapshot),
+                        sort_keys=True,
+                    ),
                 )
             )
             session.commit()
@@ -892,6 +898,19 @@ class SQLAlchemyMusicStore:
         if shown_at.tzinfo is None:
             shown_at = shown_at.replace(tzinfo=UTC)
 
+        try:
+            feature_snapshot_data = json.loads(
+                record.feature_snapshot_json or "{}"
+            )
+            feature_snapshot = tuple(
+                (str(name), float(value))
+                for name, value in sorted(
+                    feature_snapshot_data.items()
+                )
+            )
+        except (TypeError, ValueError, AttributeError):
+            feature_snapshot = ()
+
         return RecommendationImpression(
             user_id=record.user_id,
             track_id=record.track_id,
@@ -901,6 +920,7 @@ class SQLAlchemyMusicStore:
             reason=record.reason,
             shown_at=shown_at,
             session_id=record.session_id,
+            feature_snapshot=feature_snapshot,
         )
 
     @staticmethod
@@ -950,6 +970,7 @@ class SQLAlchemyMusicStore:
             duration_ms=record.duration_ms,
             added_at=added_at,
             isrc=record.isrc,
+            cover_url=record.cover_url,
             imported_at=imported_at,
         )
 

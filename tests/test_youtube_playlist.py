@@ -529,6 +529,7 @@ class FakeSpotifyProvider:
                     "First track",
                     "Artist One",
                     added_at="2026-09-04T10:00:00Z",
+                    cover_url="https://i.scdn.co/image/cover-1",
                 ),
                 SpotifyTrack("Second track", "Artist Two"),
             ),
@@ -590,6 +591,9 @@ def test_spotify_playlist_search_keeps_order_and_metadata() -> None:
     ]
     assert result.candidates[0].spotify_added_at == (
         "2026-09-04T10:00:00Z"
+    )
+    assert result.candidates[0].cover_url == (
+        "https://i.scdn.co/image/cover-1"
     )
 
 
