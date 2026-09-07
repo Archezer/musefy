@@ -255,6 +255,22 @@ class TrackRecord(Base):
         String(500),
         nullable=True,
     )
+    loudness_lufs: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    loudness_true_peak_db: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    loudness_gain_db: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    loudness_analysis_version: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
 
     interactions: Mapped[list["InteractionRecord"]] = relationship(
         back_populates="track",

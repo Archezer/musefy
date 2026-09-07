@@ -162,6 +162,31 @@ class TrackManagementService:
 
         return updated_track
 
+    def update_loudness(
+        self,
+        *,
+        track_id: str,
+        loudness_lufs: float,
+        loudness_true_peak_db: float,
+        loudness_gain_db: float,
+        loudness_analysis_version: str,
+    ) -> Track:
+        """Persist loudness measurements without changing the audio file."""
+
+        current_track = self.store.get_track(track_id)
+        if current_track is None:
+            raise ValueError(f"Track does not exist: {track_id}")
+
+        updated_track = replace(
+            current_track,
+            loudness_lufs=float(loudness_lufs),
+            loudness_true_peak_db=float(loudness_true_peak_db),
+            loudness_gain_db=float(loudness_gain_db),
+            loudness_analysis_version=loudness_analysis_version,
+        )
+        self.store.update_track(updated_track)
+        return updated_track
+
     def delete_track(self, track_id: str) -> None:
         normalized_track_id = track_id.strip()
 

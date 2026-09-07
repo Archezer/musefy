@@ -113,6 +113,38 @@ def create_database() -> None:
                 )
             )
 
+        if "loudness_lufs" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN loudness_lufs REAL"
+                )
+            )
+
+        if "loudness_true_peak_db" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN loudness_true_peak_db REAL"
+                )
+            )
+
+        if "loudness_gain_db" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN loudness_gain_db REAL"
+                )
+            )
+
+        if "loudness_analysis_version" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE tracks "
+                    "ADD COLUMN loudness_analysis_version VARCHAR(50)"
+                )
+            )
+
         impression_columns = {
             column["name"]
             for column in inspect(connection).get_columns(

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QWidget
 from app.domain.models import Track
 from app.ml.cancellation import AnalysisCancelled
 from app.services.library_maintenance import LibraryHealthService
+from app.services.loudness import LoudnessAnalysisError, analyze_loudness
 from app.services.mp3party_import import Mp3PartyCandidate
 from app.services.soundcloud_import import SoundCloudCandidate
 from app.services.youtube_import import OperationCancelled
@@ -248,6 +249,57 @@ class GenreAnalysisTask(QRunnable):
                 )
         finally:
             self.signals.finished.emit()
+
+
+class LoudnessAnalysisSignals(QObject):
+    """Signals emitted by one background loudness measurement."""
+
+    result_ready = Signal(str, object)
+    error_occurred = Signal(str, str)
+    finished = Signal(str)
+
+
+class LoudnessAnalysisTask(QRunnable):
+    """Measure one local track without blocking the playback controls."""
+
+    def __init__(self, track_id: str, audio_path: Path) -> None:
+        super().__init__()
+        self.track_id = track_id
+        self.audio_path = audio_path
+        self.cancel_requested = Event()
+        self.signals = LoudnessAnalysisSignals()
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
+
+    def is_cancelled(self) -> bool:
+        return self.cancel_requested.is_set()
+
+    def run(self) -> None:
+        try:
+            if self.is_cancelled():
+                return
+            result = analyze_loudness(self.audio_path)
+        except (
+            FileNotFoundError,
+            LoudnessAnalysisError,
+            OSError,
+            ValueError,
+        ) as error:
+            self.signals.error_occurred.emit(
+                self.track_id,
+                str(error) or error.__class__.__name__,
+            )
+        except Exception as error:  # noqa: BLE001
+            self.signals.error_occurred.emit(
+                self.track_id,
+                str(error) or error.__class__.__name__,
+            )
+        else:
+            if not self.is_cancelled():
+                self.signals.result_ready.emit(self.track_id, result)
+        finally:
+            self.signals.finished.emit(self.track_id)
 
 
 class MusicMapSignals(QObject):

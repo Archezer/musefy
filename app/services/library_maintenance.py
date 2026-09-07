@@ -623,6 +623,10 @@ class LibraryBackupService:
             "source_url": track.source_url,
             "local_path": track.local_path,
             "cover_path": track.cover_path,
+            "loudness_lufs": track.loudness_lufs,
+            "loudness_true_peak_db": track.loudness_true_peak_db,
+            "loudness_gain_db": track.loudness_gain_db,
+            "loudness_analysis_version": track.loudness_analysis_version,
         }
 
     @classmethod

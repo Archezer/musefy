@@ -288,7 +288,10 @@ class SQLAlchemyMusicStore:
             source_url=track.source_url,
             local_path=track.local_path,
             cover_path=track.cover_path,
-            
+            loudness_lufs=track.loudness_lufs,
+            loudness_true_peak_db=track.loudness_true_peak_db,
+            loudness_gain_db=track.loudness_gain_db,
+            loudness_analysis_version=track.loudness_analysis_version,
         )
 
         with self.session_factory() as session:
@@ -350,6 +353,10 @@ class SQLAlchemyMusicStore:
             record.source_id = track.source_id
             record.source_url = track.source_url
             record.cover_path = track.cover_path
+            record.loudness_lufs = track.loudness_lufs
+            record.loudness_true_peak_db = track.loudness_true_peak_db
+            record.loudness_gain_db = track.loudness_gain_db
+            record.loudness_analysis_version = track.loudness_analysis_version
 
             session.commit()
 
@@ -846,6 +853,10 @@ class SQLAlchemyMusicStore:
             source_url=record.source_url,
             local_path=record.local_path,
             cover_path=record.cover_path,
+            loudness_lufs=record.loudness_lufs,
+            loudness_true_peak_db=record.loudness_true_peak_db,
+            loudness_gain_db=record.loudness_gain_db,
+            loudness_analysis_version=record.loudness_analysis_version,
             mood_tags=mood_tags,
             mood_profiles=mood_profiles,
             mood_analysis_version=record.mood_analysis_version,
