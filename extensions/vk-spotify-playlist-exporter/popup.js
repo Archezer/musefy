@@ -1,4 +1,4 @@
-// This popup chooses the source from the active playlist tab.
+// This popup chooses the source from the active playlist or album tab.
 const exportButton = document.querySelector("#export-button");
 const statusElement = document.querySelector("#status");
 const DESKTOP_BRIDGE_URL = "http://127.0.0.1:8765/api/playlist-import";
@@ -111,7 +111,7 @@ chrome.runtime.onMessage.addListener((message) => {
     return;
   }
 
-  setStatus(`Loading playlist… ${message.count} tracks found.`);
+  setStatus(`Loading playlist/album… ${message.count} tracks found.`);
 });
 
 exportButton.addEventListener("click", async () => {
@@ -124,7 +124,9 @@ exportButton.addEventListener("click", async () => {
     const source = sourceForUrl(tab?.url);
 
     if (!tab?.id || !source) {
-      throw new Error("Open a VK Music, Spotify or Yandex Music playlist first.");
+      throw new Error(
+        "Open a VK Music, Spotify or Yandex Music playlist or album first.",
+      );
     }
 
     const sourceName = {
@@ -132,16 +134,16 @@ exportButton.addEventListener("click", async () => {
       spotify: "Spotify",
       yandex: "Yandex Music",
     }[source];
-    setStatus(`Loading ${sourceName} playlist…`);
+    setStatus(`Loading ${sourceName} playlist or album…`);
     const payload = await sendToPlaylistTab(tab.id, source);
 
     if (!payload?.ok) {
-      throw new Error(payload?.error || "VK playlist export failed.");
+      throw new Error(payload?.error || "Playlist/album export failed.");
     }
 
     await saveExport(payload.export);
   } catch (error) {
-    setStatus(error.message || "VK playlist export failed.", { error: true });
+    setStatus(error.message || "Playlist/album export failed.", { error: true });
   } finally {
     exportButton.disabled = false;
   }

@@ -414,3 +414,40 @@ class RecommendationTask(QRunnable):
             QThread.msleep(20)
 
         self.signals.finished.emit(self.generation)
+
+
+class RecommendationAnalyticsTask(QRunnable):
+    """Persist recommendation impressions without blocking the GUI thread."""
+
+    def __init__(
+        self,
+        analytics_service: object,
+        user_id: str,
+        recommendations: list[object] | tuple[object, ...],
+        *,
+        session_id: str | None = None,
+        playlist_id: str | None = None,
+        position_offset: int = 0,
+    ) -> None:
+        super().__init__()
+        self.analytics_service = analytics_service
+        self.user_id = user_id
+        self.recommendations = tuple(recommendations)
+        self.session_id = session_id
+        self.playlist_id = playlist_id
+        self.position_offset = position_offset
+
+    def run(self) -> None:
+        try:
+            self.analytics_service.record_impressions(
+                self.user_id,
+                self.recommendations,
+                session_id=self.session_id,
+                playlist_id=self.playlist_id,
+                position_offset=self.position_offset,
+            )
+        except Exception:
+            # Recommendation telemetry is best effort.  A stale track or a
+            # transient SQLite error must never interrupt playback or queue
+            # rendering, and the next batch can still be recorded normally.
+            return

@@ -1,8 +1,8 @@
 # Music Recs — Playlist Exporter
 
 This is a development build of a Chromium/Firefox Manifest V3 extension for
-exporting **playlist metadata** from the currently open VK Music, Spotify or
-Yandex Music page.
+exporting **playlist and album metadata** from the currently open VK Music,
+Spotify or Yandex Music page.
 
 It exports only:
 
@@ -31,7 +31,7 @@ currently rendered track rows and are downloaded later by the desktop app.
 
 1. Open a VK Music playlist in the browser.
 2. In VK, click **Show all** if VK displays that control.
-3. Open the extension and click **Export current playlist**.
+3. Open the extension and click **Export current playlist or album**.
 4. Let it scroll until the count stops increasing. If the desktop app is
    running, the export is saved automatically inside the project's
    `playlist_exports` folder, next to `extensions`.
@@ -46,22 +46,24 @@ the script attaches; it is an optional shortcut.
 
 1. Open a Spotify playlist in the browser.
 2. Log in only if the page itself requires it.
-3. Open the extension and select **Export current playlist**.
+3. Open the extension and select **Export current playlist or album**.
 4. Let it scroll until the count stops increasing. If the desktop app is
    running, the export is saved automatically inside the project's
    `playlist_exports` folder, next to `extensions`.
 
-### Yandex Music
+### Yandex Music playlists and albums
 
-1. Open a Yandex Music playlist in the browser.
+1. Open a Yandex Music playlist or album in the browser.
 2. Log in only if the page itself requires it.
-3. Open the extension and select **Export current playlist**.
+3. Open the extension and select **Export current playlist or album**.
 4. Let it scroll until the count stops increasing. If the desktop app is
    running, the export is saved automatically inside the project's
    `playlist_exports` folder, next to `extensions`.
 
-The Yandex extractor reads only the playlist's labelled track region. Tracks
-from recommendations below the playlist are not included.
+The Yandex extractor reads only the collection's labelled track region. Album
+pages without the current labelled region use a route-scoped track container
+fallback, so recommendations outside the album are not included. Every track
+from an album receives the album cover URL in the export.
 
 If the desktop app is closed or cannot be reached, the extension falls back to
 the browser's Downloads folder. In the desktop app, click **Import exported

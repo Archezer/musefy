@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Music Recs — Playlist Exporter",
-  "description": "Exports visible VK Music, Spotify and Yandex Music playlist metadata for Local Music Recommendation System.",
+  "description": "Exports visible VK Music, Spotify and Yandex Music playlist/album metadata for Local Music Recommendation System.",
   "version": "0.1.0",
   "action": {
     "default_title": "Export VK playlist",

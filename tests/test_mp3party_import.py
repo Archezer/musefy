@@ -158,6 +158,23 @@ def test_mp3party_search_uses_q_and_parses_results(monkeypatch) -> None:
     assert candidates[0].audio_url.endswith("/online/11377383.mp3")
 
 
+def test_mp3party_keeps_first_artist_and_moves_other_artists_to_feat() -> None:
+    entries = [
+        {
+            "track_id": "11549812",
+            "title": "M.F.U.",
+            "artist": "Yeat, SahBabii",
+            "audio_url": "https://dl2.mp3party.net/online/11549812.mp3",
+            "duration_ms": 160_000,
+        }
+    ]
+
+    candidate = Mp3PartyImportService._build_candidates(entries)[0]
+
+    assert candidate.artist == "Yeat"
+    assert candidate.title == "M.F.U. (Feat. SahBabii)"
+
+
 def test_mp3party_search_retries_without_diacritics_and_hyphen(
     monkeypatch,
 ) -> None:

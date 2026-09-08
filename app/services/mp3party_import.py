@@ -441,6 +441,7 @@ class Mp3PartyImportService:
             ):
                 continue
 
+            artist, title = _normalize_mp3party_artists(artist, title)
             page_url = f"{MP3PARTY_BASE_URL}/music/{track_id}"
             cover_url_value = str(entry.get("cover_url") or "").strip()
             candidates.append(
@@ -619,3 +620,25 @@ def _normalize_match_text(value: str) -> str:
     return " ".join(
         re.findall(r"[^\W_]+", without_diacritics, flags=re.UNICODE)
     )
+
+
+def _normalize_mp3party_artists(
+    artist: str,
+    title: str,
+) -> tuple[str, str]:
+    """Keep the first performer as artist and move the rest into ``Feat.``."""
+
+    parts = [part.strip() for part in re.split(
+        r"\s*(?:,|;|&|\+|\bx\b|\bfeat(?:uring)?\.?|\bft\.?)\s*",
+        artist,
+        flags=re.IGNORECASE,
+    ) if part.strip()]
+    if len(parts) <= 1:
+        return artist, title
+
+    primary_artist = parts[0]
+    featured_artists = ", ".join(parts[1:])
+    if re.search(r"\(\s*(?:feat(?:uring)?|ft)\.?\b", title, re.IGNORECASE):
+        return primary_artist, title
+
+    return primary_artist, f"{title} (Feat. {featured_artists})"

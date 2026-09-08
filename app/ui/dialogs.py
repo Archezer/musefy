@@ -972,8 +972,7 @@ class YouTubeSearchDialog(QDialog):
             "Tip: use Artist - Title for more accurate search results."
         )
         self.search_hint_label.setObjectName("searchQueryHint")
-        self.search_hint_label.setWordWrap(True)
-        form_layout.addRow("", self.search_hint_label)
+        self.search_hint_label.setWordWrap(False)
 
         # Keep the old attribute names as aliases for host integrations.
         self.query_edit = self.source_edit
@@ -1014,6 +1013,7 @@ class YouTubeSearchDialog(QDialog):
             self._request_mp3party_download
         )
         search_layout.addWidget(self.mp3party_button)
+        search_layout.addWidget(self.search_hint_label)
 
         self.spotify_auth_status_label = QLabel()
         self.spotify_auth_status_label.setObjectName("spotifyAuthStatus")

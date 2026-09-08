@@ -122,10 +122,54 @@ function sourceIndexOf(row) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-function playlistRegion() {
-  return document.querySelector(
-    '[aria-label^="Список треков плейлиста"], [aria-label^="Playlist tracks"]',
+function isYandexAlbumPage() {
+  return /^\/album(?:\/|$)/i.test(window.location.pathname);
+}
+
+function isYandexCollectionPage() {
+  return (
+    isYandexAlbumPage() ||
+    /^\/playlists?\//i.test(window.location.pathname)
   );
+}
+
+function playlistRegion() {
+  const labelledRegion = document.querySelector(
+    '[aria-label^="Список треков плейлиста"], ' +
+      '[aria-label^="Список треков альбома"], ' +
+      '[aria-label^="Playlist tracks"], ' +
+      '[aria-label^="Album tracks"]',
+  );
+
+  if (labelledRegion) {
+    return labelledRegion;
+  }
+
+  // Yandex has used several different aria-labels for album pages.  When
+  // those labels are absent, find the nearest shared container around the
+  // rendered track rows, but only on an actual album/playlist route so that
+  // recommendations on the home page are never exported.
+  if (!isYandexCollectionPage()) {
+    return null;
+  }
+
+  const page = document.querySelector("main") || document.body;
+  const row = page.querySelector(
+    '[data-index], [class*="CommonTrack_root"]',
+  );
+  let current = row;
+
+  while (current && current !== page) {
+    const rowCount = current.querySelectorAll(
+      '[data-index], [class*="CommonTrack_root"]',
+    ).length;
+    if (rowCount > 1) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+
+  return page;
 }
 
 function trackRows() {
@@ -265,10 +309,35 @@ function playlistTitle() {
 }
 
 function playlistCoverUrl() {
-  const main = document.querySelector("main");
-  const image = main?.querySelector("img[src]");
+  const scope = document.querySelector("main") || document.body;
+  const prioritizedImages = [
+    ...scope.querySelectorAll(
+      '[class*="Album"] img, [class*="album"] img, ' +
+        '[class*="Cover"] img, [class*="cover"] img, ' +
+        'img[alt*="облож" i], img[alt*="album" i]',
+    ),
+  ];
 
-  return image?.currentSrc || image?.src || null;
+  for (const image of prioritizedImages) {
+    const imageUrl = imageUrlFromNode(image);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  const images = [...scope.querySelectorAll("img")].sort(
+    (left, right) =>
+      right.naturalWidth * right.naturalHeight -
+      left.naturalWidth * left.naturalHeight,
+  );
+  for (const image of images) {
+    const imageUrl = imageUrlFromNode(image);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  return null;
 }
 
 function scrollContainer() {
@@ -345,7 +414,7 @@ async function exportPlaylist() {
 
   if (!region) {
     throw new Error(
-      "Yandex playlist tracks were not found. Open the playlist page and retry.",
+      "Yandex playlist/album tracks were not found. Open the collection page and retry.",
     );
   }
 
@@ -401,6 +470,7 @@ async function exportPlaylist() {
     await sleep(SCROLL_DELAY_MS);
   }
 
+  const collectionCoverUrl = playlistCoverUrl();
   const tracks = [...allTracks.values()]
     .sort((left, right) => {
       if (left.source_index !== null && right.source_index !== null) {
@@ -417,13 +487,24 @@ async function exportPlaylist() {
 
       return left.discovery_order - right.discovery_order;
     })
-    .map(({ source_index: _sourceIndex, discovery_order: _discoveryOrder, ...track }, index) => ({
-      position: index + 1,
-      ...track,
-    }));
+    .map(
+      ({
+        source_index: _sourceIndex,
+        discovery_order: _discoveryOrder,
+        ...track
+      }, index) => ({
+        position: index + 1,
+        ...track,
+        // Album exports use one consistent cover for every track.  Keep the
+        // row artwork as a fallback for older/partially rendered pages.
+        cover_url: collectionCoverUrl || track.cover_url,
+      }),
+    );
 
   if (!tracks.length) {
-    throw new Error("Yandex playlist is visible, but no readable tracks were found.");
+    throw new Error(
+      "Yandex playlist/album is visible, but no readable tracks were found.",
+    );
   }
 
   return {
@@ -434,7 +515,7 @@ async function exportPlaylist() {
       source: "yandex",
       title: playlistTitle(),
       url: window.location.href,
-      cover_url: playlistCoverUrl(),
+      cover_url: collectionCoverUrl,
     },
     tracks,
   };

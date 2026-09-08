@@ -216,6 +216,7 @@ from app.ui.workers import (
     LibraryHealthTaskThread,
     LoudnessAnalysisTask,
     MusicMapTask,
+    RecommendationAnalyticsTask,
     RecommendationTask,
     WatchFolderTaskThread,
     YouTubeTaskThread,
@@ -248,6 +249,8 @@ QUEUE_VISIBLE_TRACK_LIMIT = 50
 PLAYLISTS_PER_PAGE = 7
 SCROLL_EDGE_TOLERANCE = 2
 PREVIOUS_RESTART_THRESHOLD_MS = 5_000
+DEFAULT_LIBRARY_SORT_COLUMN = 4  # Added
+DEFAULT_LIBRARY_SORT_DESCENDING = True
 REPEAT_MODES = (
     RepeatMode.OFF,
     RepeatMode.QUEUE,
@@ -386,8 +389,10 @@ class MainWindow(QMainWindow):
         self._music_map_task: MusicMapTask | None = None
         self._music_map_build_failed = False
         self._is_shutting_down = False
-        self._library_sort_column: int | None = None
-        self._library_sort_descending = False
+        # The main library is newest-first by default.  Playlist views clear
+        # this state so their saved order remains untouched.
+        self._library_sort_column: int | None = DEFAULT_LIBRARY_SORT_COLUMN
+        self._library_sort_descending = DEFAULT_LIBRARY_SORT_DESCENDING
         self._add_tracks_mode = False
         self._add_tracks_target_playlist_id: str | None = None
         self._add_tracks_selected_ids: set[str] = set()
@@ -560,6 +565,11 @@ class MainWindow(QMainWindow):
         self._recommendation_pool.setMaxThreadCount(1)
         self._mood_recommendation_pool = QThreadPool(self)
         self._mood_recommendation_pool.setMaxThreadCount(1)
+        # Feature snapshots touch SQLite for every shown recommendation.  Keep
+        # that telemetry away from the GUI and separate from recommendation
+        # calculation so persistence cannot delay a new session/refill.
+        self._recommendation_analytics_pool = QThreadPool(self)
+        self._recommendation_analytics_pool.setMaxThreadCount(1)
         self._radio_recommendation_pool = QThreadPool(self)
         self._radio_recommendation_pool.setMaxThreadCount(1)
         self._loudness_analysis_pool = QThreadPool(self)
@@ -2187,6 +2197,10 @@ class MainWindow(QMainWindow):
         # label; keep Qt's edge-aligned indicator disabled to avoid a double
         # arrow in the same section.
         header.setSortIndicatorShown(False)
+        header.setSortIndicator(
+            DEFAULT_LIBRARY_SORT_COLUMN,
+            Qt.SortOrder.DescendingOrder,
+        )
         header.sectionClicked.connect(self._handle_library_sort)
         self.track_table.setColumnHidden(
             1,
@@ -2601,6 +2615,21 @@ class MainWindow(QMainWindow):
         header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
         header.viewport().update()
 
+    def _set_default_library_sort(self) -> None:
+        """Restore newest-first ordering when returning to the main library."""
+
+        self._library_sort_column = DEFAULT_LIBRARY_SORT_COLUMN
+        self._library_sort_descending = DEFAULT_LIBRARY_SORT_DESCENDING
+        if not hasattr(self, "track_table"):
+            return
+
+        header = self.track_table.horizontalHeader()
+        header.setSortIndicator(
+            DEFAULT_LIBRARY_SORT_COLUMN,
+            Qt.SortOrder.DescendingOrder,
+        )
+        header.viewport().update()
+
     def _sort_tracks(self, tracks: list[Track]) -> list[Track]:
         if self._library_sort_column is None:
             return list(tracks)
@@ -2700,11 +2729,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Library ready")
 
     def _show_main_library(self) -> None:
+        was_playlist_open = self.selected_playlist_id is not None
         if self._add_tracks_mode:
             self._clear_add_tracks_mode_state()
-        if self.selected_playlist_id is not None:
+        if was_playlist_open:
             self._reset_library_sort()
         self.selected_playlist_id = None
+        if was_playlist_open:
+            self._set_default_library_sort()
         self.playlist_list.blockSignals(True)
         self.playlist_list.clearSelection()
         self.playlist_list.blockSignals(False)
@@ -3224,18 +3256,15 @@ class MainWindow(QMainWindow):
     ) -> bool:
         if not recommendations:
             return False
-        try:
-            self.recommendation_analytics_service.record_impressions(
-                self.user_id,
-                recommendations,
-                session_id=session_id,
-                playlist_id=playlist_id,
-                position_offset=position_offset,
-            )
-        except (OSError, RuntimeError, ValueError):
-            # Telemetry must never interrupt playback or a UI refresh if a
-            # track disappears during a background operation.
-            return False
+        task = RecommendationAnalyticsTask(
+            self.recommendation_analytics_service,
+            self.user_id,
+            recommendations,
+            session_id=session_id,
+            playlist_id=playlist_id,
+            position_offset=position_offset,
+        )
+        self._recommendation_analytics_pool.start(task)
         return True
 
     def _finish_recommendation_loading(self, generation: int) -> None:
@@ -3335,11 +3364,10 @@ class MainWindow(QMainWindow):
         self._mood_session_pending_name = session_name
         self._mood_session_pending_mode = context.mode
         self._mood_session_seen_track_ids.clear()
-        initial_limit = (
-            MOOD_SESSION_INITIAL_QUEUE_SIZE
-            if context.mode == RecommendationMode.MY_WAVE
-            else 30
-        )
+        # Start every session with the same small visible slice.  Mood and
+        # genre sessions used to calculate 30 tracks up front, which made the
+        # first queue feel frozen even though the rest can be refilled lazily.
+        initial_limit = MOOD_SESSION_INITIAL_QUEUE_SIZE
 
         task = RecommendationTask(
             lambda: (),
@@ -7563,12 +7591,14 @@ class MainWindow(QMainWindow):
         self._music_map_pool.clear()
         self._recommendation_pool.clear()
         self._mood_recommendation_pool.clear()
+        self._recommendation_analytics_pool.clear()
         self._radio_recommendation_pool.clear()
         self._genre_analysis_pool.waitForDone()
         self._release_cancelled_genre_models()
         self._music_map_pool.waitForDone(3_000)
         self._recommendation_pool.waitForDone(3_000)
         self._mood_recommendation_pool.waitForDone(3_000)
+        self._recommendation_analytics_pool.waitForDone(3_000)
         self._radio_recommendation_pool.waitForDone(3_000)
         self._loudness_analysis_pool.waitForDone(3_000)
         if self.music_map.has_map_data_for(self._music_map_signature):
