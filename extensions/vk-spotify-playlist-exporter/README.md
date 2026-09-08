@@ -10,10 +10,12 @@ It exports only:
 - track order;
 - artist;
 - title;
+- track artwork URL when the source exposes it;
 - visible duration, when the source shows one.
 
 It does not read, export, transmit, or store cookies, passwords, VK/Spotify/
-Yandex tokens, audio URLs, or audio files.
+Yandex tokens, audio URLs, or audio files. Artwork URLs are read from the
+currently rendered track rows and are downloaded later by the desktop app.
 
 ## Install locally in Chrome or Edge
 

@@ -237,6 +237,11 @@ QLabel#searchElapsedTime {
     font-size: 11px;
     min-width: 42px;
 }
+QLabel#searchQueryHint {
+    color: #8F9A98;
+    font-size: 11px;
+    padding-top: 1px;
+}
 QFrame#spotifySyncRow, QFrame#spotifySettingsSection {
     background-color: rgba(255, 255, 255, 8);
     border: 1px solid rgba(255, 255, 255, 22);

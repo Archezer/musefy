@@ -14,6 +14,7 @@ class ExportedPlaylistTrack:
     artist: str
     title: str
     duration_seconds: int | None = None
+    cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ def _parse_track(
         artist=artist,
         title=title,
         duration_seconds=duration_seconds,
+        cover_url=_optional_cover_url(payload.get("cover_url")),
     )
 
 

@@ -968,6 +968,13 @@ class YouTubeSearchDialog(QDialog):
         )
         form_layout.addRow("Search or URL:", self.source_edit)
 
+        self.search_hint_label = QLabel(
+            "Tip: use Artist - Title for more accurate search results."
+        )
+        self.search_hint_label.setObjectName("searchQueryHint")
+        self.search_hint_label.setWordWrap(True)
+        form_layout.addRow("", self.search_hint_label)
+
         # Keep the old attribute names as aliases for host integrations.
         self.query_edit = self.source_edit
         self.url_edit = self.source_edit

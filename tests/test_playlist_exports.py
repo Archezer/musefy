@@ -23,6 +23,7 @@ def test_playlist_export_reads_optional_cover_url(
                         "position": 1,
                         "artist": "Artist",
                         "title": "Track",
+                        "cover_url": "https://avatars.example/track.jpg",
                     }
                 ],
             }
@@ -33,3 +34,6 @@ def test_playlist_export_reads_optional_cover_url(
     playlist = read_playlist_export(export_path)
 
     assert playlist.cover_url == "https://i.scdn.co/image/example"
+    assert playlist.tracks[0].cover_url == (
+        "https://avatars.example/track.jpg"
+    )

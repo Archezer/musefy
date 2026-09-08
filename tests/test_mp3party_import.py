@@ -62,6 +62,20 @@ SEARCH_HTML = """
 </div>
 """
 
+YEAT_ARTIST_SEARCH_HTML = '<a href="/artist/5196789">Yeat</a>'
+
+YEAT_ARTIST_PAGE_HTML = """
+<div class="track__user-panel"
+     data-js-artist-name="Yeat"
+     data-js-id="11549812"
+     data-js-image="/system/artists/imgs/yeat.jpg"
+     data-js-song-title="Griddlë (Feat. Don Toliver)"
+     data-js-url="https://dl2.mp3party.net/online/11549812.mp3">
+  <span class="track__info">02:40</span>
+</div>
+<a href="/artist/5196789?page=2">2</a>
+"""
+
 
 class _FakeResponse:
     def __init__(self, body: str | bytes) -> None:
@@ -92,6 +106,7 @@ class _FakeIngestionService:
         source: str,
         source_id: str,
         source_url: str,
+        cover_url: str | None = None,
     ) -> Track:
         return Track(
             id="track-1",
@@ -141,6 +156,60 @@ def test_mp3party_search_uses_q_and_parses_results(monkeypatch) -> None:
     assert candidates[0].title == "2TONE (Feat. Don Toliver)"
     assert candidates[0].duration_ms == 220_000
     assert candidates[0].audio_url.endswith("/online/11377383.mp3")
+
+
+def test_mp3party_search_retries_without_diacritics_and_hyphen(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 120
+        calls.append(request.full_url)
+        if "Griddl%C3%AB" in request.full_url:
+            return _FakeResponse("<html></html>")
+        return _FakeResponse(SEARCH_HTML)
+
+    monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+
+    candidates = Mp3PartyImportService(_FakeIngestionService()).search(
+        "yeat - Griddlë",
+        max_results=1,
+    )
+
+    assert calls[0].endswith("q=yeat+-+Griddl%C3%AB")
+    assert calls[1].endswith("q=yeat+-+Griddle")
+    assert candidates[0].track_id == "11377383"
+
+
+def test_mp3party_search_falls_back_to_artist_catalog_without_separator(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 120
+        calls.append(request.full_url)
+        if request.full_url.endswith("/search?q=yeat"):
+            return _FakeResponse(YEAT_ARTIST_SEARCH_HTML)
+        if request.full_url.endswith("/artist/5196789"):
+            return _FakeResponse(YEAT_ARTIST_PAGE_HTML)
+        return _FakeResponse("<html></html>")
+
+    monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+
+    candidates = Mp3PartyImportService(_FakeIngestionService()).search(
+        "yeat griddle",
+        max_results=1,
+    )
+
+    assert candidates[0].track_id == "11549812"
+    assert candidates[0].title == "Griddlë (Feat. Don Toliver)"
+    assert calls == [
+        "https://mp3party.net/search?q=yeat+griddle",
+        "https://mp3party.net/search?q=yeat",
+        "https://mp3party.net/artist/5196789",
+    ]
 
 
 def test_mp3party_direct_url_downloads_the_exposed_mp3(monkeypatch) -> None:

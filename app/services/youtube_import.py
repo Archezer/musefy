@@ -304,6 +304,7 @@ class YouTubeImportService:
             SpotifyTrack(
                 title=track.title,
                 artist=track.artist,
+                cover_url=track.cover_url,
             )
             for track in exported_playlist.tracks
         )

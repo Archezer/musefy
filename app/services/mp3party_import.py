@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -58,6 +59,8 @@ class _Mp3PartyHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.entries: list[dict[str, object]] = []
+        self.artist_urls: list[str] = []
+        self.page_urls: list[str] = []
         self._stack: list[tuple[str, set[str]]] = []
         self._current: dict[str, object] | None = None
         self._info_values: list[str] = []
@@ -66,6 +69,16 @@ class _Mp3PartyHTMLParser(HTMLParser):
         attributes = dict(attrs)
         classes = set((attributes.get("class") or "").split())
         self._stack.append((tag, classes))
+
+        href = attributes.get("href")
+        if tag == "a" and href:
+            link = urljoin(MP3PARTY_BASE_URL, href)
+            parsed_link = urlparse(link)
+            if parsed_link.path.rstrip("/").startswith("/artist/"):
+                if link not in self.artist_urls:
+                    self.artist_urls.append(link)
+                if "page=" in parsed_link.query and link not in self.page_urls:
+                    self.page_urls.append(link)
 
         if self._current is None and "track__user-panel" in classes:
             self._current = {
@@ -153,9 +166,58 @@ class Mp3PartyImportService:
                 "MP3Party max_results must be between 1 and 50."
             )
 
-        search_url = f"{MP3PARTY_BASE_URL}/search?{urlencode({'q': normalized_query})}"
-        entries = self._read_entries(search_url)
-        candidates = self._build_candidates(entries)
+        candidates: list[Mp3PartyCandidate] = []
+        seen_ids: set[str] = set()
+        artist_title = _split_artist_title(normalized_query)
+        for search_query in _search_query_variants(normalized_query):
+            search_url = (
+                f"{MP3PARTY_BASE_URL}/search?"
+                f"{urlencode({'q': search_query})}"
+            )
+            entries, _, _ = self._read_page(search_url)
+            for candidate in self._build_candidates(entries):
+                if candidate.track_id in seen_ids:
+                    continue
+                seen_ids.add(candidate.track_id)
+                candidates.append(candidate)
+
+            if artist_title is not None:
+                direct_matches = [
+                    candidate
+                    for candidate in candidates
+                    if _candidate_matches_artist_title(
+                        candidate,
+                        artist_name=artist_title[0],
+                        title=artist_title[1],
+                    )
+                ]
+                if direct_matches:
+                    return direct_matches[:max_results]
+            elif len(candidates) >= max_results:
+                return candidates[:max_results]
+
+        if artist_title is not None:
+            artist_name, title = artist_title
+            direct_matches = [
+                candidate
+                for candidate in candidates
+                if _candidate_matches_artist_title(
+                    candidate,
+                    artist_name=artist_name,
+                    title=title,
+                )
+            ]
+            if direct_matches:
+                return direct_matches[:max_results]
+
+            catalog_matches = self._search_artist_catalog(
+                artist_name,
+                title,
+                max_results=max_results,
+            )
+            if catalog_matches:
+                return catalog_matches
+
         return candidates[:max_results]
 
     def candidate_from_url(self, url: str) -> Mp3PartyCandidate:
@@ -163,7 +225,7 @@ class Mp3PartyImportService:
         if not self.is_supported_url(normalized_url):
             raise ValueError("MP3Party URL must point to a music track.")
 
-        entries = self._read_entries(normalized_url)
+        entries, _, _ = self._read_page(normalized_url)
         candidates = self._build_candidates(entries)
         requested_track_id = urlparse(normalized_url).path.rstrip("/").split("/")[-1]
         for candidate in candidates:
@@ -187,20 +249,42 @@ class Mp3PartyImportService:
         )
 
         with TemporaryDirectory(prefix="music-recommendation-mp3party-") as directory:
-            output_path = Path(directory) / f"{candidate.track_id}.mp3"
-            self._download_audio(
-                candidate.download_url or candidate.audio_url,
-                output_path,
+            download_urls = tuple(
+                dict.fromkeys(
+                    url
+                    for url in (candidate.download_url, candidate.audio_url)
+                    if url
+                )
             )
-            return self.ingestion_service.ingest(
-                output_path,
-                title=candidate.title,
-                artist=candidate.artist,
-                fallback_title=output_path.stem,
-                source="mp3party",
-                source_id=candidate.track_id,
-                source_url=candidate.url,
-            )
+            last_error: Exception | None = None
+
+            for attempt, audio_url in enumerate(download_urls):
+                output_path = Path(directory) / (
+                    f"{candidate.track_id}-{attempt}.mp3"
+                )
+                try:
+                    self._download_audio(
+                        audio_url,
+                        output_path,
+                        referer=candidate.url,
+                    )
+                    return self.ingestion_service.ingest(
+                        output_path,
+                        title=candidate.title,
+                        artist=candidate.artist,
+                        fallback_title=output_path.stem,
+                        source="mp3party",
+                        source_id=candidate.track_id,
+                        source_url=candidate.url,
+                        cover_url=candidate.cover_url,
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    last_error = error
+
+            if last_error is not None:
+                raise last_error
+
+            raise RuntimeError("MP3Party did not expose an audio URL.")
 
     def download_and_import_playlist(
         self,
@@ -246,6 +330,13 @@ class Mp3PartyImportService:
         )
 
     def _read_entries(self, url: str) -> list[dict[str, object]]:
+        entries, _, _ = self._read_page(url)
+        return entries
+
+    def _read_page(
+        self,
+        url: str,
+    ) -> tuple[list[dict[str, object]], tuple[str, ...], tuple[str, ...]]:
         request = Request(
             url,
             headers={
@@ -270,7 +361,63 @@ class Mp3PartyImportService:
 
         parser = _Mp3PartyHTMLParser()
         parser.feed(html)
-        return parser.entries
+        return (
+            parser.entries,
+            tuple(parser.artist_urls),
+            tuple(parser.page_urls),
+        )
+
+    def _search_artist_catalog(
+        self,
+        artist_name: str,
+        title: str,
+        *,
+        max_results: int,
+    ) -> list[Mp3PartyCandidate]:
+        """Find an explicit artist-title query in the artist catalog.
+
+        MP3Party's public search endpoint frequently omits tracks that are
+        present on the artist page.  Use the artist search only to discover
+        the canonical artist URL, then follow the pagination links exposed by
+        that page and apply the same normalized title matching locally.
+        """
+
+        search_url = (
+            f"{MP3PARTY_BASE_URL}/search?"
+            f"{urlencode({'q': artist_name})}"
+        )
+        _, artist_urls, _ = self._read_page(search_url)
+        pending_urls = list(artist_urls)
+        visited_urls: set[str] = set()
+        matches: list[Mp3PartyCandidate] = []
+        seen_ids: set[str] = set()
+
+        while pending_urls and len(visited_urls) < 32:
+            page_url = pending_urls.pop(0)
+            if page_url in visited_urls:
+                continue
+            visited_urls.add(page_url)
+
+            entries, _, page_urls = self._read_page(page_url)
+            for candidate in self._build_candidates(entries):
+                if candidate.track_id in seen_ids:
+                    continue
+                if not _candidate_matches_artist_title(
+                    candidate,
+                    artist_name=artist_name,
+                    title=title,
+                ):
+                    continue
+                seen_ids.add(candidate.track_id)
+                matches.append(candidate)
+                if len(matches) >= max_results:
+                    return matches
+
+            for next_url in page_urls:
+                if next_url not in visited_urls and next_url not in pending_urls:
+                    pending_urls.append(next_url)
+
+        return matches
 
     @classmethod
     def _build_candidates(
@@ -324,16 +471,34 @@ class Mp3PartyImportService:
 
         return candidates
 
-    def _download_audio(self, audio_url: str, output_path: Path) -> None:
+    def _download_audio(
+        self,
+        audio_url: str,
+        output_path: Path,
+        *,
+        referer: str | None = None,
+    ) -> None:
+        headers = {
+            "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.1",
+            "User-Agent": MP3PARTY_USER_AGENT,
+        }
+        if referer:
+            headers["Referer"] = referer
+
         request = Request(
             audio_url,
-            headers={
-                "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.1",
-                "User-Agent": MP3PARTY_USER_AGENT,
-            },
+            headers=headers,
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
+                content_type = str(
+                    response.headers.get("Content-Type") or ""
+                ).casefold()
+                if content_type.startswith(("text/", "application/json")):
+                    raise RuntimeError(
+                        "MP3Party returned a web page instead of audio."
+                    )
+
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > MP3PARTY_MAX_DOWNLOAD_BYTES:
                     raise RuntimeError("MP3Party audio file is too large.")
@@ -346,6 +511,8 @@ class Mp3PartyImportService:
                         if total_bytes > MP3PARTY_MAX_DOWNLOAD_BYTES:
                             raise RuntimeError("MP3Party audio file is too large.")
                         output.write(chunk)
+                if total_bytes == 0:
+                    raise RuntimeError("MP3Party returned an empty audio file.")
         except RuntimeError:
             raise
         except HTTPError as error:
@@ -364,3 +531,91 @@ def _parse_duration_ms(values: list[str]) -> int | None:
         minutes, seconds = (int(part) for part in match.groups())
         return (minutes * 60 + seconds) * 1000
     return None
+
+
+def _search_query_variants(query: str) -> tuple[str, ...]:
+    """Return conservative fallbacks for MP3Party's inconsistent search."""
+
+    variants: list[str] = []
+
+    def add(value: str) -> None:
+        normalized = " ".join(value.split())
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+
+    add(query)
+
+    without_diacritics = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", query)
+        if not unicodedata.combining(character)
+    )
+    add(without_diacritics)
+
+    # A hyphen between artist and title can be treated as punctuation or as a
+    # search operator by the site. Keep the user's preferred query first, then
+    # retry without that separator if the first request returns nothing.
+    add(re.sub(r"\s*[-–—]\s*", " ", without_diacritics))
+
+    return tuple(variants)
+
+
+def _split_artist_title(query: str) -> tuple[str, str] | None:
+    """Split the common ``artist - title`` form, with a compact fallback.
+
+    MP3Party also accepts the same input without the separator.  In that
+    form the first word is the most useful artist hint for the catalog
+    fallback; the regular site search still gets the original query first.
+    """
+
+    explicit_match = re.match(r"^\s*(.+?)\s*[-–—]\s*(.+?)\s*$", query)
+    if explicit_match is not None:
+        return (
+            explicit_match.group(1).strip(),
+            explicit_match.group(2).strip(),
+        )
+
+    artist_name, separator, title = query.partition(" ")
+    if not separator or not artist_name.strip() or not title.strip():
+        return None
+    return artist_name.strip(), title.strip()
+
+
+def _candidate_matches_artist_title(
+    candidate: Mp3PartyCandidate,
+    *,
+    artist_name: str,
+    title: str,
+) -> bool:
+    normalized_artist = _normalize_match_text(candidate.artist)
+    expected_artist = _normalize_match_text(artist_name)
+    if not (
+        normalized_artist == expected_artist
+        or normalized_artist.startswith(f"{expected_artist} ")
+    ):
+        return False
+
+    normalized_title = _normalize_match_text(candidate.title)
+    expected_title = _normalize_match_text(title)
+    if normalized_title == expected_title:
+        return True
+
+    # MP3Party commonly appends featured artists in parentheses to the title.
+    title_without_parenthetical = _normalize_match_text(
+        re.sub(r"\s*\([^)]*\)", "", candidate.title)
+    )
+    return (
+        title_without_parenthetical == expected_title
+        or normalized_title.startswith(f"{expected_title} ")
+    )
+
+
+def _normalize_match_text(value: str) -> str:
+    without_diacritics = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(character)
+    )
+    return " ".join(
+        re.findall(r"[^\W_]+", without_diacritics, flags=re.UNICODE)
+    )

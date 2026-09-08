@@ -4,6 +4,7 @@ import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
+from threading import Thread
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -79,7 +80,9 @@ def main() -> None:
         recommender,
         mood_recommender=mood_recommender,
         track_radio=track_radio,
-        hybrid_ranker=_load_optional_hybrid_ranker(store),
+        # The optional model is loaded after the window is visible.  Baseline
+        # recommendations work without it, so it must not delay first paint.
+        hybrid_ranker=None,
     )
 
     qt_application = QApplication(sys.argv)
@@ -115,6 +118,7 @@ def main() -> None:
     window.setWindowIcon(musefy_icon)
     window.show()
     _apply_windows_taskbar_icon(window)
+    _schedule_optional_hybrid_ranker_load(recommendation_service, store)
     # Do not start ML analysis while the window is becoming interactive.
     # The bundled demo track is still available, and can be analyzed through
     # the normal library action when the user explicitly requests it.  Model
@@ -152,6 +156,27 @@ def _load_optional_hybrid_ranker(store):
             file=sys.stderr,
         )
         return None
+
+
+def _schedule_optional_hybrid_ranker_load(
+    recommendation_service: RecommendationService,
+    store: SQLAlchemyMusicStore,
+) -> None:
+    """Load the optional ranker without blocking the first interactive frame."""
+
+    def load() -> None:
+        ranker = _load_optional_hybrid_ranker(store)
+        if ranker is not None:
+            # Recommendation tasks already run away from the GUI thread, and
+            # the reference assignment is atomic.  Future tasks will use the
+            # trained ranker while the initial screen remains responsive.
+            recommendation_service.hybrid_ranker = ranker
+
+    Thread(
+        target=load,
+        name="musefy-ranker-loader",
+        daemon=True,
+    ).start()
 
 
 def _redirect_windows_source_launch_to_native_host() -> None:

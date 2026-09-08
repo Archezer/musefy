@@ -11,6 +11,95 @@ function textOf(element) {
   return element?.textContent?.replace(/\s+/g, " ").trim() || "";
 }
 
+function normalizeImageUrl(value) {
+  const candidate = String(value || "").trim();
+
+  if (!candidate || candidate.startsWith("data:")) {
+    return null;
+  }
+
+  try {
+    const url = new URL(candidate, window.location.href);
+    return /^https?:$/.test(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function lastSrcsetUrl(value) {
+  const candidates = String(value || "")
+    .split(",")
+    .map((candidate) => candidate.trim().split(/\s+/)[0])
+    .filter(Boolean);
+
+  return normalizeImageUrl(candidates.at(-1));
+}
+
+function imageUrlFromNode(node) {
+  if (!node) {
+    return null;
+  }
+
+  const currentSource = normalizeImageUrl(node.currentSrc);
+  if (currentSource) {
+    return currentSource;
+  }
+
+  for (const attribute of [
+    "src",
+    "data-src",
+    "data-original",
+    "data-image-url",
+  ]) {
+    const source = normalizeImageUrl(node.getAttribute?.(attribute));
+    if (source) {
+      return source;
+    }
+  }
+
+  return lastSrcsetUrl(node.getAttribute?.("srcset"));
+}
+
+function backgroundImageUrlFromNode(node) {
+  const style = node?.getAttribute?.("style") || node?.style?.backgroundImage;
+  const match = String(style || "").match(
+    /url\(\s*["']?([^"')]+)["']?\s*\)/i,
+  );
+
+  return normalizeImageUrl(match?.[1]);
+}
+
+function trackCoverUrl(row) {
+  const nodes = [
+    ...(row?.matches?.("img") ? [row] : []),
+    ...(row?.querySelectorAll?.(
+      "img[src], img[srcset], img[data-src], img[data-original], " +
+        "[data-image-url]",
+    ) || []),
+  ];
+
+  for (const node of nodes) {
+    const imageUrl = imageUrlFromNode(node);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  const styledNodes = row?.querySelectorAll?.(
+    '[style*="background-image"], [data-background-image]',
+  ) || [];
+  for (const node of styledNodes) {
+    const imageUrl =
+      backgroundImageUrlFromNode(node) ||
+      normalizeImageUrl(node.getAttribute("data-background-image"));
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  return null;
+}
+
 function parseDuration(value) {
   const parts = value
     .trim()
@@ -76,6 +165,7 @@ function trackRows() {
     const track = {
       artist,
       title,
+      cover_url: trackCoverUrl(row),
       duration_seconds: durationText ? parseDuration(durationText) : null,
       source_index: sourceIndexOf(row),
     };
@@ -142,6 +232,7 @@ function trackRows() {
     const track = {
       artist,
       title,
+      cover_url: trackCoverUrl(row),
       duration_seconds: durationText ? parseDuration(durationText) : null,
       source_index: sourceIndexOf(link),
     };

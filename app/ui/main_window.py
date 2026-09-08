@@ -204,6 +204,7 @@ from app.ui.dialogs import (
     TrackMetadataDialog,
     YouTubeSearchDialog,
 )
+from app.ui.global_hotkeys import GlobalMediaHotkeys
 from app.ui.music_map import MapBuildResult, MusicMapWidget
 from app.ui.playback_metrics import reached_completion_threshold
 from app.ui.theme import DARK_THEME
@@ -625,36 +626,52 @@ class MainWindow(QMainWindow):
         self._space_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._space_shortcut.setAutoRepeat(False)
         self._space_shortcut.activated.connect(self._toggle_playback)
-        self._media_play_pause_shortcut = QShortcut(
-            QKeySequence(Qt.Key.Key_MediaTogglePlayPause),
-            self,
+        self._global_media_hotkeys = GlobalMediaHotkeys(
+            on_play_pause=self._toggle_playback,
+            on_previous=self._go_previous,
+            on_next=self._go_next,
         )
-        self._media_play_pause_shortcut.setContext(
-            Qt.ShortcutContext.ApplicationShortcut
-        )
-        self._media_play_pause_shortcut.setAutoRepeat(False)
-        self._media_play_pause_shortcut.activated.connect(self._toggle_playback)
-        self._media_next_shortcut = QShortcut(
-            QKeySequence(Qt.Key.Key_MediaNext),
-            self,
-        )
-        self._media_next_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._media_next_shortcut.setAutoRepeat(False)
-        self._media_next_shortcut.activated.connect(self._go_next)
-        self._media_previous_shortcut = QShortcut(
-            QKeySequence(Qt.Key.Key_MediaPrevious),
-            self,
-        )
-        self._media_previous_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._media_previous_shortcut.setAutoRepeat(False)
-        self._media_previous_shortcut.activated.connect(self._go_previous)
+        if not self._global_media_hotkeys.is_active:
+            self._media_play_pause_shortcut = QShortcut(
+                QKeySequence(Qt.Key.Key_MediaTogglePlayPause),
+                self,
+            )
+            self._media_play_pause_shortcut.setContext(
+                Qt.ShortcutContext.ApplicationShortcut
+            )
+            self._media_play_pause_shortcut.setAutoRepeat(False)
+            self._media_play_pause_shortcut.activated.connect(self._toggle_playback)
+            self._media_next_shortcut = QShortcut(
+                QKeySequence(Qt.Key.Key_MediaNext),
+                self,
+            )
+            self._media_next_shortcut.setContext(
+                Qt.ShortcutContext.ApplicationShortcut
+            )
+            self._media_next_shortcut.setAutoRepeat(False)
+            self._media_next_shortcut.activated.connect(self._go_next)
+            self._media_previous_shortcut = QShortcut(
+                QKeySequence(Qt.Key.Key_MediaPrevious),
+                self,
+            )
+            self._media_previous_shortcut.setContext(
+                Qt.ShortcutContext.ApplicationShortcut
+            )
+            self._media_previous_shortcut.setAutoRepeat(False)
+            self._media_previous_shortcut.activated.connect(self._go_previous)
+        # Prepare the first library view before the window is shown, so the
+        # user never sees an empty shell while the initial track table and
+        # playlist cards are being built.  The optional ML ranker is loaded
+        # independently by the desktop entrypoint after first paint.
         self._load_playlists()
         self._load_library(refresh_map=False)
-        # Let Qt paint the main window before restoring playback.  The map is
-        # intentionally built lazily when the user first opens it.
+        # Let Qt finish painting the ready library before restoring playback.
+        # The map is intentionally built lazily when the user first opens it.
         QTimer.singleShot(0, self._finish_initial_load)
 
     def _finish_initial_load(self) -> None:
+        if self._is_shutting_down:
+            return
         self._restore_playback_state()
 
     def _build_interface(self) -> None:
@@ -997,10 +1014,10 @@ class MainWindow(QMainWindow):
         playlist_menu_button = HoverCircleMenuButton()
         playlist_menu_button.setObjectName("plainActionButton")
         playlist_menu_button.setText("•••")
-        playlist_menu_button.setToolTip("Playlist actions")
+        playlist_menu_button.setToolTip("Settings and tools")
         playlist_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         playlist_menu = QMenu(playlist_menu_button)
-        audio_menu = playlist_menu.addMenu("Audio settings")
+        audio_menu = playlist_menu.addMenu("Audio & playback")
         audio_menu.addAction(
             "Analyze loudness of library",
             lambda _checked=False: self._analyze_missing_loudness(),
@@ -1042,13 +1059,15 @@ class MainWindow(QMainWindow):
         master_volume_action = QWidgetAction(master_volume_menu)
         master_volume_action.setDefaultWidget(master_volume_widget)
         master_volume_menu.addAction(master_volume_action)
-        self.liquid_glass_action = playlist_menu.addAction(
+
+        appearance_menu = playlist_menu.addMenu("Appearance")
+        self.liquid_glass_action = appearance_menu.addAction(
             "Liquid glass panels",
         )
         self.liquid_glass_action.setCheckable(True)
         self.liquid_glass_action.setChecked(self._liquid_glass_enabled)
         self.liquid_glass_action.toggled.connect(self._set_liquid_glass_enabled)
-        self.music_map_background_action = playlist_menu.addAction(
+        self.music_map_background_action = appearance_menu.addAction(
             "Music graph background",
         )
         self.music_map_background_action.setCheckable(True)
@@ -1056,13 +1075,15 @@ class MainWindow(QMainWindow):
         self.music_map_background_action.toggled.connect(
             self._set_music_map_background_enabled
         )
-        self.track_covers_action = playlist_menu.addAction(
+        self.track_covers_action = appearance_menu.addAction(
             "Track covers in library and playlists",
         )
         self.track_covers_action.setCheckable(True)
         self.track_covers_action.setChecked(self._show_track_covers)
         self.track_covers_action.toggled.connect(self._set_track_covers_enabled)
-        self.parallel_genre_analysis_action = playlist_menu.addAction(
+
+        analysis_menu = playlist_menu.addMenu("Analysis")
+        self.parallel_genre_analysis_action = analysis_menu.addAction(
             "Parallel genre analysis"
         )
         self.parallel_genre_analysis_action.setCheckable(True)
@@ -1075,7 +1096,7 @@ class MainWindow(QMainWindow):
         self.parallel_genre_analysis_action.toggled.connect(
             self._set_parallel_genre_analysis_enabled
         )
-        self.gpu_optimized_genre_analysis_action = playlist_menu.addAction(
+        self.gpu_optimized_genre_analysis_action = analysis_menu.addAction(
             "GPU-optimized genre analysis"
         )
         self.gpu_optimized_genre_analysis_action.setCheckable(True)
@@ -1088,13 +1109,15 @@ class MainWindow(QMainWindow):
         self.gpu_optimized_genre_analysis_action.toggled.connect(
             self._set_gpu_optimized_genre_analysis_enabled
         )
-        playlist_menu.addSeparator()
-        playlist_menu.addAction(
+
+        integrations_menu = playlist_menu.addMenu("Integrations")
+        integrations_menu.addAction(
             "Spotify settings",
             lambda: self._open_spotify_settings(),
         )
-        playlist_menu.addSeparator()
-        playlist_menu.addAction(
+
+        application_menu = playlist_menu.addMenu("Application")
+        application_menu.addAction(
             "Reload application code",
             self._restart_application,
         )
@@ -4371,6 +4394,15 @@ class MainWindow(QMainWindow):
                     )
                 )
             )
+        replacement_action = menu.addAction("Find replacement")
+        replacement_action.setToolTip(
+            "Search for another file using this track's artist and title"
+        )
+        replacement_action.triggered.connect(
+            lambda checked=False, value=track_id: self._open_track_replacement_search(
+                value
+            )
+        )
         menu.addSeparator()
         feedback_menu = menu.addMenu("Tune recommendations")
         feedback_menu.addAction(
@@ -6524,12 +6556,18 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _import_from_youtube(self) -> None:
+    def _import_from_youtube(
+        self,
+        initial_query: str | None = None,
+    ) -> None:
         spotify_provider = self.youtube_import_service.spotify_provider
         dialog = YouTubeSearchDialog(
             self,
             spotify_authenticated=spotify_provider.has_saved_credentials(),
         )
+        if initial_query:
+            dialog.source_edit.setText(initial_query)
+            dialog.source_edit.selectAll()
         dialog.source_requested.connect(
             lambda source: self._start_youtube_or_spotify_source(
                 dialog,
@@ -6589,6 +6627,15 @@ class MainWindow(QMainWindow):
         )
 
         self._show_auxiliary_dialog(dialog)
+
+    def _open_track_replacement_search(self, track_id: str) -> None:
+        track = self.store.get_track(track_id)
+        if track is None:
+            return
+
+        self._import_from_youtube(
+            initial_query=f"{track.artist} - {track.title}",
+        )
 
     def _start_soundcloud_download(
         self,
@@ -7464,6 +7511,7 @@ class MainWindow(QMainWindow):
             return
 
         self._is_shutting_down = True
+        self._global_media_hotkeys.unregister()
         # Capture the queue and current media position before stopping the
         # player or allowing any shutdown callback to change the UI state.
         self._save_playback_state()
