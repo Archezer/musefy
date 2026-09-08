@@ -1,4 +1,5 @@
 import argparse
+from math import exp
 from pathlib import Path
 
 from app.domain.models import (
@@ -14,6 +15,7 @@ from app.ml.training_data import (
     make_synthetic_ranker_dataset,
     split_ranker_dataset_by_time,
 )
+from app.services.hybrid_recommendations import DEFAULT_MODEL_WEIGHT
 from app.services.interactions import InteractionService
 from app.services.spotify_favorites_import import (
     SpotifyFavoritesImportService,
@@ -212,6 +214,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Artifact path; defaults by backend",
     )
+    real_ranker_command.add_argument(
+        "--model-weight",
+        type=float,
+        default=DEFAULT_MODEL_WEIGHT,
+        help=(
+            "Production blend weight used by the gate "
+            f"(default: {DEFAULT_MODEL_WEIGHT})"
+        ),
+    )
     readiness_command = commands.add_parser(
         "ranker-status",
         help="Show whether stored impressions are ready for training",
@@ -401,16 +412,14 @@ def train_ranker(arguments: argparse.Namespace) -> None:
         dict(example.feature_snapshot).get("baseline_score", 0.0)
         for example in validation.examples
     )
+    slice_names = tuple(
+        _ranker_slice_name(example)
+        for example in validation.examples
+    )
     output = arguments.output
     if arguments.backend == "logistic":
         ranker = train_logistic_ranker(train)
-        validation_scores = ranker.predict_scores(validation)
-        gate = decide_ranker_activation(
-            validation.labels,
-            baseline_scores,
-            validation_scores,
-            minimum_validation_examples=20,
-        )
+        validation_probabilities = ranker.predict_scores(validation)
         save_model = save_logistic_ranker
     elif arguments.backend == "pairwise":
         result = train_pairwise_mlp_ranker(
@@ -418,13 +427,9 @@ def train_ranker(arguments: argparse.Namespace) -> None:
             validation_dataset=validation,
             epochs=arguments.epochs,
         )
-        validation_scores = predict_scores(result.model, validation)
-        gate = decide_ranker_activation(
-            validation.labels,
-            baseline_scores,
-            validation_scores,
-            candidate_scores_are_logits=True,
-            minimum_validation_examples=20,
+        validation_probabilities = tuple(
+            _sigmoid(score)
+            for score in predict_scores(result.model, validation)
         )
         save_model = save_mlp_ranker
         print(f"Final pairwise train loss: {result.train_losses[-1]:.4f}")
@@ -434,22 +439,39 @@ def train_ranker(arguments: argparse.Namespace) -> None:
             validation_dataset=validation,
             epochs=arguments.epochs,
         )
-        validation_scores = predict_scores(result.model, validation)
-        gate = decide_ranker_activation(
-            validation.labels,
-            baseline_scores,
-            validation_scores,
-            candidate_scores_are_logits=True,
-            minimum_validation_examples=20,
+        validation_probabilities = tuple(
+            _sigmoid(score)
+            for score in predict_scores(result.model, validation)
         )
         save_model = save_mlp_ranker
         print(f"Final MLP train loss: {result.train_losses[-1]:.4f}")
 
+    candidate_scores = _blend_ranker_scores(
+        baseline_scores,
+        validation_probabilities,
+        model_weight=arguments.model_weight,
+    )
+    gate = decide_ranker_activation(
+        validation.labels,
+        baseline_scores,
+        candidate_scores,
+        minimum_validation_examples=20,
+        slice_names=slice_names,
+    )
+
     print(
-        "Baseline/candidate ROC-AUC: "
+        "Baseline/blended candidate ROC-AUC: "
         f"{_format_metric(gate.baseline.roc_auc)}/"
         f"{_format_metric(gate.candidate.roc_auc)}"
     )
+    for slice_evaluation in gate.slice_evaluations:
+        print(
+            f"Slice {slice_evaluation.name} "
+            f"({slice_evaluation.candidate.example_count} examples) "
+            "ROC-AUC: "
+            f"{_format_metric(slice_evaluation.baseline.roc_auc)}/"
+            f"{_format_metric(slice_evaluation.candidate.roc_auc)}"
+        )
     print(f"Quality gate: {'approved' if gate.approved else 'rejected'}")
     print(f"Gate reason: {gate.reason}")
     if not gate.approved:
@@ -489,6 +511,39 @@ def train_ranker(arguments: argparse.Namespace) -> None:
 
 def _format_metric(value: float | None) -> str:
     return f"{value:.4f}" if value is not None else "n/a"
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        return 1.0 / (1.0 + exp(-value))
+    positive = exp(value)
+    return positive / (1.0 + positive)
+
+
+def _blend_ranker_scores(
+    baseline_scores: tuple[float, ...],
+    model_probabilities: tuple[float, ...],
+    *,
+    model_weight: float,
+) -> tuple[float, ...]:
+    if not 0.0 <= model_weight <= 1.0:
+        raise ValueError("Model weight must be in the range [0, 1]")
+    if len(baseline_scores) != len(model_probabilities):
+        raise ValueError("Baseline and model scores must have equal length")
+    return tuple(
+        (1.0 - model_weight) * baseline + model_weight * probability
+        for baseline, probability in zip(
+            baseline_scores,
+            model_probabilities,
+            strict=True,
+        )
+    )
+
+
+def _ranker_slice_name(example: object) -> str:
+    mode = getattr(example, "mode", None)
+    mode_value = getattr(mode, "value", mode) or "unknown"
+    return f"mode:{mode_value}"
 
 
 def show_ranker_status(arguments: argparse.Namespace) -> None:

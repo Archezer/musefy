@@ -3,6 +3,7 @@ import pytest
 from app.ml.evaluation import (
     decide_ranker_activation,
     evaluate_ranker,
+    evaluate_ranker_slices,
 )
 
 
@@ -41,3 +42,40 @@ def test_gate_rejects_tiny_validation_set_even_for_a_better_model() -> None:
 
     assert decision.approved is False
     assert decision.reason == "Validation set is too small"
+
+
+def test_slice_evaluation_reports_context_quality() -> None:
+    evaluations = evaluate_ranker_slices(
+        [1, 0, 1, 0],
+        [0.9, 0.1, 0.6, 0.4],
+        [0.8, 0.2, 0.7, 0.3],
+        ["mode:mood", "mode:mood", "mode:genre", "mode:genre"],
+        minimum_examples=2,
+    )
+
+    assert [evaluation.name for evaluation in evaluations] == [
+        "mode:genre",
+        "mode:mood",
+    ]
+    assert all(
+        evaluation.roc_auc_improvement == pytest.approx(0.0)
+        for evaluation in evaluations
+    )
+
+
+def test_gate_rejects_a_large_context_regression() -> None:
+    labels = ([1, 0] * 15) + ([1, 0] * 5)
+    baseline_scores = ([0.5] * 30) + ([0.9, 0.1] * 5)
+    candidate_scores = ([0.9, 0.1] * 15) + ([0.1, 0.9] * 5)
+    slice_names = (["mode:popularity"] * 30) + (["mode:mood"] * 10)
+    decision = decide_ranker_activation(
+        labels,
+        baseline_scores,
+        candidate_scores,
+        minimum_validation_examples=40,
+        minimum_slice_examples=10,
+        slice_names=slice_names,
+    )
+
+    assert decision.approved is False
+    assert "mode:mood" in decision.reason

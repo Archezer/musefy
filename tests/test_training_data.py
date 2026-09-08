@@ -8,6 +8,7 @@ from app.domain.models import (
     Recommendation,
     RecommendationImpression,
     SpotifyListeningStats,
+    SpotifyTrackMetadata,
     Track,
     User,
 )
@@ -71,6 +72,10 @@ def test_dataset_uses_only_explicit_post_impression_reactions() -> None:
     assert [example.label for example in dataset.examples] == [1, 0]
     assert dataset.examples[0].track_id == "positive"
     assert dataset.examples[1].track_id == "negative"
+    assert all(
+        example.mode == RecommendationMode.POPULARITY
+        for example in dataset.examples
+    )
     assert len(dataset.as_matrix()) == 2
 
 
@@ -183,6 +188,52 @@ def test_feature_snapshot_contains_only_data_known_at_show_time() -> None:
     assert values["user_interaction_count_before_show"] == 1.0
     assert values["user_track_interaction_count_before_show"] == 1.0
     assert values["spotify_play_count"] == 4.0
+
+
+def test_feature_snapshot_resolves_spotify_history_by_metadata() -> None:
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    track = Track(
+        id="track-1",
+        title="Focus Track",
+        artist="Artist",
+        duration_ms=180_000,
+        source="youtube",
+        source_id="youtube-video-1",
+    )
+    store.add_track(track)
+    store.upsert_spotify_track_metadata(
+        SpotifyTrackMetadata(
+            spotify_id="spotify-1",
+            title="Focus Track",
+            artist="Artist",
+            duration_ms=181_000,
+        )
+    )
+    store.upsert_spotify_listening_stats(
+        SpotifyListeningStats(
+            spotify_id="spotify-1",
+            play_count=7,
+            completion_count=5,
+        )
+    )
+
+    snapshot = build_recommendation_feature_snapshot(
+        store,
+        user_id="user-1",
+        recommendation=Recommendation(
+            track=track,
+            score=0.7,
+            reason="metadata match",
+        ),
+        position=1,
+        shown_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    values = dict(snapshot)
+    assert values["spotify_has_history"] == 1.0
+    assert values["spotify_play_count"] == 7.0
+    assert values["spotify_completion_count"] == 5.0
 
 
 def test_feature_snapshot_contains_playlist_context_features() -> None:

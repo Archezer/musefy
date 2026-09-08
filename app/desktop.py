@@ -130,32 +130,50 @@ def main() -> None:
 def _load_optional_hybrid_ranker(store):
     """Load only a real trained artifact; otherwise keep baseline mode."""
 
-    from app.storage.paths import RANKER_MODEL_PATH
+    from app.services.hybrid_recommendations import HybridRecommendationRanker
+    from app.storage.paths import (
+        LOGISTIC_RANKER_MODEL_PATH,
+        RANKER_MODEL_PATH,
+    )
 
-    if not RANKER_MODEL_PATH.is_file():
-        return None
+    candidates = (
+        (LOGISTIC_RANKER_MODEL_PATH, "logistic"),
+        (RANKER_MODEL_PATH, "mlp"),
+    )
+    for path, backend in candidates:
+        if not path.is_file():
+            continue
+        try:
+            if backend == "logistic":
+                from app.ml.artifacts import load_logistic_ranker
 
-    try:
-        from app.ml.artifacts import load_mlp_ranker
-        from app.services.hybrid_recommendations import (
-            HybridRecommendationRanker,
-        )
+                model = load_logistic_ranker(path)
+            else:
+                from app.ml.artifacts import load_mlp_ranker
 
-        model = load_mlp_ranker(RANKER_MODEL_PATH)
-        if not model.approved_for_activation:
+                model = load_mlp_ranker(path)
+            if not model.approved_for_activation:
+                print(
+                    f"{backend.title()} ranker rejected by quality gate; "
+                    "trying the next fallback.",
+                    file=sys.stderr,
+                )
+                continue
+            return HybridRecommendationRanker(store, model)
+        except (
+            ImportError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as error:
             print(
-                "ML ranker rejected by quality gate; using baseline "
-                f"recommenders: {model.approval_reason}",
+                f"{backend.title()} ranker unavailable; "
+                f"trying the next fallback: {error}",
                 file=sys.stderr,
             )
-            return None
-        return HybridRecommendationRanker(store, model)
-    except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
-        print(
-            f"ML ranker unavailable; using baseline recommenders: {error}",
-            file=sys.stderr,
-        )
-        return None
+
+    return None
 
 
 def _schedule_optional_hybrid_ranker_load(

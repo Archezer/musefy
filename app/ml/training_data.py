@@ -12,6 +12,7 @@ from app.domain.models import (
     InteractionType,
     RecommendationImpression,
 )
+from app.domain.recommendations import RecommendationMode
 from app.ml.feature_snapshot import RECOMMENDATION_FEATURE_NAMES
 from app.storage.protocols import MusicStore
 
@@ -45,6 +46,8 @@ class RankerExample:
     shown_at: datetime
     feature_snapshot: tuple[tuple[str, float], ...]
     label: int
+    mode: RecommendationMode | None = None
+    playlist_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +191,8 @@ def build_ranker_dataset(
                     impression.feature_snapshot
                 ),
                 label=label,
+                mode=impression.mode,
+                playlist_id=impression.playlist_id,
             )
         )
 

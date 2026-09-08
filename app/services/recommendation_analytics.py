@@ -112,6 +112,7 @@ class RecommendationAnalyticsService:
                 for recommendation in recommendations
                 if recommendation.track.source_id
             ),
+            tracks=(recommendation.track for recommendation in recommendations),
         )
         for position, recommendation in enumerate(
             recommendations,

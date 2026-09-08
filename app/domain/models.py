@@ -167,6 +167,9 @@ class Recommendation:
     mood_similarity: float | None = None
     embedding_similarity: float | None = None
     popularity_score: float | None = None
+    # Preserve the score produced by the non-ML recommender when a hybrid
+    # reranker changes ``score`` for display and ordering.
+    baseline_score: float | None = None
 
     @property
     def match_score(self) -> float:

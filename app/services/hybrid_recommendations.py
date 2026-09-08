@@ -15,7 +15,10 @@ from app.ml.feature_snapshot import (
 from app.storage.protocols import MusicStore
 
 if TYPE_CHECKING:
+    from app.ml.logistic_ranker import LogisticRanker
     from app.ml.ranker import MLPTrainingResult
+
+DEFAULT_MODEL_WEIGHT = 0.35
 
 
 class HybridRecommendationRanker:
@@ -24,9 +27,9 @@ class HybridRecommendationRanker:
     def __init__(
         self,
         store: MusicStore,
-        model: MLPTrainingResult | None = None,
+        model: MLPTrainingResult | LogisticRanker | None = None,
         *,
-        model_weight: float = 0.35,
+        model_weight: float = DEFAULT_MODEL_WEIGHT,
     ) -> None:
         if not 0.0 <= model_weight <= 1.0:
             raise ValueError("Model weight must be in the range [0, 1]")
@@ -48,6 +51,7 @@ class HybridRecommendationRanker:
             return list(recommendations)
 
         try:
+            from app.ml.logistic_ranker import LogisticRanker
             from app.ml.ranker import score_feature_snapshots
 
             timestamp = shown_at or datetime.now(UTC)
@@ -56,11 +60,12 @@ class HybridRecommendationRanker:
                 user_id=user_id,
                 shown_at=timestamp,
                 playlist_id=playlist_id,
-                spotify_ids=(
+                 spotify_ids=(
                     recommendation.track.source_id
                     for recommendation in recommendations
                     if recommendation.track.source_id
                 ),
+                tracks=(recommendation.track for recommendation in recommendations),
             )
             snapshots = [
                 build_recommendation_feature_snapshot(
@@ -77,25 +82,45 @@ class HybridRecommendationRanker:
                     start=1,
                 )
             ]
-            model_probabilities = tuple(
-                1.0 / (1.0 + exp(-model_logit))
-                for model_logit in score_feature_snapshots(
-                    self.model.model,
-                    self.model.feature_names,
-                    snapshots,
+            if isinstance(self.model, LogisticRanker):
+                model_probabilities = tuple(
+                    self.model.score_feature_snapshot(snapshot)
+                    for snapshot in snapshots
                 )
-            )
+            else:
+                model_probabilities = tuple(
+                    1.0 / (1.0 + exp(-model_logit))
+                    for model_logit in score_feature_snapshots(
+                        self.model.model,
+                        self.model.feature_names,
+                        snapshots,
+                    )
+                )
             scored: list[tuple[int, Recommendation, float]] = []
             for position, recommendation, model_probability in zip(
                 range(1, len(recommendations) + 1),
                 recommendations,
                 model_probabilities,
             ):
+                baseline_score = (
+                    recommendation.baseline_score
+                    if recommendation.baseline_score is not None
+                    else recommendation.score
+                )
                 blended_score = (
-                    (1.0 - self.model_weight) * recommendation.score
+                    (1.0 - self.model_weight) * baseline_score
                     + self.model_weight * model_probability
                 )
-                scored.append((position, recommendation, blended_score))
+                scored.append(
+                    (
+                        position,
+                        replace(
+                            recommendation,
+                            baseline_score=baseline_score,
+                        ),
+                        blended_score,
+                    )
+                )
         except (KeyError, RuntimeError, TypeError, ValueError):
             return list(recommendations)
 

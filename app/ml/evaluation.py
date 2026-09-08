@@ -19,12 +19,32 @@ class RankerEvaluation:
 
 
 @dataclass(frozen=True)
+class RankerSliceEvaluation:
+    """Baseline/candidate metrics for one recommendation context slice."""
+
+    name: str
+    baseline: RankerEvaluation
+    candidate: RankerEvaluation
+
+    @property
+    def roc_auc_improvement(self) -> float | None:
+        if (
+            self.baseline.roc_auc is None
+            or self.candidate.roc_auc is None
+        ):
+            return None
+        return self.candidate.roc_auc - self.baseline.roc_auc
+
+
+@dataclass(frozen=True)
 class RankerGateDecision:
     approved: bool
     reason: str
     baseline: RankerEvaluation
     candidate: RankerEvaluation
     minimum_improvement: float
+    slice_evaluations: tuple[RankerSliceEvaluation, ...] = ()
+    maximum_slice_degradation: float = 0.02
 
     @property
     def roc_auc_improvement(self) -> float | None:
@@ -81,6 +101,9 @@ def decide_ranker_activation(
     candidate_scores_are_logits: bool = False,
     minimum_validation_examples: int = 30,
     minimum_improvement: float = 0.01,
+    slice_names: Sequence[str] | None = None,
+    minimum_slice_examples: int = 20,
+    maximum_slice_degradation: float = 0.02,
 ) -> RankerGateDecision:
     """Approve a candidate only when it beats baseline on held-out rows."""
 
@@ -88,6 +111,10 @@ def decide_ranker_activation(
         raise ValueError("Minimum validation examples must be positive")
     if minimum_improvement < 0.0:
         raise ValueError("Minimum improvement must not be negative")
+    if minimum_slice_examples <= 0:
+        raise ValueError("Minimum slice examples must be positive")
+    if maximum_slice_degradation < 0.0:
+        raise ValueError("Maximum slice degradation must not be negative")
 
     baseline = evaluate_ranker(labels, baseline_scores)
     candidate = evaluate_ranker(
@@ -100,15 +127,37 @@ def decide_ranker_activation(
         if candidate.roc_auc is not None and baseline.roc_auc is not None
         else None
     )
+    slice_evaluations = evaluate_ranker_slices(
+        labels,
+        baseline_scores,
+        candidate_scores,
+        slice_names,
+        candidate_scores_are_logits=candidate_scores_are_logits,
+        minimum_examples=minimum_slice_examples,
+    )
+    degraded_slices = tuple(
+        evaluation
+        for evaluation in slice_evaluations
+        if (
+            evaluation.roc_auc_improvement is not None
+            and evaluation.roc_auc_improvement < -maximum_slice_degradation
+        )
+    )
     approved = (
         len(labels) >= minimum_validation_examples
         and improvement is not None
         and improvement >= minimum_improvement
+        and not degraded_slices
     )
     if len(labels) < minimum_validation_examples:
         reason = "Validation set is too small"
     elif improvement is None:
         reason = "Validation set needs both positive and negative labels"
+    elif degraded_slices:
+        reason = (
+            "Candidate regresses context slice(s): "
+            + ", ".join(evaluation.name for evaluation in degraded_slices)
+        )
     elif approved:
         reason = "Candidate beats baseline by the required ROC-AUC margin"
     else:
@@ -119,7 +168,61 @@ def decide_ranker_activation(
         baseline=baseline,
         candidate=candidate,
         minimum_improvement=minimum_improvement,
+        slice_evaluations=slice_evaluations,
+        maximum_slice_degradation=maximum_slice_degradation,
     )
+
+
+def evaluate_ranker_slices(
+    labels: Sequence[int],
+    baseline_scores: Sequence[float],
+    candidate_scores: Sequence[float],
+    slice_names: Sequence[str] | None,
+    *,
+    candidate_scores_are_logits: bool = False,
+    minimum_examples: int = 20,
+) -> tuple[RankerSliceEvaluation, ...]:
+    """Evaluate sufficiently large context slices without changing the gate."""
+
+    if slice_names is None:
+        return ()
+    if len(labels) != len(slice_names):
+        raise ValueError("Labels and slice names must have equal length")
+    if minimum_examples <= 0:
+        raise ValueError("Minimum slice examples must be positive")
+
+    indices_by_name: dict[str, list[int]] = {}
+    for index, name in enumerate(slice_names):
+        normalized_name = str(name).strip() or "unknown"
+        indices_by_name.setdefault(normalized_name, []).append(index)
+
+    evaluations: list[RankerSliceEvaluation] = []
+    for name in sorted(indices_by_name):
+        indices = indices_by_name[name]
+        if len(indices) < minimum_examples:
+            continue
+        slice_labels = tuple(labels[index] for index in indices)
+        slice_baseline_scores = tuple(
+            baseline_scores[index] for index in indices
+        )
+        slice_candidate_scores = tuple(
+            candidate_scores[index] for index in indices
+        )
+        evaluations.append(
+            RankerSliceEvaluation(
+                name=name,
+                baseline=evaluate_ranker(
+                    slice_labels,
+                    slice_baseline_scores,
+                ),
+                candidate=evaluate_ranker(
+                    slice_labels,
+                    slice_candidate_scores,
+                    scores_are_logits=candidate_scores_are_logits,
+                ),
+            )
+        )
+    return tuple(evaluations)
 
 
 def _sigmoid(value: float) -> float:
