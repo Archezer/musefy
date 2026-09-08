@@ -69,6 +69,46 @@ def test_track_mood_round_trip(
     assert loaded_track.loudness_analysis_version == "ffmpeg-ebur128-v1"
 
 
+def test_list_tracks_cache_is_invalidated_after_track_changes(
+    store: SQLAlchemyMusicStore,
+) -> None:
+    store.add_track(
+        Track(
+            id="track-1",
+            title="Track One",
+            artist="Artist",
+        )
+    )
+    assert [track.id for track in store.list_tracks()] == ["track-1"]
+
+    store.add_track(
+        Track(
+            id="track-2",
+            title="Track Two",
+            artist="Artist",
+        )
+    )
+    assert [track.id for track in store.list_tracks()] == [
+        "track-1",
+        "track-2",
+    ]
+
+    store.update_track(
+        Track(
+            id="track-2",
+            title="Renamed Track",
+            artist="Artist",
+        )
+    )
+    assert {
+        track.id: track.title
+        for track in store.list_tracks()
+    }["track-2"] == "Renamed Track"
+
+    store.delete_track("track-1")
+    assert [track.id for track in store.list_tracks()] == ["track-2"]
+
+
 def test_recommendation_session_round_trip(
     store: SQLAlchemyMusicStore,
 ) -> None:

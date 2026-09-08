@@ -2772,10 +2772,18 @@ class MainWindow(QMainWindow):
             reverse=True,
         )
 
+        # The library catalog is already kept in memory.  Resolving every
+        # history row through ``get_track`` opens a separate database session
+        # for each item whenever playback advances.
+        tracks_by_id = {track.id: track for track in self._library_tracks}
         for interaction in interactions:
             if interaction.track_id in seen_track_ids:
                 continue
-            track = self.store.get_track(interaction.track_id)
+            track = tracks_by_id.get(interaction.track_id)
+            if track is None:
+                # Keep history resilient to a library refresh that has not
+                # reached the in-memory catalog yet.
+                track = self.store.get_track(interaction.track_id)
             if track is None:
                 continue
             seen_track_ids.add(track.id)
@@ -3133,6 +3141,17 @@ class MainWindow(QMainWindow):
         # Recommendations still power Now sessions and track radio; this old
         # sidebar no longer renders a duplicate text list.
         if not hasattr(self, "recommendation_list"):
+            return
+
+        if self.session_mood_name is not None or self.session_genre_name is not None:
+            # Session queues have their own producer and refill policy.  A
+            # second sidebar request on every track change competes with it
+            # for CPU and can delay the next session track.
+            self._recommendation_generation += 1
+            if self._recommendation_task is not None:
+                self._recommendation_task.cancel()
+            self._recommendation_task = None
+            self.recommendation_list.clear()
             return
 
         if self._track_radio_enabled:
@@ -4032,6 +4051,7 @@ class MainWindow(QMainWindow):
                     user_id=self.user_id,
                     limit=limit,
                     context=RecommendationContext(),
+                    should_cancel=should_cancel,
                     playlist_id=self._radio_impression_playlist_id,
                 )
             except (RuntimeError, ValueError):
@@ -4298,10 +4318,15 @@ class MainWindow(QMainWindow):
             return
 
         end = min(start + QUEUE_RENDER_BATCH_SIZE, len(track_ids))
+        # Queue entries are drawn from the already loaded catalog.  Falling
+        # back to the store keeps stale queues usable, but the normal path no
+        # longer opens one database session per visible queue row.
+        tracks_by_id = {track.id: track for track in self._library_tracks}
         tracks = [
             track
             for track_id in track_ids[start:end]
-            if (track := self.store.get_track(track_id)) is not None
+            if (track := tracks_by_id.get(track_id)) is not None
+            or (track := self.store.get_track(track_id)) is not None
         ]
         self._queue_render_index = end
 

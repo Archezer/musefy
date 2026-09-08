@@ -254,6 +254,34 @@ def score_feature_snapshot(
     return float(score.cpu().item())
 
 
+def score_feature_snapshots(
+    model: MLPRanker,
+    feature_names: tuple[str, ...],
+    feature_snapshots: Sequence[tuple[tuple[str, float], ...]],
+) -> tuple[float, ...]:
+    """Score a recommendation batch with one vectorized model call."""
+
+    if not feature_snapshots:
+        return ()
+
+    scaler = getattr(model, "feature_scaler", None)
+    if scaler is not None:
+        vectors = tuple(
+            scaler.transform_snapshot(snapshot)
+            for snapshot in feature_snapshots
+        )
+    else:
+        vectors = tuple(
+            tuple(dict(snapshot).get(name, 0.0) for name in feature_names)
+            for snapshot in feature_snapshots
+        )
+
+    model.eval()
+    with torch.no_grad():
+        scores = model(_as_tensor(vectors))
+    return tuple(float(value) for value in scores.cpu().tolist())
+
+
 def _as_tensor(values: object) -> Tensor:
     return torch.as_tensor(values, dtype=torch.float32)
 

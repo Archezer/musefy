@@ -8,7 +8,10 @@ from math import exp
 from typing import TYPE_CHECKING
 
 from app.domain.models import Recommendation
-from app.ml.feature_snapshot import build_recommendation_feature_snapshot
+from app.ml.feature_snapshot import (
+    build_recommendation_feature_context,
+    build_recommendation_feature_snapshot,
+)
 from app.storage.protocols import MusicStore
 
 if TYPE_CHECKING:
@@ -45,28 +48,49 @@ class HybridRecommendationRanker:
             return list(recommendations)
 
         try:
-            from app.ml.ranker import score_feature_snapshot
+            from app.ml.ranker import score_feature_snapshots
 
             timestamp = shown_at or datetime.now(UTC)
-            scored: list[tuple[int, Recommendation, float]] = []
-            for position, recommendation in enumerate(
-                recommendations,
-                start=1,
-            ):
-                snapshot = build_recommendation_feature_snapshot(
+            feature_context = build_recommendation_feature_context(
+                self.store,
+                user_id=user_id,
+                shown_at=timestamp,
+                playlist_id=playlist_id,
+                spotify_ids=(
+                    recommendation.track.source_id
+                    for recommendation in recommendations
+                    if recommendation.track.source_id
+                ),
+            )
+            snapshots = [
+                build_recommendation_feature_snapshot(
                     self.store,
                     user_id=user_id,
                     recommendation=recommendation,
                     position=position,
                     shown_at=timestamp,
                     playlist_id=playlist_id,
+                    context=feature_context,
                 )
-                model_logit = score_feature_snapshot(
+                for position, recommendation in enumerate(
+                    recommendations,
+                    start=1,
+                )
+            ]
+            model_probabilities = tuple(
+                1.0 / (1.0 + exp(-model_logit))
+                for model_logit in score_feature_snapshots(
                     self.model.model,
                     self.model.feature_names,
-                    snapshot,
+                    snapshots,
                 )
-                model_probability = 1.0 / (1.0 + exp(-model_logit))
+            )
+            scored: list[tuple[int, Recommendation, float]] = []
+            for position, recommendation, model_probability in zip(
+                range(1, len(recommendations) + 1),
+                recommendations,
+                model_probabilities,
+            ):
                 blended_score = (
                     (1.0 - self.model_weight) * recommendation.score
                     + self.model_weight * model_probability

@@ -2,6 +2,7 @@ import json
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import UTC
+from threading import Lock
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +42,18 @@ class SQLAlchemyMusicStore:
         session_factory: Callable[[], Session]
     ) -> None:
         self.session_factory = session_factory
+        # Track rows contain several JSON blobs (embeddings, genres and mood
+        # data).  Rebuilding all domain objects for every recommendation
+        # request is needlessly expensive.  The cache is immutable from the
+        # callers' perspective because Track is frozen; writes invalidate it.
+        self._track_cache: tuple[Track, ...] | None = None
+        self._track_cache_generation = 0
+        self._track_cache_lock = Lock()
+
+    def _invalidate_track_cache(self) -> None:
+        with self._track_cache_lock:
+            self._track_cache = None
+            self._track_cache_generation += 1
 
     def add_user(self, user: User) -> None:
         record = UserRecord(
@@ -305,6 +318,7 @@ class SQLAlchemyMusicStore:
                 raise ValueError(
                     f"Track already exists: {track.id}"
                 ) from error
+        self._invalidate_track_cache()
 
     def get_track(self, track_id: str) -> Track | None:
         with self.session_factory() as session:
@@ -359,6 +373,7 @@ class SQLAlchemyMusicStore:
             record.loudness_analysis_version = track.loudness_analysis_version
 
             session.commit()
+        self._invalidate_track_cache()
 
     def get_track_by_source(
         self,
@@ -398,6 +413,7 @@ class SQLAlchemyMusicStore:
             )
             session.delete(record)
             session.commit()
+        self._invalidate_track_cache()
 
     def merge_track_references(
         self,
@@ -467,6 +483,7 @@ class SQLAlchemyMusicStore:
                 )
             )
             session.commit()
+        self._invalidate_track_cache()
 
     def add_playlist(self, playlist: Playlist) -> None:
         record = PlaylistRecord(
@@ -613,6 +630,12 @@ class SQLAlchemyMusicStore:
                 ) from error
 
     def list_tracks(self) -> list[Track]:
+        with self._track_cache_lock:
+            cached_tracks = self._track_cache
+            cache_generation = self._track_cache_generation
+        if cached_tracks is not None:
+            return list(cached_tracks)
+
         statement = select(TrackRecord).order_by(
             TrackRecord.artist,
             TrackRecord.title,
@@ -621,10 +644,19 @@ class SQLAlchemyMusicStore:
         with self.session_factory() as session:
             records = session.scalars(statement).all()
 
-        return [
+        tracks = [
             self._to_track(record)
             for record in records
         ]
+        immutable_tracks = tuple(tracks)
+        with self._track_cache_lock:
+            if (
+                self._track_cache is None
+                and cache_generation == self._track_cache_generation
+            ):
+                self._track_cache = immutable_tracks
+            cached_tracks = self._track_cache
+        return list(cached_tracks or immutable_tracks)
 
     def add_interaction(self, interaction: Interaction) -> None:
 

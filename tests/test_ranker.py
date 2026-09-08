@@ -15,6 +15,7 @@ from app.ml.logistic_ranker import train_logistic_ranker
 from app.ml.ranker import (
     predict_scores,
     score_feature_snapshot,
+    score_feature_snapshots,
     train_mlp_ranker,
     train_pairwise_mlp_ranker,
 )
@@ -54,6 +55,41 @@ def test_mlp_ranker_trains_and_scores_synthetic_data() -> None:
     assert len(result.validation_losses) == 8
     assert all(loss >= 0.0 for loss in result.train_losses)
     assert one_score == pytest.approx(scores[0], abs=1e-6)
+
+
+def test_mlp_ranker_batch_scoring_matches_single_candidate_scoring() -> None:
+    dataset = make_synthetic_ranker_dataset(
+        user_count=2,
+        examples_per_user=8,
+        seed=29,
+    )
+    result = train_mlp_ranker(
+        dataset,
+        epochs=2,
+        hidden_dims=(8,),
+        dropout=0.0,
+        seed=29,
+    )
+    snapshots = tuple(
+        example.feature_snapshot
+        for example in dataset.examples[:4]
+    )
+
+    batch_scores = score_feature_snapshots(
+        result.model,
+        result.feature_names,
+        snapshots,
+    )
+    single_scores = tuple(
+        score_feature_snapshot(
+            result.model,
+            result.feature_names,
+            snapshot,
+        )
+        for snapshot in snapshots
+    )
+
+    assert batch_scores == pytest.approx(single_scores, abs=1e-6)
 
 
 def test_logistic_and_pairwise_rankers_use_the_same_synthetic_contract() -> None:

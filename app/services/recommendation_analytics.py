@@ -19,6 +19,7 @@ from app.domain.models import (
     RecommendationImpression,
 )
 from app.ml.feature_snapshot import (
+    build_recommendation_feature_context,
     build_recommendation_feature_snapshot,
 )
 from app.recommenders.feedback import COMPLETION_INTERACTION_TYPES
@@ -101,6 +102,17 @@ class RecommendationAnalyticsService:
 
         batch_id = session_id or uuid4().hex
         timestamp = self._as_utc(shown_at or datetime.now(UTC))
+        feature_context = build_recommendation_feature_context(
+            self.store,
+            user_id=normalized_user_id,
+            shown_at=timestamp,
+            playlist_id=playlist_id,
+            spotify_ids=(
+                recommendation.track.source_id
+                for recommendation in recommendations
+                if recommendation.track.source_id
+            ),
+        )
         for position, recommendation in enumerate(
             recommendations,
             start=position_offset + 1,
@@ -123,6 +135,7 @@ class RecommendationAnalyticsService:
                         position=position,
                         shown_at=timestamp,
                         playlist_id=playlist_id,
+                        context=feature_context,
                     ),
                 )
             )

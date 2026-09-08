@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from math import sqrt
 
 from app.domain.genres import track_genre_evidence
 from app.domain.models import (
+    Interaction,
     InteractionType,
     Recommendation,
     SpotifyListeningStats,
@@ -64,6 +67,83 @@ NEGATIVE_INTERACTION_NAMES = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class RecommendationFeatureContext:
+    """Data shared by all candidates shown in one recommendation batch."""
+
+    shown_at: datetime
+    prior_interactions: tuple[Interaction, ...]
+    spotify_stats_by_id: Mapping[str, SpotifyListeningStats]
+    playlist_id: str | None = None
+    playlist_tracks: tuple[Track, ...] = ()
+    playlist_entry_positions: Mapping[str, int] = field(default_factory=dict)
+    playlist_size: int = 0
+
+
+def build_recommendation_feature_context(
+    store: MusicStore,
+    *,
+    user_id: str,
+    shown_at: datetime,
+    playlist_id: str | None = None,
+    spotify_ids: Iterable[str] | None = None,
+) -> RecommendationFeatureContext:
+    """Load point-in-time data once for a batch of recommendations."""
+
+    timestamp = _as_utc(shown_at)
+    prior_interactions = tuple(
+        interaction
+        for interaction in store.list_interactions(user_id=user_id)
+        if _as_utc(interaction.created_at) <= timestamp
+    )
+    if spotify_ids is None:
+        stats_by_id = {
+            stats.spotify_id: stats
+            for stats in store.list_spotify_listening_stats()
+        }
+    else:
+        stats_by_id = {}
+        for spotify_id in set(spotify_ids):
+            if not spotify_id:
+                continue
+            stats = store.get_spotify_listening_stats(spotify_id)
+            if stats is not None:
+                stats_by_id[stats.spotify_id] = stats
+
+    playlist_tracks: tuple[Track, ...] = ()
+    playlist_entry_positions: dict[str, int] = {}
+    playlist_size = 0
+    if playlist_id and store.get_playlist(playlist_id) is not None:
+        entries = sorted(
+            store.list_playlist_entries(playlist_id),
+            key=lambda entry: entry.position,
+        )
+        playlist_size = len(entries)
+        playlist_entry_positions = {
+            entry.track_id: entry.position
+            for entry in entries
+        }
+        track_by_id = {
+            track.id: track
+            for track in store.list_tracks()
+        }
+        playlist_tracks = tuple(
+            track_by_id[entry.track_id]
+            for entry in entries
+            if entry.track_id in track_by_id
+        )
+
+    return RecommendationFeatureContext(
+        shown_at=timestamp,
+        prior_interactions=prior_interactions,
+        spotify_stats_by_id=stats_by_id,
+        playlist_id=playlist_id,
+        playlist_tracks=playlist_tracks,
+        playlist_entry_positions=playlist_entry_positions,
+        playlist_size=playlist_size,
+    )
+
+
 def build_recommendation_feature_snapshot(
     store: MusicStore,
     *,
@@ -72,15 +152,24 @@ def build_recommendation_feature_snapshot(
     position: int,
     shown_at: datetime,
     playlist_id: str | None = None,
+    context: RecommendationFeatureContext | None = None,
 ) -> tuple[tuple[str, float], ...]:
     """Build features using only data known when a recommendation is shown."""
 
     timestamp = _as_utc(shown_at)
-    prior_interactions = [
-        interaction
-        for interaction in store.list_interactions(user_id=user_id)
-        if _as_utc(interaction.created_at) <= timestamp
-    ]
+    if (
+        context is None
+        or context.shown_at != timestamp
+        or context.playlist_id != playlist_id
+    ):
+        context = build_recommendation_feature_context(
+            store,
+            user_id=user_id,
+            shown_at=timestamp,
+            playlist_id=playlist_id,
+        )
+
+    prior_interactions = context.prior_interactions
     track_interactions = [
         interaction
         for interaction in prior_interactions
@@ -96,11 +185,7 @@ def build_recommendation_feature_snapshot(
     )
 
     spotify_id = recommendation.track.source_id
-    stats_by_id = {
-        stats.spotify_id: stats
-        for stats in store.list_spotify_listening_stats()
-    }
-    stats = stats_by_id.get(spotify_id) if spotify_id else None
+    stats = context.spotify_stats_by_id.get(spotify_id) if spotify_id else None
     if stats is None:
         stats = SpotifyListeningStats(spotify_id=spotify_id or "unknown")
 
@@ -131,6 +216,7 @@ def build_recommendation_feature_snapshot(
             store,
             playlist_id=playlist_id,
             track=recommendation.track,
+            context=context,
         )
     )
     features.update(
@@ -149,28 +235,38 @@ def _build_playlist_features(
     *,
     playlist_id: str | None,
     track: Track,
+    context: RecommendationFeatureContext | None = None,
 ) -> dict[str, float]:
     """Build frozen numeric context features for an active playlist."""
 
-    if not playlist_id or store.get_playlist(playlist_id) is None:
+    if not playlist_id:
         return {}
 
-    entries = sorted(
-        store.list_playlist_entries(playlist_id),
-        key=lambda entry: entry.position,
-    )
-    playlist_tracks = [
-        playlist_track
-        for entry in entries
-        if (playlist_track := store.get_track(entry.track_id)) is not None
-    ]
-    if not playlist_tracks:
-        return {"playlist_context_available": 1.0}
+    if context is not None and context.playlist_id == playlist_id:
+        playlist_tracks = list(context.playlist_tracks)
+        entry_positions = dict(context.playlist_entry_positions)
+        entries_count = context.playlist_size
+    else:
+        if store.get_playlist(playlist_id) is None:
+            return {}
+        entries = sorted(
+            store.list_playlist_entries(playlist_id),
+            key=lambda entry: entry.position,
+        )
+        playlist_tracks = [
+            playlist_track
+            for entry in entries
+            if (playlist_track := store.get_track(entry.track_id)) is not None
+        ]
+        entry_positions = {
+            entry.track_id: entry.position
+            for entry in entries
+        }
+        entries_count = len(entries)
 
-    entry_positions = {
-        entry.track_id: entry.position
-        for entry in entries
-    }
+    if not playlist_tracks:
+        return {"playlist_context_available": 1.0} if entries_count else {}
+
     track_position = entry_positions.get(track.id)
     features = {
         "playlist_context_available": 1.0,
@@ -179,7 +275,7 @@ def _build_playlist_features(
     if track_position is not None:
         features["playlist_position"] = 1.0 - (
             track_position
-            / max(len(entries) - 1, 1)
+            / max(entries_count - 1, 1)
         )
 
     candidate_genres = dict(track_genre_evidence(track))
