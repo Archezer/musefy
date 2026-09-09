@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.domain.models import Track
 from app.services import mp3party_import
 from app.services.mp3party_import import (
@@ -277,6 +279,57 @@ def test_mp3party_prefers_the_site_download_endpoint(monkeypatch) -> None:
 
     assert calls == [page_url, download_url]
     assert track.source_id == "11377383"
+
+
+def test_mp3party_unwraps_yabanner_download_endpoint(monkeypatch) -> None:
+    page_url = "https://mp3party.net/music/11377383"
+    download_url = "https://dl2.mp3party.net/download/11377383"
+    page_html = """
+    <div class="track__user-panel"
+         data-js-artist-name="Yeat"
+         data-js-id="11377383"
+         data-js-song-title="2TONE"
+         data-js-url="https://dl2.mp3party.net/online/11377383.mp3"></div>
+    <a class="c-button c-button_download js-dw-btn"
+       data-track-id="11377383"
+       href="/yabanner?url=https%3A%2F%2Fdl2.mp3party.net%2Fdownload%2F11377383"></a>
+    """
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 120
+        assert request.full_url == page_url
+        return _FakeResponse(page_html)
+
+    monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+
+    candidate = Mp3PartyImportService(_FakeIngestionService()).candidate_from_url(
+        page_url
+    )
+
+    assert candidate.download_url == download_url
+
+
+def test_mp3party_rejects_error_text_with_audio_mime_type(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    response = _FakeResponse(b"failed to get file info: nil\n")
+    response.headers["Content-Type"] = "audio/mpeg"
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 120
+        return response
+
+    monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+    output_path = tmp_path / "invalid.mp3"
+
+    with pytest.raises(RuntimeError, match="failed to get file info: nil"):
+        Mp3PartyImportService(_FakeIngestionService())._download_audio(
+            "https://dl2.mp3party.net/download/11377383",
+            output_path,
+        )
+
+    assert not output_path.exists()
 
 
 def test_mp3party_direct_url_selects_the_requested_track(monkeypatch) -> None:

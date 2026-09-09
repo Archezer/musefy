@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from app.domain.models import Track
@@ -462,7 +462,7 @@ class Mp3PartyImportService:
                         else None
                     ),
                     download_url=(
-                        urljoin(MP3PARTY_BASE_URL, download_url)
+                        _normalize_mp3party_download_url(download_url)
                         if download_url
                         else None
                     ),
@@ -514,14 +514,60 @@ class Mp3PartyImportService:
                         output.write(chunk)
                 if total_bytes == 0:
                     raise RuntimeError("MP3Party returned an empty audio file.")
+                _validate_mp3party_audio(output_path)
         except RuntimeError:
+            output_path.unlink(missing_ok=True)
             raise
         except HTTPError as error:
+            output_path.unlink(missing_ok=True)
             raise RuntimeError(
                 f"MP3Party audio download failed ({error.code})."
             ) from error
         except (OSError, URLError, TimeoutError) as error:
+            output_path.unlink(missing_ok=True)
             raise RuntimeError("Could not download audio from MP3Party.") from error
+
+
+def _normalize_mp3party_download_url(value: str) -> str:
+    """Unwrap MP3Party's advertising page to its actual audio URL."""
+
+    absolute_url = urljoin(MP3PARTY_BASE_URL, value)
+    parsed_url = urlparse(absolute_url)
+    if parsed_url.path.rstrip("/").casefold() != "/yabanner":
+        return absolute_url
+
+    nested_url = parse_qs(parsed_url.query).get("url", [None])[0]
+    if not nested_url:
+        return absolute_url
+
+    nested_parsed_url = urlparse(nested_url)
+    if nested_parsed_url.scheme not in {"http", "https"}:
+        return absolute_url
+
+    return nested_url
+
+
+def _validate_mp3party_audio(file_path: Path) -> None:
+    """Reject MP3Party error pages saved with an audio MIME type."""
+
+    with file_path.open("rb") as audio_file:
+        sample = audio_file.read(4096)
+
+    text_sample = sample.lstrip().decode("utf-8", errors="replace").strip()
+    if text_sample.casefold().startswith("failed to get file info"):
+        raise RuntimeError(
+            "MP3Party returned an invalid audio response: "
+            f"{text_sample}"
+        )
+
+    if sample.startswith(b"ID3"):
+        return
+
+    for offset in range(max(0, len(sample) - 1)):
+        if sample[offset] == 0xFF and sample[offset + 1] & 0xE0 == 0xE0:
+            return
+
+    raise RuntimeError("MP3Party returned invalid MP3 data.")
 
 
 def _parse_duration_ms(values: list[str]) -> int | None:
