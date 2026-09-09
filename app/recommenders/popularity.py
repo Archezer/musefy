@@ -1,5 +1,5 @@
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from math import exp
 from random import Random
@@ -271,6 +271,7 @@ class MostPopularRecommender(Recommender):
         *,
         now: datetime | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        excluded_track_ids: Collection[str] | None = None,
     ) -> list[Recommendation]:
         """Recommend tracks matching one of the Wave genre labels."""
 
@@ -303,6 +304,13 @@ class MostPopularRecommender(Recommender):
             user_id,
             contextual_interactions,
         )
+        requested_excluded_track_ids = set(excluded_track_ids or ())
+        excluded_ids = (
+            permanent_track_ids
+            | temporary_track_ids
+            | cooldown_track_ids
+            | requested_excluded_track_ids
+        )
 
         matching_tracks: list[Track] = []
         for index, track in enumerate(tracks):
@@ -316,11 +324,7 @@ class MostPopularRecommender(Recommender):
         candidates = [
             track
             for track in matching_tracks
-            if track.id not in (
-                permanent_track_ids
-                | temporary_track_ids
-                | cooldown_track_ids
-            )
+            if track.id not in excluded_ids
         ]
         if not candidates:
             candidates = [
@@ -328,6 +332,7 @@ class MostPopularRecommender(Recommender):
                 for track in matching_tracks
                 if track.id not in permanent_track_ids
                 and track.id not in temporary_track_ids
+                and track.id not in requested_excluded_track_ids
             ]
 
         user_track_weights = aggregate_user_track_weights(

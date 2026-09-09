@@ -75,6 +75,7 @@ class MoodRecommender:
         *,
         now: datetime | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        excluded_track_ids: Collection[str] | None = None,
     ) -> list[Recommendation]:
         if limit <= 0:
             raise ValueError("Recommendation limit must be positive")
@@ -108,6 +109,13 @@ class MoodRecommender:
             interactions,
             should_cancel=should_cancel,
         )
+        requested_excluded_track_ids = set(excluded_track_ids or ())
+        excluded_ids = (
+            permanent_track_ids
+            | temporary_track_ids
+            | cooldown_track_ids
+            | requested_excluded_track_ids
+        )
 
         candidates = []
         for index, track in enumerate(tracks):
@@ -115,9 +123,7 @@ class MoodRecommender:
                 self._check_cancelled(should_cancel)
             if (
                 track.mood is not None
-                and track.id not in permanent_track_ids
-                and track.id not in temporary_track_ids
-                and track.id not in cooldown_track_ids
+                and track.id not in excluded_ids
             ):
                 candidates.append(track)
 
@@ -130,6 +136,7 @@ class MoodRecommender:
                     track.mood is not None
                     and track.id not in permanent_track_ids
                     and track.id not in temporary_track_ids
+                    and track.id not in requested_excluded_track_ids
                 ):
                     candidates.append(track)
 

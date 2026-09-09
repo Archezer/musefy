@@ -77,6 +77,7 @@ class RecommendationService:
                     target_mood=context.target_mood,
                     limit=limit,
                     mood_name=context.mood_name,
+                    excluded_track_ids=excluded_track_ids,
                 )
             else:
                 recommendations = self.mood_recommender.recommend(
@@ -85,7 +86,13 @@ class RecommendationService:
                     limit=limit,
                     mood_name=context.mood_name,
                     should_cancel=should_cancel,
+                    excluded_track_ids=excluded_track_ids,
                 )
+            recommendations = self._filter_excluded_track_ids(
+                recommendations,
+                excluded_track_ids,
+                limit,
+            )
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
@@ -108,6 +115,11 @@ class RecommendationService:
                     should_cancel=should_cancel,
                     excluded_track_ids=excluded_track_ids,
                 )
+            recommendations = self._filter_excluded_track_ids(
+                recommendations,
+                excluded_track_ids,
+                limit,
+            )
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
@@ -128,6 +140,12 @@ class RecommendationService:
                 genre_name=context.genre_name,
                 limit=limit,
                 should_cancel=should_cancel,
+                excluded_track_ids=excluded_track_ids,
+            )
+            recommendations = self._filter_excluded_track_ids(
+                recommendations,
+                excluded_track_ids,
+                limit,
             )
             return self._apply_hybrid_ranker(
                 normalized_user_id,
@@ -146,6 +164,11 @@ class RecommendationService:
                 excluded_track_ids=excluded_track_ids,
                 should_cancel=should_cancel,
             )
+            recommendations = self._filter_excluded_track_ids(
+                recommendations,
+                excluded_track_ids,
+                limit,
+            )
             return self._apply_hybrid_ranker(
                 normalized_user_id,
                 recommendations,
@@ -156,11 +179,45 @@ class RecommendationService:
             user_id=normalized_user_id,
             limit=limit,
         )
+        recommendations = self._filter_excluded_track_ids(
+            recommendations,
+            excluded_track_ids,
+            limit,
+        )
         return self._apply_hybrid_ranker(
             normalized_user_id,
             recommendations,
             playlist_id=playlist_id,
         )
+
+    @staticmethod
+    def _filter_excluded_track_ids(
+        recommendations: list[Recommendation],
+        excluded_track_ids: Collection[str] | None,
+        limit: int,
+    ) -> list[Recommendation]:
+        if not excluded_track_ids:
+            seen_ids: set[str] = set()
+            unique_recommendations: list[Recommendation] = []
+            for recommendation in recommendations:
+                if recommendation.track.id in seen_ids:
+                    continue
+                seen_ids.add(recommendation.track.id)
+                unique_recommendations.append(recommendation)
+            return unique_recommendations[:limit]
+
+        excluded_ids = set(excluded_track_ids)
+        seen_ids: set[str] = set()
+        filtered_recommendations: list[Recommendation] = []
+        for recommendation in recommendations:
+            track_id = recommendation.track.id
+            if track_id in excluded_ids or track_id in seen_ids:
+                continue
+            seen_ids.add(track_id)
+            filtered_recommendations.append(recommendation)
+            if len(filtered_recommendations) == limit:
+                break
+        return filtered_recommendations
 
     def _apply_hybrid_ranker(
         self,

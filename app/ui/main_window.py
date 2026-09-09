@@ -430,6 +430,7 @@ class MainWindow(QMainWindow):
         self._radio_recommendation_task: RecommendationTask | None = None
         self._radio_recommendation_generation = 0
         self._radio_recommendation_inflight = False
+        self._radio_session_seen_track_ids: set[str] = set()
         self._radio_impression_session_id: str | None = None
         self._radio_impression_position = 0
         self._radio_impression_playlist_id: str | None = None
@@ -3862,6 +3863,7 @@ class MainWindow(QMainWindow):
             self._recommendation_task.cancel()
         self._recommendation_task = None
         self._cancel_radio_recommendations()
+        self._radio_session_seen_track_ids = {track.id}
         self.playback_queue_service.start(
             (track.id,),
             mode=QueueMode.RECOMMENDATIONS,
@@ -3902,6 +3904,7 @@ class MainWindow(QMainWindow):
             queue.current_track_id,
             *queue.remaining_track_ids,
             *queue.queued_track_ids,
+            *self._radio_session_seen_track_ids,
         }
         self._radio_recommendation_generation += 1
         generation = self._radio_recommendation_generation
@@ -3964,7 +3967,10 @@ class MainWindow(QMainWindow):
                 continue
 
             track = recommendation.track
-            if track.id in occupied_ids:
+            if (
+                track.id in occupied_ids
+                or track.id in self._radio_session_seen_track_ids
+            ):
                 continue
             if not track.local_path or not Path(track.local_path).exists():
                 continue
@@ -3978,6 +3984,7 @@ class MainWindow(QMainWindow):
                 break
 
         if additions:
+            self._radio_session_seen_track_ids.update(additions)
             if self._record_recommendation_impressions(
                 shown_recommendations,
                 session_id=self._radio_impression_session_id,
@@ -4013,6 +4020,7 @@ class MainWindow(QMainWindow):
             self._radio_recommendation_task.cancel()
         self._radio_recommendation_task = None
         self._radio_recommendation_inflight = False
+        self._radio_session_seen_track_ids.clear()
         self._radio_wait_attempts = 0
         self._radio_wait_seed_track_id = None
 
@@ -7454,6 +7462,20 @@ class MainWindow(QMainWindow):
             and self.playback_queue_service.queue is not None
             else None
         )
+        restored_queue = self.playback_queue_service.queue
+        self._radio_session_seen_track_ids = (
+            {
+                restored_track_id
+                for restored_track_id in (
+                    restored_queue.current_track_id,
+                    *restored_queue.queued_track_ids,
+                    *restored_queue.remaining_track_ids,
+                )
+                if restored_track_id is not None
+            }
+            if self._track_radio_enabled and restored_queue is not None
+            else set()
+        )
         self._radio_impression_session_id = (
             f"radio-resume-{uuid4().hex}" if self._track_radio_enabled else None
         )
@@ -10151,6 +10173,12 @@ class MainWindow(QMainWindow):
 
         source_url = QUrl.fromLocalFile(str(audio_path.resolve()))
         self.current_track_id = track.id
+        active_queue = self.playback_queue_service.queue
+        if active_queue is not None:
+            if active_queue.mode == QueueMode.RECOMMENDATIONS:
+                self._radio_session_seen_track_ids.add(track.id)
+            elif active_queue.mode == QueueMode.SESSION:
+                self._mood_session_seen_track_ids.add(track.id)
         self._apply_track_loudness_gain(track)
         # A stale EndOfMedia event from the previous source can arrive while
         # Qt is switching to this one. Do not let it advance the new queue

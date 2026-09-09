@@ -350,6 +350,76 @@ def test_selected_mood_prioritizes_matching_tracks():
     assert recommendations[0].reason == "Matches the selected mood"
 
 
+def test_mood_session_exclusions_are_not_recommended_again():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="dark-track-1",
+            title="Dark Track 1",
+            artist="Artist One",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+    store.add_track(
+        Track(
+            id="dark-track-2",
+            title="Dark Track 2",
+            artist="Artist Two",
+            mood=MOOD_PRESETS["dark"],
+        )
+    )
+
+    service = RecommendationService(
+        MostPopularRecommender(store),
+        mood_recommender=MoodRecommender(
+            store,
+            replay_cooldown=0,
+            exploration_pool_size=1,
+        ),
+    )
+
+    recommendations = service.get_recommendations(
+        user_id="user-1",
+        limit=2,
+        context=RecommendationContext.mood(MOOD_PRESETS["dark"]),
+        excluded_track_ids={"dark-track-1"},
+    )
+
+    assert [item.track.id for item in recommendations] == ["dark-track-2"]
+
+
+def test_genre_session_exclusions_are_not_recommended_again():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="rock-track-1",
+            title="Rock Track 1",
+            artist="Artist One",
+            genres=("rock",),
+        )
+    )
+    store.add_track(
+        Track(
+            id="rock-track-2",
+            title="Rock Track 2",
+            artist="Artist Two",
+            genres=("rock",),
+        )
+    )
+
+    service = RecommendationService(MostPopularRecommender(store))
+    recommendations = service.get_recommendations(
+        user_id="user-1",
+        limit=2,
+        context=RecommendationContext.genre("rock"),
+        excluded_track_ids={"rock-track-1"},
+    )
+
+    assert [item.track.id for item in recommendations] == ["rock-track-2"]
+
+
 def test_selected_mood_ignores_large_interaction_score():
     store = InMemoryMusicStore()
     store.add_user(User(id="user-1", display_name="Test User"))
