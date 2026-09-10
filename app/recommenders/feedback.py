@@ -98,6 +98,16 @@ TEMPORARY_SUPPRESSION_TYPES = frozenset(
     }
 )
 
+CONTEXTUAL_FEEDBACK_TYPES = frozenset(
+    {
+        InteractionType.RECOMMENDATION_SKIP,
+    }
+)
+
+CONTEXTUAL_INTERACTION_TYPES = (
+    TEMPORARY_SUPPRESSION_TYPES | CONTEXTUAL_FEEDBACK_TYPES
+)
+
 
 def as_utc(value: datetime) -> datetime:
     """Normalize timestamps from SQLite and in-memory stores to UTC."""
@@ -283,6 +293,43 @@ def aggregate_user_track_weights(
     return totals
 
 
+def aggregate_contextual_feedback_weights(
+    user_id: str,
+    interactions: list[Interaction],
+    *,
+    context: str | None,
+    now: datetime,
+    half_life_days: float = DEFAULT_INTEREST_HALF_LIFE_DAYS,
+) -> dict[str, float]:
+    """Aggregate soft feedback for one named recommendation context."""
+
+    normalized_context = (
+        context.strip().casefold()
+        if context and context.strip()
+        else None
+    )
+    if normalized_context is None:
+        return {}
+
+    totals: dict[str, float] = {}
+    for interaction in interactions:
+        if (
+            interaction.user_id != user_id
+            or interaction.interaction_type not in CONTEXTUAL_FEEDBACK_TYPES
+            or interaction.mood_context != normalized_context
+        ):
+            continue
+        totals[interaction.track_id] = (
+            totals.get(interaction.track_id, 0.0)
+            + effective_weight(
+                interaction,
+                now=now,
+                half_life_days=half_life_days,
+            )
+        )
+    return totals
+
+
 def latest_user_interactions(
     user_id: str,
     interactions: list[Interaction],
@@ -319,7 +366,7 @@ def filter_contextual_interactions(
         interaction
         for interaction in interactions
         if interaction.user_id != user_id
-        or interaction.interaction_type not in TEMPORARY_SUPPRESSION_TYPES
+        or interaction.interaction_type not in CONTEXTUAL_INTERACTION_TYPES
         or interaction.mood_context == normalized_context
         or (
             include_global

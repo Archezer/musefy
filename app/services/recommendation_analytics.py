@@ -49,6 +49,7 @@ SKIP_INTERACTION_TYPES = frozenset(
     {
         InteractionType.SKIP,
         InteractionType.SKIP_UNDER_30S,
+        InteractionType.RECOMMENDATION_SKIP,
     }
 )
 

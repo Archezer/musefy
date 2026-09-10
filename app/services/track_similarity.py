@@ -6,12 +6,15 @@ import numpy as np
 
 from app.domain.models import Recommendation, Track
 from app.domain.recommendations import RecommendationMode
-from app.recommenders.feedback import suppressed_track_ids
+from app.recommenders.feedback import (
+    aggregate_contextual_feedback_weights,
+    suppressed_track_ids,
+)
+from app.recommenders.recency import recency_bonus
 from app.recommenders.similarity import (
     SimilarTrack,
     TrackSimilarityIndex,
 )
-from app.recommenders.recency import recency_bonus
 from app.storage.protocols import MusicStore
 
 RADIO_BASE_POOL_EXTRA = 6
@@ -136,14 +139,26 @@ class TrackSimilarityService:
         excluded_ids.update(self._removed_track_ids)
         excluded_ids.add(track_id)
 
+        contextual_feedback_weights: dict[str, float] = {}
         if user_id is not None and user_id.strip():
+            user_interactions = list(
+                self.store.list_interactions(user_id=user_id)
+            )
             permanent, temporary = suppressed_track_ids(
                 user_id,
-                list(self.store.list_interactions(user_id=user_id)),
+                user_interactions,
                 now=datetime.now(UTC),
                 context=f"track_radio:{track_id.casefold()}",
             )
             excluded_ids.update(permanent | temporary)
+            contextual_feedback_weights = (
+                aggregate_contextual_feedback_weights(
+                    user_id,
+                    user_interactions,
+                    context=f"track_radio:{track_id.casefold()}",
+                    now=datetime.now(UTC),
+                )
+            )
 
         # Keep the candidate pool close to the seed in embedding space, then
         # apply a tiny jitter so repeated radio starts do not feel identical.
@@ -175,6 +190,7 @@ class TrackSimilarityService:
         candidate_pool.sort(
             key=lambda neighbor: (
                 neighbor.score
+                + contextual_feedback_weights.get(neighbor.track_id, 0.0)
                 + (
                     recency_bonus(
                         tracks_by_id[neighbor.track_id],
@@ -196,9 +212,17 @@ class TrackSimilarityService:
                 continue
 
             recommendations.append(
+                # Keep the base similarity separately for explainability,
+                # while ranking this radio context with its soft feedback.
                 Recommendation(
                     track=track,
-                    score=neighbor.score,
+                    score=(
+                        neighbor.score
+                        + contextual_feedback_weights.get(
+                            neighbor.track_id,
+                            0.0,
+                        )
+                    ),
                     reason="Similar to the selected track",
                     mode=RecommendationMode.TRACK_RADIO,
                     embedding_similarity=neighbor.score,

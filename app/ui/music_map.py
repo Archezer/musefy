@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
@@ -101,6 +102,38 @@ class MusicMapWidget(QWidget):
             if track.track_embedding
         ]
         return MusicMapWidget._signature_for_tracks(embedded_tracks)
+
+    @staticmethod
+    def select_tracks_for_percentage(
+        tracks: list[Track],
+        percentage: int,
+    ) -> list[Track]:
+        """Choose a stable representative share of analyzed library tracks."""
+
+        if not 1 <= percentage <= 100:
+            raise ValueError("Map track percentage must be between 1 and 100")
+
+        embedded_tracks = [
+            track
+            for track in tracks
+            if track.track_embedding
+        ]
+        if percentage == 100:
+            return embedded_tracks
+
+        selection_size = (len(embedded_tracks) * percentage + 99) // 100
+        selected_ids = {
+            track.id
+            for track in sorted(
+                embedded_tracks,
+                key=lambda track: sha256(
+                    track.id.encode("utf-8")
+                ).digest(),
+            )[:selection_size]
+        }
+        return [
+            track for track in embedded_tracks if track.id in selected_ids
+        ]
 
     @classmethod
     def build_map_data(cls, tracks: list[Track]) -> MapBuildResult:

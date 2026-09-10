@@ -119,6 +119,7 @@ class ListeningStatisticsService:
             elif interaction_type in {
                 InteractionType.SKIP,
                 InteractionType.SKIP_UNDER_30S,
+                InteractionType.RECOMMENDATION_SKIP,
             }:
                 skipped_counts[track.id] += 1
                 daily_skips[self._as_utc(interaction.created_at).date()] += 1
@@ -287,6 +288,7 @@ class ListeningStatisticsService:
             elif interaction.interaction_type in {
                 InteractionType.SKIP,
                 InteractionType.SKIP_UNDER_30S,
+                InteractionType.RECOMMENDATION_SKIP,
             }:
                 skips[month] += 1
 

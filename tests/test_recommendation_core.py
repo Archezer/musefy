@@ -11,6 +11,7 @@ from app.domain.models import (
 from app.domain.mood import MOOD_PRESETS
 from app.domain.recommendations import RecommendationContext
 from app.recommenders.feedback import (
+    aggregate_contextual_feedback_weights,
     aggregate_playback_weights,
     latest_user_preference_states,
     suppressed_track_ids,
@@ -69,6 +70,35 @@ def make_store() -> InMemoryMusicStore:
     )
 
     return store
+
+
+def test_recommendation_skip_is_soft_and_context_scoped():
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    interactions = [
+        Interaction(
+            user_id="user-1",
+            track_id="track-1",
+            interaction_type=InteractionType.RECOMMENDATION_SKIP,
+            created_at=now,
+            mood_context="track_radio:seed",
+        ),
+        Interaction(
+            user_id="user-1",
+            track_id="track-2",
+            interaction_type=InteractionType.RECOMMENDATION_SKIP,
+            created_at=now,
+            mood_context="other-context",
+        ),
+    ]
+
+    weights = aggregate_contextual_feedback_weights(
+        "user-1",
+        interactions,
+        context="TRACK_RADIO:SEED",
+        now=now,
+    )
+
+    assert weights == {"track-1": -0.25}
 
 
 def test_recommendation_service_strips_user_id():

@@ -33,6 +33,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -262,6 +263,7 @@ LIBRARY_PLAYBACK_MODES = (
     QueueMode.SMART_SHUFFLE,
 )
 MAP_MODES = ("background", "focus", "hidden")
+MAP_TRACK_PERCENTAGES = tuple(range(10, 101, 10))
 MY_WAVE_SESSION_NAME = "my_wave"
 
 
@@ -383,10 +385,12 @@ class MainWindow(QMainWindow):
         self._selected_track_row = -1
         self._pending_hovered_track_row = -1
         self._library_search_query = ""
+        self._music_map_source_tracks: list[Track] = []
         self._music_map_tracks: list[Track] = []
         self._music_map_signature: tuple[tuple[str, int], ...] = ()
         self._music_map_generation = 0
         self._music_map_task: MusicMapTask | None = None
+        self._music_map_build_pending = False
         self._music_map_build_failed = False
         self._is_shutting_down = False
         # The main library is newest-first by default.  Playlist views clear
@@ -491,6 +495,13 @@ class MainWindow(QMainWindow):
                 "appearance/library_track_covers",
                 True,
                 type=bool,
+            )
+        )
+        self._music_map_track_percentage = self._clamp_music_map_percentage(
+            self._playback_state_settings.value(
+                "appearance/music_map_track_percentage",
+                100,
+                type=int,
             )
         )
         self._loudness_normalization_enabled = bool(
@@ -1302,6 +1313,24 @@ class MainWindow(QMainWindow):
             lambda: self._set_music_map_mode("background")
         )
         self.map_exit_button.hide()
+        self.map_track_percentage_combo = QComboBox(app_root)
+        self.map_track_percentage_combo.setObjectName("mapTrackPercentageCombo")
+        self.map_track_percentage_combo.setFixedSize(166, 32)
+        self.map_track_percentage_combo.setToolTip(
+            "Choose how many analyzed tracks to use when building the map"
+        )
+        for percentage in MAP_TRACK_PERCENTAGES:
+            self.map_track_percentage_combo.addItem(
+                f"Map tracks: {percentage}%",
+                percentage,
+            )
+        self.map_track_percentage_combo.setCurrentIndex(
+            MAP_TRACK_PERCENTAGES.index(self._music_map_track_percentage)
+        )
+        self.map_track_percentage_combo.currentIndexChanged.connect(
+            self._set_music_map_track_percentage
+        )
+        self.map_track_percentage_combo.hide()
         self.queue_dialog = QueueDialog(self)
         self.queue_dialog.track_play_requested.connect(self._play_queued_track)
         self.setCentralWidget(app_root)
@@ -1562,6 +1591,14 @@ class MainWindow(QMainWindow):
                 16,
                 RailIconButton.BUTTON_SIZE,
                 RailIconButton.BUTTON_SIZE,
+            )
+        if hasattr(self, "map_track_percentage_combo"):
+            combo = self.map_track_percentage_combo
+            combo.setGeometry(
+                max(16, root_rect.width() - combo.width() - 16),
+                16,
+                combo.width(),
+                combo.height(),
             )
         self._position_search_actions()
         self._position_playlist_navigation()
@@ -1929,10 +1966,12 @@ class MainWindow(QMainWindow):
             self._map_blur.setBlurRadius(target_blur_radius)
             self.map_layer.setVisible(mode != "hidden")
             self.map_exit_button.setVisible(mode == "focus")
+            self.map_track_percentage_combo.setVisible(mode == "focus")
             if mode == "focus":
                 self.map_layer.raise_()
                 self._player_bar.raise_()
                 self.map_exit_button.raise_()
+                self.map_track_percentage_combo.raise_()
             else:
                 self.map_layer.lower()
                 self._player_bar.raise_()
@@ -1940,6 +1979,7 @@ class MainWindow(QMainWindow):
 
         self.map_layer.show()
         self.map_exit_button.setVisible(mode == "focus")
+        self.map_track_percentage_combo.setVisible(mode == "focus")
         self._map_opacity_animation.stop()
         self._map_opacity_animation.setStartValue(self._map_opacity.opacity())
         self._map_opacity_animation.setEndValue(target_opacity)
@@ -1958,6 +1998,7 @@ class MainWindow(QMainWindow):
             self.map_layer.raise_()
             self._player_bar.raise_()
             self.map_exit_button.raise_()
+            self.map_track_percentage_combo.raise_()
         else:
             self.map_layer.lower()
             self._player_bar.raise_()
@@ -1988,7 +2029,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         if tracks is None:
             tracks = list(self.store.list_tracks())
-        self._music_map_tracks = list(tracks)
+        self._music_map_source_tracks = list(tracks)
+        self._music_map_tracks = MusicMapWidget.select_tracks_for_percentage(
+            self._music_map_source_tracks,
+            self._music_map_track_percentage,
+        )
         signature = MusicMapWidget.track_signature(self._music_map_tracks)
         if signature == self._music_map_signature:
             return
@@ -1997,6 +2042,24 @@ class MainWindow(QMainWindow):
         # Keep the last rendered graph visible in the background.  The map
         # data is intentionally allowed to become stale here; opening the
         # interactive map will detect the signature change and rebuild it.
+
+    @staticmethod
+    def _clamp_music_map_percentage(value: int) -> int:
+        return value if value in MAP_TRACK_PERCENTAGES else 100
+
+    def _set_music_map_track_percentage(self, index: int) -> None:
+        percentage = self.map_track_percentage_combo.itemData(index)
+        if not isinstance(percentage, int):
+            return
+
+        self._music_map_track_percentage = percentage
+        self._playback_state_settings.setValue(
+            "appearance/music_map_track_percentage",
+            percentage,
+        )
+        self._refresh_music_map(self._music_map_source_tracks)
+        if self._music_map_mode == "focus":
+            self._ensure_music_map_ready()
 
     def _ensure_music_map_ready(self) -> None:
         if self.music_map.has_map_data_for(self._music_map_signature):
@@ -2008,6 +2071,7 @@ class MainWindow(QMainWindow):
 
     def _start_music_map_build(self) -> None:
         if self._music_map_task is not None:
+            self._music_map_build_pending = True
             return
 
         self._music_map_generation += 1
@@ -2059,6 +2123,9 @@ class MainWindow(QMainWindow):
         if generation != self._music_map_generation:
             return
         self._music_map_task = None
+        if self._music_map_build_pending:
+            self._music_map_build_pending = False
+            self._start_music_map_build()
 
     def _select_track_from_map(self, track_id: str) -> None:
         for row_index, track in enumerate(self._visible_tracks):
@@ -2446,9 +2513,17 @@ class MainWindow(QMainWindow):
     def _load_library(self, *, refresh_map: bool = True) -> None:
         tracks = list(self.store.list_tracks())
         self._library_tracks = tracks
-        self._music_map_tracks = list(tracks)
+        self._music_map_source_tracks = list(tracks)
         if not refresh_map:
-            self._music_map_signature = MusicMapWidget.track_signature(tracks)
+            self._music_map_tracks = (
+                MusicMapWidget.select_tracks_for_percentage(
+                    tracks,
+                    self._music_map_track_percentage,
+                )
+            )
+            self._music_map_signature = MusicMapWidget.track_signature(
+                self._music_map_tracks
+            )
             self.music_map.load_snapshot(
                 MUSIC_MAP_SNAPSHOT_PATH,
                 MUSIC_MAP_SNAPSHOT_METADATA_PATH,
@@ -3053,8 +3128,11 @@ class MainWindow(QMainWindow):
         self._library_tracks = [
             track if item.id == track.id else item for item in self._library_tracks
         ]
-        self._music_map_tracks = [
-            track if item.id == track.id else item for item in self._music_map_tracks
+        self._music_map_source_tracks = [
+            track
+            if item.id == track.id
+            else item
+            for item in self._music_map_source_tracks
         ]
         self._track_scope_tracks = [
             track if item.id == track.id else item for item in self._track_scope_tracks
@@ -9999,8 +10077,17 @@ class MainWindow(QMainWindow):
         self._play_current_queue_track()
 
     def _go_next(self) -> None:
-        if self.playback_queue_service.queue is None:
+        queue = self.playback_queue_service.queue
+        if queue is None:
             self.statusBar().showMessage("No next track")
+            return
+
+        if (
+            queue.current_track_id is not None
+            and queue.mode in {QueueMode.RECOMMENDATIONS, QueueMode.SESSION}
+            and self._get_active_recommendation_context() is not None
+        ):
+            self._record_interaction(InteractionType.RECOMMENDATION_SKIP)
             return
 
         self._play_next_from_queue()
@@ -10509,6 +10596,7 @@ class MainWindow(QMainWindow):
         is_skip_signal = interaction_type in {
             InteractionType.SKIP,
             InteractionType.SKIP_UNDER_30S,
+            InteractionType.RECOMMENDATION_SKIP,
         }
         if is_skip_signal:
             self._current_track_early_exit_recorded = True
@@ -10520,6 +10608,7 @@ class MainWindow(QMainWindow):
             in {
                 InteractionType.SKIP,
                 InteractionType.SKIP_UNDER_30S,
+                InteractionType.RECOMMENDATION_SKIP,
                 InteractionType.SNOOZE,
                 InteractionType.DO_NOT_RECOMMEND,
             },

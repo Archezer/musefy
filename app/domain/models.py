@@ -19,6 +19,7 @@ class InteractionType(str, Enum):
     LIKE = "like"
     SKIP = "skip"
     SKIP_UNDER_30S = "skip_under_30s"
+    RECOMMENDATION_SKIP = "recommendation_skip"
     SNOOZE = "snooze"
     DISLIKE = "dislike"
     DO_NOT_RECOMMEND = "do_not_recommend"
@@ -36,10 +37,11 @@ class InteractionType(str, Enum):
             InteractionType.COMPLETED_80: 2.0,
             InteractionType.SEEK: 0.0,
             InteractionType.LIKE: 4.0,
-            # These are written only for explicit feedback from the playback
-            # menu.  Normal next/previous navigation is intentionally neutral.
+            # Explicit menu skips are stronger negative feedback.  Navigation
+            # inside a recommendation queue uses a separate soft signal.
             InteractionType.SKIP: -2.0,
             InteractionType.SKIP_UNDER_30S: -1.0,
+            InteractionType.RECOMMENDATION_SKIP: -0.25,
             InteractionType.SNOOZE: -0.5,
             InteractionType.DISLIKE: -4.0,
             InteractionType.DO_NOT_RECOMMEND: -8.0,

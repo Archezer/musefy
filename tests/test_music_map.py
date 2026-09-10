@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 
+from app.domain.models import Track
 from app.ui.music_map import (
     MAP_MAX_NEIGHBOR_COUNT,
     MAP_SIMILARITY_THRESHOLD,
@@ -67,3 +69,27 @@ def test_map_projection_keeps_points_bounded_and_two_dimensional() -> None:
     assert points.shape == (len(embeddings), 2)
     assert np.isfinite(points).all()
     assert float(np.abs(points).max()) <= 0.82
+
+
+def test_map_track_percentage_uses_stable_share_of_analyzed_tracks() -> None:
+    tracks = [
+        Track(
+            id=f"track-{index}",
+            title=f"Track {index}",
+            artist="Artist",
+            duration_ms=1,
+            track_embedding=(float(index), 1.0),
+        )
+        for index in range(10)
+    ]
+
+    selection = MusicMapWidget.select_tracks_for_percentage(tracks, 30)
+
+    assert len(selection) == 3
+    assert selection == MusicMapWidget.select_tracks_for_percentage(tracks, 30)
+    assert MusicMapWidget.select_tracks_for_percentage(tracks, 100) == tracks
+
+
+def test_map_track_percentage_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="between 1 and 100"):
+        MusicMapWidget.select_tracks_for_percentage([], 0)

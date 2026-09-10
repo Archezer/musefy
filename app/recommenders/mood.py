@@ -16,6 +16,7 @@ from app.recommenders.feedback import (
     NEGATIVE_PREFERENCE_TYPES,
     PLAYBACK_SESSION_TYPES,
     POSITIVE_PREFERENCE_TYPES,
+    aggregate_contextual_feedback_weights,
     aggregate_playback_weights,
     effective_weight,
     filter_contextual_interactions,
@@ -145,6 +146,15 @@ class MoodRecommender:
             interactions=interactions,
             should_cancel=should_cancel,
         )
+        for track_id, weight in aggregate_contextual_feedback_weights(
+            user_id,
+            interactions,
+            context=mood_name,
+            now=current_time,
+        ).items():
+            feedback_scores[track_id] = (
+                feedback_scores.get(track_id, 0.0) + weight
+            )
 
         scored_tracks = []
         for index, track in enumerate(candidates):
@@ -308,6 +318,15 @@ class MoodRecommender:
             interactions=user_interactions,
             should_cancel=should_cancel,
         )
+        for track_id, weight in aggregate_contextual_feedback_weights(
+            user_id,
+            user_interactions,
+            context="my_wave",
+            now=current_time,
+        ).items():
+            feedback_scores[track_id] = (
+                feedback_scores.get(track_id, 0.0) + weight
+            )
 
         tracks_by_id = {track.id: track for track in tracks}
         profile_mood_valence = 0.0

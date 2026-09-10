@@ -210,6 +210,56 @@ def test_track_radio_skip_is_scoped_to_the_radio_seed() -> None:
     assert [item.track.id for item in recommendations] == ["fallback"]
 
 
+def test_track_radio_recommendation_skip_lowers_score_without_excluding():
+    store = InMemoryMusicStore()
+    store.add_user(User(id="user-1", display_name="Test User"))
+    store.add_track(
+        Track(
+            id="seed",
+            title="Seed",
+            artist="Artist",
+            track_embedding=(1.0, 0.0),
+        )
+    )
+    store.add_track(
+        Track(
+            id="soft-skipped",
+            title="Soft skipped",
+            artist="Artist",
+            track_embedding=(0.99, 0.1),
+        )
+    )
+    store.add_track(
+        Track(
+            id="fallback",
+            title="Fallback",
+            artist="Artist",
+            track_embedding=(0.8, 0.6),
+        )
+    )
+    store.add_interaction(
+        Interaction(
+            user_id="user-1",
+            track_id="soft-skipped",
+            interaction_type=InteractionType.RECOMMENDATION_SKIP,
+            mood_context="track_radio:seed",
+        )
+    )
+
+    recommendations = TrackSimilarityService(store).recommendations_for(
+        "seed",
+        limit=2,
+        user_id="user-1",
+    )
+
+    soft_skipped = next(
+        item for item in recommendations if item.track.id == "soft-skipped"
+    )
+    assert soft_skipped.score == pytest.approx(
+        cosine_similarity((1.0, 0.0), (0.99, 0.1)) - 0.25
+    )
+
+
 def test_track_radio_expands_confident_candidate_pool() -> None:
     neighbors = tuple(
         SimilarTrack(
