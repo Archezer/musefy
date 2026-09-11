@@ -4619,6 +4619,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Playing a track directly always starts the regular library/playlist
+        # queue.  Track radio remains available only through its explicit
+        # action, so a previous radio session cannot hijack normal playback.
+        if self._track_radio_enabled:
+            self._track_radio_enabled = False
+            self._update_playback_mode_controls()
+
         self._start_library_queue(
             track_id,
             preserve_manual_queue=False,
