@@ -241,7 +241,7 @@ class _TrackDelegate(QStyledItemDelegate):
         checked: bool,
         hovered: bool,
     ) -> None:
-        size = max(18, min(22, rect.width() - 12, rect.height() - 24))
+        size = max(16, min(18, rect.width() - 12, rect.height() - 28))
         checkbox_rect = QRect(
             rect.center().x() - size // 2,
             rect.center().y() - size // 2,
@@ -269,32 +269,6 @@ class _TrackDelegate(QStyledItemDelegate):
             QColor("#5DD8B7" if checked else "#182323")
         )
         painter.drawRoundedRect(checkbox_rect, 5, 5)
-
-        if checked:
-            painter.setPen(
-                QPen(
-                    QColor("#12332B"),
-                    2.2,
-                    Qt.PenStyle.SolidLine,
-                    Qt.PenCapStyle.RoundCap,
-                    Qt.PenJoinStyle.RoundJoin,
-                )
-            )
-            left = checkbox_rect.left() + size // 4
-            middle = checkbox_rect.center()
-            right = checkbox_rect.right() - size // 5
-            painter.drawLine(
-                left,
-                middle.y(),
-                middle.x() - 1,
-                middle.y() + size // 4,
-            )
-            painter.drawLine(
-                middle.x() - 1,
-                middle.y() + size // 4,
-                right,
-                checkbox_rect.top() + size // 4,
-            )
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         return QSize(0, 62)
