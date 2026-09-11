@@ -11,6 +11,7 @@ import app.sources.youtube as youtube_source
 from app.domain.models import Track
 from app.services.youtube_import import (
     SpotifyPlaylistSearchResult,
+    SpotifySearchResult,
     YouTubeImportService,
 )
 from app.sources.spotify import SpotifyPlaylist, SpotifyTrack
@@ -84,6 +85,7 @@ class FakeIngestionService:
     def __init__(self) -> None:
         self.store = InMemoryMusicStore()
         self.cover_urls: list[str | None] = []
+        self.cover_refreshes: list[bool] = []
 
     def ingest(
         self,
@@ -118,8 +120,10 @@ class FakeIngestionService:
         track: Track,
         *,
         cover_url: str | None,
+        replace_existing: bool = False,
     ) -> Track:
         self.cover_urls.append(cover_url)
+        self.cover_refreshes.append(replace_existing)
         return track
 
     def restore_missing_track(
@@ -525,6 +529,48 @@ def test_youtube_import_skips_existing_video_without_downloading(
     assert provider.download_calls == 0
 
 
+def test_spotify_import_refreshes_cover_for_existing_video(
+    tmp_path,
+) -> None:
+    ingestion_service = FakeIngestionService()
+    existing_path = tmp_path / "existing.mp3"
+    existing_path.touch()
+    ingestion_service.store.add_track(
+        Track(
+            id="youtube-video-1",
+            title="First track",
+            artist="Artist",
+            source="youtube",
+            source_id="video-1",
+            source_url="https://www.youtube.com/watch?v=video-1",
+            local_path=str(existing_path),
+            cover_path=str(tmp_path / "old-cover.jpg"),
+        )
+    )
+    candidate = YouTubeCandidate(
+        video_id="video-1",
+        title="First track",
+        channel_title="Artist",
+        duration_ms=None,
+        view_count=None,
+        url="https://youtu.be/video-1",
+        requested_title="First track",
+        requested_artist="Artist",
+        cover_url="https://i.scdn.co/image/spotify-cover",
+    )
+
+    service = YouTubeImportService(
+        ingestion_service,
+        FakeDownloadProvider(),
+    )
+    service.download_and_import(candidate, source="spotify")
+
+    assert ingestion_service.cover_urls == [
+        "https://i.scdn.co/image/spotify-cover"
+    ]
+    assert ingestion_service.cover_refreshes == [True]
+
+
 class FakeSpotifyProvider:
     def get_resource_type(self, url: str) -> str:
         return "playlist"
@@ -582,6 +628,31 @@ class FakeSpotifyYoutubeProvider:
                 url=f"https://youtube.test/{query}",
             )
         ]
+
+
+class FakeSingleSpotifyProvider:
+    def get_resource_type(self, url: str) -> str:
+        return "track"
+
+    def get_authenticated_track(self, url: str) -> SpotifyTrack:
+        assert url == "spotify-track"
+        return SpotifyTrack("Only track", "Track artist")
+
+    def get_track(self, url: str) -> SpotifyTrack:
+        raise AssertionError("Authorized Spotify metadata should be used")
+
+
+def test_single_spotify_track_searches_artist_and_title_when_authorized() -> None:
+    service = YouTubeImportService(
+        FakeIngestionService(),
+        FakeSpotifyYoutubeProvider(),
+        FakeSingleSpotifyProvider(),
+    )
+
+    result = service.search_from_spotify("spotify-track", use_oauth=True)
+
+    assert isinstance(result, SpotifySearchResult)
+    assert result.query == "Track artist - Only track"
 
 
 def test_spotify_playlist_search_keeps_order_and_metadata() -> None:

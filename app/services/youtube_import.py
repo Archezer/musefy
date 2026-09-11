@@ -149,7 +149,11 @@ class YouTubeImportService:
                 should_cancel=should_cancel,
             )
 
-        spotify_track = self.spotify_provider.get_track(url)
+        spotify_track = (
+            self.spotify_provider.get_authenticated_track(url)
+            if use_oauth
+            else self.spotify_provider.get_track(url)
+        )
         if should_cancel is not None and should_cancel():
             raise OperationCancelled()
         if on_progress is not None:
@@ -576,6 +580,9 @@ class YouTubeImportService:
                 return self.ingestion_service.ensure_cover(
                     existing_track,
                     cover_url=cover_url,
+                    replace_existing=(
+                        source.startswith("spotify") and bool(cover_url)
+                    ),
                 )
 
             downloaded_path = self.provider.download(

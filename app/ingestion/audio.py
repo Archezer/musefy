@@ -40,12 +40,14 @@ class AudioIngestionService:
         track: Track,
         *,
         cover_url: str | None,
+        replace_existing: bool = False,
     ) -> Track:
-        """Persist a remote cover for an existing track when it is missing."""
+        """Persist a remote cover, optionally refreshing the stored artwork."""
 
         if (
             track.cover_path
             and Path(track.cover_path).is_file()
+            and not replace_existing
         ) or not cover_url:
             return track
 

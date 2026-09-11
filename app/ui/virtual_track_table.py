@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QPainter,
+    QPen,
     QPixmap,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -120,7 +121,14 @@ class _TrackDelegate(QStyledItemDelegate):
         painter.setPen(QColor("#EEEEF0"))
         column = index.column()
         if column == 0:
-            if hovered or selected:
+            if view.add_mode:
+                self._paint_checkbox(
+                    painter,
+                    rect,
+                    checked=track.id in view.selected_ids,
+                    hovered=hovered and view.hovered_column == 0,
+                )
+            elif hovered or selected:
                 diameter = min(32, rect.width() - 8, rect.height() - 8)
                 button_center_x = rect.center().x() + 1
                 button_center_y = rect.center().y() + 1
@@ -153,14 +161,6 @@ class _TrackDelegate(QStyledItemDelegate):
                 pixmap = view.cover_for(track)
                 x = rect.left() + max(0, (rect.width() - 40) // 2)
                 painter.drawPixmap(x, rect.top() + 11, pixmap)
-            if view.add_mode:
-                marker = "☑" if track.id in view.selected_ids else "☐"
-                painter.setPen(QColor("#D8FFF0"))
-                painter.drawText(
-                    rect.adjusted(0, 0, -1, -1),
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
-                    marker,
-                )
         elif column == 2:
             left = rect.left() + 8
             base_font = painter.font()
@@ -232,6 +232,69 @@ class _TrackDelegate(QStyledItemDelegate):
                 "≡+",
             )
         painter.restore()
+
+    @staticmethod
+    def _paint_checkbox(
+        painter: QPainter,
+        rect: QRect,
+        *,
+        checked: bool,
+        hovered: bool,
+    ) -> None:
+        size = max(18, min(22, rect.width() - 12, rect.height() - 24))
+        checkbox_rect = QRect(
+            rect.center().x() - size // 2,
+            rect.center().y() - size // 2,
+            size,
+            size,
+        )
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(93, 216, 183, 28))
+            painter.drawRoundedRect(
+                checkbox_rect.adjusted(-6, -6, 6, 6),
+                9,
+                9,
+            )
+
+        painter.setPen(
+            QPen(
+                QColor("#5DD8B7" if checked else "#697A75"),
+                1.6,
+            )
+        )
+        painter.setBrush(
+            QColor("#5DD8B7" if checked else "#182323")
+        )
+        painter.drawRoundedRect(checkbox_rect, 5, 5)
+
+        if checked:
+            painter.setPen(
+                QPen(
+                    QColor("#12332B"),
+                    2.2,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            left = checkbox_rect.left() + size // 4
+            middle = checkbox_rect.center()
+            right = checkbox_rect.right() - size // 5
+            painter.drawLine(
+                left,
+                middle.y(),
+                middle.x() - 1,
+                middle.y() + size // 4,
+            )
+            painter.drawLine(
+                middle.x() - 1,
+                middle.y() + size // 4,
+                right,
+                checkbox_rect.top() + size // 4,
+            )
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         return QSize(0, 62)
@@ -310,6 +373,10 @@ class VirtualTrackTable(QTableView):
             if callable(set_query):
                 set_query(self.search_query)
 
+    def set_selected_ids(self, selected_ids: set[str]) -> None:
+        self.selected_ids = set(selected_ids)
+        self.viewport().update()
+
     def text_for(self, track: Track) -> tuple[str, str, str, str]:
         """Format metadata only when a row reaches the viewport."""
 
@@ -358,7 +425,7 @@ class VirtualTrackTable(QTableView):
         row = index.row() if index.isValid() else -1
         column = index.column() if index.isValid() else -1
         interactive = index.isValid() and (
-            column in {0, 8} or (column == 1 and self.add_mode)
+            column in {0, 8}
         )
         self.viewport().setCursor(
             Qt.CursorShape.PointingHandCursor
@@ -399,15 +466,19 @@ class VirtualTrackTable(QTableView):
     def mousePressEvent(self, event) -> None:
         index = self.indexAt(event.position().toPoint())
         if event.button() == Qt.MouseButton.LeftButton and index.isValid():
-            signal = {
-                0: self.row_play_requested,
-                1: self.row_check_requested,
-                6: self.row_remove_requested,
-                8: self.row_queue_requested,
-            }.get(index.column())
+            if index.column() == 0:
+                signal = (
+                    self.row_check_requested
+                    if self.add_mode
+                    else self.row_play_requested
+                )
+            else:
+                signal = {
+                    6: self.row_remove_requested,
+                    8: self.row_queue_requested,
+                }.get(index.column())
             if (
                 signal is not None
-                and (index.column() != 1 or self.add_mode)
                 and (index.column() != 6 or self.playlist_open)
             ):
                 signal.emit(index.row())
@@ -418,6 +489,8 @@ class VirtualTrackTable(QTableView):
     def mouseDoubleClickEvent(self, event) -> None:
         index = self.indexAt(event.position().toPoint())
         if index.isValid():
+            if self.add_mode and index.column() == 0:
+                return
             self.row_double_clicked.emit(index.row())
             return
         super().mouseDoubleClickEvent(event)

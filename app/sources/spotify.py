@@ -590,8 +590,9 @@ class SpotifyMetadataProvider:
         return tuple(tracks)
 
     def get_track(self, url: str) -> SpotifyTrack:
-        normalized_url = url.strip()
+        normalized_url = self._canonical_url(url)
         _validate_spotify_url(normalized_url, expected_type="track")
+        track_id = _resource_id(normalized_url, "track")
 
         endpoint = (
             "https://open.spotify.com/oembed?"
@@ -613,11 +614,45 @@ class SpotifyMetadataProvider:
                 "Spotify did not return track metadata."
             )
 
-        return SpotifyTrack(
+        oembed_track = SpotifyTrack(
             title=title,
             artist=artist or None,
             cover_url=_extract_image_url(payload),
         )
+        if oembed_track.artist and oembed_track.cover_url:
+            return oembed_track
+
+        # Spotify's oEmbed response sometimes omits the artist or thumbnail
+        # for an individual track. The embed page fills in either missing
+        # field, keeping YouTube searches specific and importing the album
+        # artwork with the selected track.
+        try:
+            public_track = self._get_track_from_public_page(track_id)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return oembed_track
+
+        return replace(
+            oembed_track,
+            artist=oembed_track.artist or public_track.artist,
+            cover_url=oembed_track.cover_url or public_track.cover_url,
+        )
+
+    def get_authenticated_track(self, url: str) -> SpotifyTrack:
+        """Read one track through the Spotify API with artist metadata."""
+
+        normalized_url = self._canonical_url(url)
+        _validate_spotify_url(normalized_url, expected_type="track")
+        track_id = _resource_id(normalized_url, "track")
+        payload = self.oauth_client.get_json(
+            f"/v1/tracks/{quote(track_id, safe='')}",
+            {"market": "from_token"},
+        )
+        track = _parse_playlist_track(payload)
+        if track is None:
+            raise RuntimeError(
+                "Spotify API did not expose track metadata."
+            )
+        return track
 
     def get_resource_type(self, url: str) -> str:
         normalized_url = self._canonical_url(url)
@@ -679,6 +714,43 @@ class SpotifyMetadataProvider:
         )
         album_id = _resource_id(normalized_url, "album")
         return self._get_album_from_authorized_api(album_id)
+
+    def _get_track_from_public_page(self, track_id: str) -> SpotifyTrack:
+        encoded_track_id = quote(track_id, safe="")
+        endpoint = f"https://open.spotify.com/embed/track/{encoded_track_id}"
+        request = Request(
+            endpoint,
+            headers={"User-Agent": "music-recommendation-system/1.0"},
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                html = response.read().decode("utf-8", errors="replace")
+        except HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "Spotify public track page request failed: "
+                f"{details or error.reason}"
+            ) from error
+        except OSError as error:
+            raise RuntimeError(
+                "Could not connect to the Spotify public track page."
+            ) from error
+
+        entity = _get_embed_entity(
+            _parse_next_data(html),
+            expected_type="track",
+        )
+        title = str(entity.get("name") or entity.get("title") or "").strip()
+        artist = _embed_artist_name(entity)
+        if not title or not artist:
+            raise RuntimeError(
+                "Spotify public track page did not expose artist metadata."
+            )
+        return SpotifyTrack(
+            title=title,
+            artist=artist,
+            cover_url=_extract_image_url(entity),
+        )
 
     def _get_playlist_from_authorized_api(
         self,
@@ -1429,19 +1501,45 @@ def _parse_next_data(html: str) -> dict:
     return payload
 
 
-def _get_embed_entity(payload: dict) -> dict:
+def _get_embed_entity(
+    payload: dict,
+    *,
+    expected_type: str = "playlist",
+) -> dict:
     current: object = payload
     for key in ("props", "pageProps", "state", "data", "entity"):
         if not isinstance(current, dict):
             break
         current = current.get(key)
 
-    if not isinstance(current, dict) or current.get("type") != "playlist":
+    if (
+        not isinstance(current, dict)
+        or current.get("type") != expected_type
+    ):
         raise RuntimeError(
-            "Spotify public page did not contain playlist metadata."
+            "Spotify public page did not contain expected metadata."
         )
 
     return current
+
+
+def _embed_artist_name(entity: dict) -> str | None:
+    """Read artist labels from the public embed page's known shapes."""
+
+    for key in ("subtitle", "artistName", "artist"):
+        value = entity.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    artists = entity.get("artists")
+    if not isinstance(artists, list):
+        return None
+    names = [
+        str(artist.get("name") or "").strip()
+        for artist in artists
+        if isinstance(artist, dict)
+    ]
+    return ", ".join(name for name in names if name) or None
 
 
 def _get_partner_playlist(payload: dict) -> dict:

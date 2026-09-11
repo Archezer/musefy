@@ -2272,7 +2272,7 @@ class MainWindow(QMainWindow):
         header.sectionClicked.connect(self._handle_library_sort)
         self.track_table.setColumnHidden(
             1,
-            not self._show_track_covers and not self._add_tracks_mode,
+            not self._show_track_covers,
         )
         self.track_table.setColumnHidden(6, True)
         self.track_table.setColumnHidden(7, True)
@@ -2464,7 +2464,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "track_table"):
             self.track_table.setColumnHidden(
                 1,
-                not self._show_track_covers and not self._add_tracks_mode,
+                not self._show_track_covers,
             )
             self._render_visible_tracks(self.library_title_label.text())
 
@@ -4912,6 +4912,7 @@ class MainWindow(QMainWindow):
             self._add_tracks_selected_ids.add(track_id)
         else:
             self._add_tracks_selected_ids.discard(track_id)
+        self.track_table.set_selected_ids(self._add_tracks_selected_ids)
         self._update_add_tracks_controls()
         for row_index, track in enumerate(self._visible_tracks):
             if track.id == track_id:
@@ -7146,6 +7147,7 @@ class MainWindow(QMainWindow):
         thread = YouTubeTaskThread(
             lambda: self.youtube_import_service.download_and_import(
                 candidate,
+                source=dialog.import_source,
             ),
             self,
         )
@@ -8805,6 +8807,7 @@ class MainWindow(QMainWindow):
         candidates = [
             candidate for candidate in result if isinstance(candidate, YouTubeCandidate)
         ]
+        dialog.set_import_source("youtube")
         dialog.set_candidates(candidates)
 
     def _handle_youtube_playlist_search_result(
@@ -8880,11 +8883,13 @@ class MainWindow(QMainWindow):
         result: object,
     ) -> None:
         if isinstance(result, SpotifySearchResult):
+            dialog.set_import_source("spotify")
             dialog.set_search_query(result.query)
             dialog.set_candidates(list(result.candidates))
             return
 
         if isinstance(result, SpotifyPlaylistSearchResult):
+            dialog.set_import_source("spotify")
             dialog.set_search_query(result.playlist_name)
             dialog.set_candidates(
                 list(result.candidates),
@@ -8920,6 +8925,7 @@ class MainWindow(QMainWindow):
         candidates = [
             candidate for candidate in result if isinstance(candidate, YouTubeCandidate)
         ]
+        dialog.set_import_source("youtube")
         dialog.set_candidates(
             candidates,
             playlist=True,

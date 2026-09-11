@@ -49,6 +49,72 @@ def test_spotify_track_metadata_builds_youtube_query(monkeypatch) -> None:
     assert track.search_query == "$uicideboy$ - Antarctica"
 
 
+def test_spotify_track_reads_embed_artist_when_oembed_omits_it(monkeypatch) -> None:
+    responses = [
+        FakeResponse(
+            json.dumps(
+                {
+                    "title": "Antarctica",
+                    "thumbnail_url": "https://i.scdn.co/image/oembed-cover",
+                }
+            ).encode()
+        ),
+        FakeResponse(
+            b'<script id="__NEXT_DATA__" type="application/json">'
+            b'{"props":{"pageProps":{"state":{"data":{"entity":'
+            b'{"type":"track","name":"Antarctica",'
+            b'"subtitle":"$uicideboy$"}}}}}}</script>'
+        ),
+    ]
+
+    def fake_urlopen(request, timeout):
+        assert timeout == 10
+        return responses.pop(0)
+
+    monkeypatch.setattr(spotify_source, "urlopen", fake_urlopen)
+
+    track = SpotifyMetadataProvider().get_track(
+        "https://open.spotify.com/track/track-1"
+    )
+
+    assert track.search_query == "$uicideboy$ - Antarctica"
+    assert track.cover_url == "https://i.scdn.co/image/oembed-cover"
+
+
+def test_spotify_track_reads_embed_cover_when_oembed_omits_it(monkeypatch) -> None:
+    responses = [
+        FakeResponse(
+            json.dumps(
+                {
+                    "title": "Antarctica",
+                    "author_name": "$uicideboy$",
+                }
+            ).encode()
+        ),
+        FakeResponse(
+            b'<script id="__NEXT_DATA__" type="application/json">'
+            b'{"props":{"pageProps":{"state":{"data":{"entity":'
+            b'{"type":"track","name":"Antarctica",'
+            b'"subtitle":"$uicideboy$","coverArt":{"sources":['
+            b'{"url":"https://i.scdn.co/image/embed-cover",'
+            b'"width":300,"height":300}]}}}}}}}</script>'
+        ),
+    ]
+
+    monkeypatch.setattr(
+        spotify_source,
+        "urlopen",
+        lambda request, timeout: responses.pop(0),
+    )
+
+    track = SpotifyMetadataProvider().get_track(
+        "https://open.spotify.com/track/track-1"
+    )
+
+    assert track.artist == "$uicideboy$"
+    assert track.cover_url == "https://i.scdn.co/image/embed-cover"
+
+
 def test_spotify_provider_rejects_non_track_url() -> None:
     with pytest.raises(ValueError, match="Spotify track"):
         SpotifyMetadataProvider().get_track(
@@ -228,6 +294,33 @@ class FakeSpotifyOAuthClient:
     ) -> dict:
         self.requests.append((path, params))
         return self.responses.pop(0)
+
+
+def test_authenticated_spotify_track_parses_album_cover() -> None:
+    oauth_client = FakeSpotifyOAuthClient(
+        [
+            {
+                "type": "track",
+                "name": "Antarctica",
+                "artists": [{"name": "$uicideboy$"}],
+                "album": {
+                    "images": [
+                        {
+                            "url": "https://i.scdn.co/image/album-cover",
+                            "width": 300,
+                            "height": 300,
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+
+    track = SpotifyMetadataProvider(
+        oauth_client=oauth_client,
+    ).get_authenticated_track("https://open.spotify.com/track/track-1")
+
+    assert track.cover_url == "https://i.scdn.co/image/album-cover"
 
 
 def test_authenticated_spotify_playlist_is_paginated() -> None:
