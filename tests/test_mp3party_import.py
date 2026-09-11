@@ -260,6 +260,10 @@ def test_mp3party_prefers_the_site_download_endpoint(monkeypatch) -> None:
     page_url = "https://mp3party.net/music/11377383"
     stream_url = "https://dl2.mp3party.net/online/11377383.mp3"
     download_url = "https://dl2.mp3party.net/download/11377383"
+    banner_url = (
+        "https://mp3party.net/yabanner?url="
+        "https%3A%2F%2Fdl2.mp3party.net%2Fdownload%2F11377383"
+    )
     calls: list[str] = []
 
     def fake_urlopen(request, *, timeout):
@@ -267,6 +271,8 @@ def test_mp3party_prefers_the_site_download_endpoint(monkeypatch) -> None:
         calls.append(request.full_url)
         if request.full_url == page_url:
             return _FakeResponse(TRACK_HTML_WITH_DOWNLOAD_ENDPOINT)
+        if request.full_url == banner_url:
+            return _FakeResponse("download countdown")
         if request.full_url == download_url:
             return _FakeResponse(b"ID3" + b"audio")
         if request.full_url == stream_url:
@@ -274,10 +280,11 @@ def test_mp3party_prefers_the_site_download_endpoint(monkeypatch) -> None:
         raise AssertionError(f"Unexpected URL: {request.full_url}")
 
     monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+    monkeypatch.setattr(mp3party_import.time, "sleep", lambda _seconds: None)
 
     track = Mp3PartyImportService(_FakeIngestionService()).download(page_url)
 
-    assert calls == [page_url, download_url]
+    assert calls == [page_url, banner_url, download_url]
     assert track.source_id == "11377383"
 
 
@@ -307,6 +314,10 @@ def test_mp3party_unwraps_yabanner_download_endpoint(monkeypatch) -> None:
     )
 
     assert candidate.download_url == download_url
+    assert candidate.download_page_url == (
+        "https://mp3party.net/yabanner?url="
+        "https%3A%2F%2Fdl2.mp3party.net%2Fdownload%2F11377383"
+    )
 
 
 def test_mp3party_rejects_error_text_with_audio_mime_type(
@@ -330,6 +341,55 @@ def test_mp3party_rejects_error_text_with_audio_mime_type(
         )
 
     assert not output_path.exists()
+
+
+def test_mp3party_retries_download_endpoint_until_file_is_ready(monkeypatch) -> None:
+    page_url = "https://mp3party.net/music/11377383"
+    download_url = "https://dl2.mp3party.net/download/11377383"
+    banner_url = (
+        "https://mp3party.net/yabanner?url="
+        "https%3A%2F%2Fdl2.mp3party.net%2Fdownload%2F11377383"
+    )
+    page_html = """
+    <div class="track__user-panel"
+         data-js-artist-name="Yeat"
+         data-js-id="11377383"
+         data-js-song-title="2TONE"
+         data-js-url="https://dl2.mp3party.net/online/11377383.mp3"></div>
+    <a class="c-button c-button_download js-dw-btn"
+       data-track-id="11377383"
+       href="/yabanner?url=https%3A%2F%2Fdl2.mp3party.net%2Fdownload%2F11377383"></a>
+    """
+    responses = [
+        _FakeResponse(page_html),
+        _FakeResponse("download countdown"),
+        _FakeResponse(b"failed to get file info: nil\n"),
+        _FakeResponse(b"failed to get file info: nil\n"),
+        _FakeResponse(b"ID3" + b"audio"),
+    ]
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 120
+        calls.append(request.full_url)
+        return responses.pop(0)
+
+    monkeypatch.setattr(mp3party_import, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        mp3party_import.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    track = Mp3PartyImportService(_FakeIngestionService()).download(page_url)
+
+    assert calls == [page_url, banner_url, download_url, download_url, download_url]
+    assert sleeps == [
+        mp3party_import.MP3PARTY_FILE_INFO_RETRY_DELAY_SECONDS,
+        mp3party_import.MP3PARTY_FILE_INFO_RETRY_DELAY_SECONDS,
+    ]
+    assert track.source_id == "11377383"
 
 
 def test_mp3party_direct_url_selects_the_requested_track(monkeypatch) -> None:

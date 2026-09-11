@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -20,8 +22,17 @@ SUPPORTED_MP3PARTY_HOSTS = {
     "www.mp3party.net",
 }
 MP3PARTY_BASE_URL = "https://mp3party.net"
-MP3PARTY_USER_AGENT = "Mozilla/5.0 (compatible; Musefy/0.1)"
+MP3PARTY_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
 MP3PARTY_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+# MP3Party's download page can return ``failed to get file info: nil`` for a
+# short time while its server prepares the file. A browser hides this by
+# waiting on the advertising interstitial and following the link afterwards.
+MP3PARTY_FILE_INFO_MAX_ATTEMPTS = 5
+MP3PARTY_FILE_INFO_RETRY_DELAY_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +53,9 @@ class Mp3PartyCandidate:
     # Position in the source playlist, when the candidate was found as part
     # of a playlist retry search.  Direct searches leave it unset.
     playlist_position: int | None = None
+    # Keep the original advertising URL because MP3Party requires it to be
+    # opened before the unwrapped download endpoint becomes ready.
+    download_page_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +65,10 @@ class Mp3PartyPlaylistImportResult:
     imported: tuple[Track, ...]
     failed: tuple[tuple[Mp3PartyCandidate, str], ...]
     imported_candidates: tuple[tuple[Mp3PartyCandidate, Track], ...] = ()
+
+
+class Mp3PartyFileInfoError(RuntimeError):
+    """The MP3Party server has not prepared the requested file yet."""
 
 
 class _Mp3PartyHTMLParser(HTMLParser):
@@ -151,6 +169,8 @@ class Mp3PartyImportService:
 
         self.ingestion_service = ingestion_service
         self.timeout_seconds = timeout_seconds
+        self._cookies: dict[str, str] = {}
+        self._cookie_lock = Lock()
 
     def search(
         self,
@@ -242,11 +262,35 @@ class Mp3PartyImportService:
     def download(self, source: str | Mp3PartyCandidate) -> Track:
         """Download one MP3Party MP3 and import it into the local library."""
 
-        candidate = (
-            source
-            if isinstance(source, Mp3PartyCandidate)
-            else self.candidate_from_url(source)
-        )
+        source_is_candidate = isinstance(source, Mp3PartyCandidate)
+        candidate = source if source_is_candidate else self.candidate_from_url(source)
+
+        # Search results contain track metadata but do not necessarily visit
+        # the track page first. MP3Party sets the session cookie used by its
+        # download endpoint on that page, so prime the session as a browser
+        # does. A failed warm-up must not prevent the direct stream fallback.
+        if source_is_candidate:
+            try:
+                page_entries, _, _ = self._read_page(candidate.url)
+                page_candidate = next(
+                    (
+                        page_candidate
+                        for page_candidate in self._build_candidates(page_entries)
+                        if page_candidate.track_id == candidate.track_id
+                    ),
+                    None,
+                )
+                if page_candidate is not None and page_candidate.download_url:
+                    candidate = replace(
+                        candidate,
+                        download_url=page_candidate.download_url,
+                        download_page_url=(
+                            page_candidate.download_page_url
+                            or candidate.download_page_url
+                        ),
+                    )
+            except RuntimeError:
+                pass
 
         with TemporaryDirectory(prefix="music-recommendation-mp3party-") as directory:
             download_urls = tuple(
@@ -257,29 +301,77 @@ class Mp3PartyImportService:
                 )
             )
             last_error: Exception | None = None
+            prepared_download_urls: set[str] = set()
+
+            if candidate.download_url:
+                try:
+                    self._prepare_download_page(
+                        candidate.download_page_url
+                        or _build_mp3party_yabanner_url(candidate.download_url),
+                        referer=candidate.url,
+                    )
+                    prepared_download_urls.add(candidate.download_url)
+                except RuntimeError:
+                    pass
 
             for attempt, audio_url in enumerate(download_urls):
                 output_path = Path(directory) / (
                     f"{candidate.track_id}-{attempt}.mp3"
                 )
-                try:
-                    self._download_audio(
-                        audio_url,
-                        output_path,
-                        referer=candidate.url,
+                is_download_endpoint = _is_mp3party_download_endpoint(audio_url)
+                download_referer = candidate.url
+                if is_download_endpoint:
+                    download_referer = (
+                        candidate.download_page_url
+                        or _build_mp3party_yabanner_url(audio_url)
                     )
-                    return self.ingestion_service.ingest(
-                        output_path,
-                        title=candidate.title,
-                        artist=candidate.artist,
-                        fallback_title=output_path.stem,
-                        source="mp3party",
-                        source_id=candidate.track_id,
-                        source_url=candidate.url,
-                        cover_url=candidate.cover_url,
-                    )
-                except (OSError, RuntimeError, ValueError) as error:
-                    last_error = error
+                max_attempts = (
+                    MP3PARTY_FILE_INFO_MAX_ATTEMPTS
+                    if is_download_endpoint
+                    else 1
+                )
+                for retry in range(max_attempts):
+                    try:
+                        self._download_audio(
+                            audio_url,
+                            output_path,
+                            referer=download_referer,
+                        )
+                        return self.ingestion_service.ingest(
+                            output_path,
+                            title=candidate.title,
+                            artist=candidate.artist,
+                            fallback_title=output_path.stem,
+                            source="mp3party",
+                            source_id=candidate.track_id,
+                            source_url=candidate.url,
+                            cover_url=candidate.cover_url,
+                        )
+                    except Mp3PartyFileInfoError as error:
+                        last_error = error
+                        if (
+                            _is_mp3party_download_endpoint(audio_url)
+                            and audio_url not in prepared_download_urls
+                        ):
+                            landing_url = (
+                                candidate.download_page_url
+                                or _build_mp3party_yabanner_url(audio_url)
+                            )
+                            try:
+                                self._prepare_download_page(
+                                    landing_url,
+                                    referer=candidate.url,
+                                )
+                            except RuntimeError:
+                                pass
+                            prepared_download_urls.add(audio_url)
+                            continue
+                        if retry + 1 < max_attempts:
+                            time.sleep(MP3PARTY_FILE_INFO_RETRY_DELAY_SECONDS)
+                            continue
+                    except (OSError, RuntimeError, ValueError) as error:
+                        last_error = error
+                    break
 
             if last_error is not None:
                 raise last_error
@@ -339,14 +431,17 @@ class Mp3PartyImportService:
     ) -> tuple[list[dict[str, object]], tuple[str, ...], tuple[str, ...]]:
         request = Request(
             url,
-            headers={
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "ru,en;q=0.8",
-                "User-Agent": MP3PARTY_USER_AGENT,
-            },
+            headers=self._request_headers(
+                {
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "ru,en;q=0.8",
+                    "User-Agent": MP3PARTY_USER_AGENT,
+                }
+            ),
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
+                self._remember_response_cookies(response)
                 html = response.read().decode("utf-8", errors="replace")
         except HTTPError as error:
             if error.code == 451:
@@ -432,6 +527,19 @@ class Mp3PartyImportService:
             artist = str(entry.get("artist") or "").strip()
             audio_url = str(entry.get("audio_url") or "").strip()
             download_url = str(entry.get("download_url") or "").strip()
+            absolute_download_url = urljoin(MP3PARTY_BASE_URL, download_url)
+            absolute_download_path = (
+                urlparse(absolute_download_url).path.rstrip("/").casefold()
+            )
+            download_page_url = (
+                absolute_download_url
+                if absolute_download_path == "/yabanner"
+                else (
+                    _build_mp3party_yabanner_url(absolute_download_url)
+                    if _is_mp3party_download_endpoint(absolute_download_url)
+                    else None
+                )
+            )
             if (
                 not track_id.isdigit()
                 or track_id in seen_ids
@@ -466,6 +574,7 @@ class Mp3PartyImportService:
                         if download_url
                         else None
                     ),
+                    download_page_url=download_page_url,
                 )
             )
             seen_ids.add(track_id)
@@ -479,19 +588,34 @@ class Mp3PartyImportService:
         *,
         referer: str | None = None,
     ) -> None:
-        headers = {
-            "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.1",
-            "User-Agent": MP3PARTY_USER_AGENT,
-        }
+        if _is_mp3party_download_endpoint(audio_url):
+            headers = {
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;"
+                    "q=0.9,image/avif,image/webp,*/*;q=0.8"
+                ),
+                "Accept-Language": "ru,en;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-site",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": MP3PARTY_USER_AGENT,
+            }
+        else:
+            headers = {
+                "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.1",
+                "User-Agent": MP3PARTY_USER_AGENT,
+            }
         if referer:
             headers["Referer"] = referer
 
         request = Request(
             audio_url,
-            headers=headers,
+            headers=self._request_headers(headers),
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
+                self._remember_response_cookies(response)
                 content_type = str(
                     response.headers.get("Content-Type") or ""
                 ).casefold()
@@ -527,6 +651,71 @@ class Mp3PartyImportService:
             output_path.unlink(missing_ok=True)
             raise RuntimeError("Could not download audio from MP3Party.") from error
 
+    def _prepare_download_page(
+        self,
+        url: str,
+        *,
+        referer: str | None = None,
+    ) -> None:
+        """Open MP3Party's ad interstitial before following its skip link."""
+
+        headers = {
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "ru,en;q=0.8",
+            "User-Agent": MP3PARTY_USER_AGENT,
+        }
+        if referer:
+            headers["Referer"] = referer
+
+        request = Request(url, headers=self._request_headers(headers))
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                self._remember_response_cookies(response)
+                response.read()
+        except HTTPError as error:
+            raise RuntimeError(
+                f"MP3Party download page failed ({error.code})."
+            ) from error
+        except (OSError, URLError, TimeoutError) as error:
+            raise RuntimeError(
+                "Could not open MP3Party download page."
+            ) from error
+
+    def _request_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        request_headers = dict(headers)
+        with self._cookie_lock:
+            cookie_header = "; ".join(
+                f"{name}={value}" for name, value in self._cookies.items()
+            )
+        if cookie_header:
+            request_headers["Cookie"] = cookie_header
+        return request_headers
+
+    def _remember_response_cookies(self, response: object) -> None:
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return
+
+        get_all = getattr(headers, "get_all", None)
+        if callable(get_all):
+            raw_values = get_all("Set-Cookie") or []
+        else:
+            raw_value = headers.get("Set-Cookie")
+            raw_values = [raw_value] if raw_value else []
+
+        cookies: dict[str, str] = {}
+        for raw_value in raw_values:
+            cookie_pair = str(raw_value).split(";", 1)[0].strip()
+            if "=" not in cookie_pair:
+                continue
+            name, value = cookie_pair.split("=", 1)
+            if name.strip():
+                cookies[name.strip()] = value.strip()
+
+        if cookies:
+            with self._cookie_lock:
+                self._cookies.update(cookies)
+
 
 def _normalize_mp3party_download_url(value: str) -> str:
     """Unwrap MP3Party's advertising page to its actual audio URL."""
@@ -547,6 +736,15 @@ def _normalize_mp3party_download_url(value: str) -> str:
     return nested_url
 
 
+def _is_mp3party_download_endpoint(value: str) -> bool:
+    path = urlparse(value).path.rstrip("/").casefold()
+    return path.endswith("/download") or "/download/" in path
+
+
+def _build_mp3party_yabanner_url(audio_url: str) -> str:
+    return f"{MP3PARTY_BASE_URL}/yabanner?{urlencode({'url': audio_url})}"
+
+
 def _validate_mp3party_audio(file_path: Path) -> None:
     """Reject MP3Party error pages saved with an audio MIME type."""
 
@@ -555,9 +753,9 @@ def _validate_mp3party_audio(file_path: Path) -> None:
 
     text_sample = sample.lstrip().decode("utf-8", errors="replace").strip()
     if text_sample.casefold().startswith("failed to get file info"):
-        raise RuntimeError(
-            "MP3Party returned an invalid audio response: "
-            f"{text_sample}"
+        raise Mp3PartyFileInfoError(
+            "MP3Party file server is not ready yet "
+            f"({text_sample[:256]})."
         )
 
     if sample.startswith(b"ID3"):
