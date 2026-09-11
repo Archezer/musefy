@@ -13,6 +13,14 @@ QMainWindow, QWidget#appRoot {
 QWidget#contentOverlay, QWidget#mapLayer, QSplitter {
     background: transparent;
 }
+QSplitter#contentSplitter::handle:horizontal {
+    width: 8px;
+    border: none;
+    background: transparent;
+}
+QSplitter#contentSplitter::handle:horizontal:hover {
+    background: transparent;
+}
 QFrame#glassPanel, QFrame#playerBar, QFrame#topBar,
 QFrame#playlistStrip, QFrame#graphStage {
     background-color: rgba(27, 29, 33, 166);

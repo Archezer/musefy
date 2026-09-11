@@ -1,6 +1,5 @@
 import ctypes
 import os
-import subprocess
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -44,7 +43,6 @@ _NATIVE_MUSEFY_ICON_HANDLE = None
 
 
 def main() -> None:
-    _redirect_windows_source_launch_to_native_host()
     _set_windows_app_user_model_id()
     create_database()
 
@@ -195,39 +193,6 @@ def _schedule_optional_hybrid_ranker_load(
         name="musefy-ranker-loader",
         daemon=True,
     ).start()
-
-
-def _redirect_windows_source_launch_to_native_host() -> None:
-    """Keep accidental Python launches out of the Windows taskbar.
-
-    The installed project contains a small native host so the taskbar can use
-    Musefy's executable identity and icon. A user may still open
-    ``desktop.py`` or an old Python shortcut, so redirect that launch before
-    creating a Qt window. The native host marks its embedded interpreter with
-    an environment flag and therefore passes through this guard.
-    """
-
-    if sys.platform != "win32" or os.environ.get("MUSEFY_NATIVE_HOST") == "1":
-        return
-
-    project_root = Path(__file__).resolve().parents[1]
-    native_host = project_root / "Musefy.exe"
-    if not native_host.is_file():
-        return
-
-    try:
-        subprocess.Popen(
-            [str(native_host)],
-            cwd=str(project_root),
-            close_fds=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except OSError:
-        # Source development remains usable if the optional generated host is
-        # unavailable or cannot be started.
-        return
-
-    raise SystemExit(0)
 
 
 def _ensure_current_user(

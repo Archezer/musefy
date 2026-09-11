@@ -6,7 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
@@ -58,6 +58,9 @@ class MapBuildResult:
 MAP_MAX_NEIGHBOR_COUNT = 15
 MAP_SIMILARITY_THRESHOLD = 0.62
 MAP_EDGE_STRATEGY_VERSION = 7
+MAP_FULL_DETAIL_NODE_LIMIT = 1800
+MAP_FAST_EDGE_LIMIT = 24000
+MAP_COLOR_MODES = ("colorful", "monochrome")
 
 
 class MusicMapWidget(QWidget):
@@ -75,6 +78,7 @@ class MusicMapWidget(QWidget):
         self._snapshot: QImage | None = None
         self._snapshot_signature: tuple[tuple[str, int], ...] = ()
         self._is_loading = False
+        self._color_mode = "colorful"
         self._mode = "focus"
         self._zoom = 1.0
         self._pan = QPointF()
@@ -83,10 +87,28 @@ class MusicMapWidget(QWidget):
         self._drag_start_position: QPointF | None = None
         self._is_panning = False
         self._hovered_node_index: int | None = None
+        self._screen_points_cache = np.empty((0, 2), dtype=np.float32)
+        self._screen_cache_key: tuple[object, ...] | None = None
+        self._points_revision = 0
+        self._pending_hover_position: QPointF | None = None
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(16)
+        self._hover_timer.timeout.connect(self._flush_hover)
         self.setMouseTracking(True)
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+        self.update()
+
+    def set_color_mode(self, mode: str) -> None:
+        if mode not in MAP_COLOR_MODES:
+            raise ValueError(f"Unknown music map color mode: {mode}")
+        if self._color_mode == mode:
+            return
+        self._color_mode = mode
+        self._snapshot = None
+        self._snapshot_signature = ()
         self.update()
 
     def set_tracks(self, tracks: list[Track]) -> None:
@@ -192,10 +214,12 @@ class MusicMapWidget(QWidget):
         self._nodes = result.nodes
         self._edges = result.edges
         self._points = result.points.copy()
+        self._points_revision += 1
+        self._screen_cache_key = None
         self._map_data_ready = True
         self._snapshot = None
         self._snapshot_signature = ()
-        self._is_loading = False
+        self.set_loading(False)
         self._reset_view()
         self.update()
 
@@ -347,11 +371,26 @@ class MusicMapWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        if self._mode == "focus" and self._is_loading:
+            self._paint_loading_placeholder(painter)
+            return
+
         if self._mode != "focus" and self._snapshot is not None:
             painter.drawImage(self.rect(), self._snapshot)
             return
 
         self._paint_graph(painter)
+
+    def _paint_loading_placeholder(self, painter: QPainter) -> None:
+        """Show a quiet status on the same dark surface as the graph."""
+
+        painter.fillRect(self.rect(), QColor(15, 17, 19))
+        painter.setPen(QColor(174, 181, 185, 190))
+        painter.drawText(
+            self.rect(),
+            Qt.AlignmentFlag.AlignCenter,
+            "Preparing music graph…",
+        )
 
     def _paint_graph(self, painter: QPainter) -> None:
 
@@ -371,6 +410,16 @@ class MusicMapWidget(QWidget):
             return
 
         positions = self._screen_positions()
+        quick_render = (
+            self._is_panning
+            or self._active_node_index is not None
+            or len(self._nodes) > MAP_FULL_DETAIL_NODE_LIMIT
+        )
+
+        if quick_render:
+            self._paint_fast_graph(painter, positions)
+            return
+
         degrees = np.zeros(len(self._nodes), dtype=np.int16)
         for edge in self._edges:
             degrees[edge.left_index] += 1
@@ -402,6 +451,45 @@ class MusicMapWidget(QWidget):
             )
             painter.drawEllipse(position, radius, radius)
 
+    def _paint_fast_graph(
+        self,
+        painter: QPainter,
+        positions: tuple[QPointF, ...],
+    ) -> None:
+        """Paint a cheaper LOD while panning or for very large maps."""
+
+        if self._color_mode == "monochrome":
+            painter.setPen(QPen(QColor(133, 151, 164, 42), 0.6))
+            for edge in self._edges[:MAP_FAST_EDGE_LIMIT]:
+                painter.drawLine(
+                    positions[edge.left_index],
+                    positions[edge.right_index],
+                )
+        else:
+            for edge in self._edges[:MAP_FAST_EDGE_LIMIT]:
+                colour = self._node_color(edge.left_index)
+                alpha = int(18 + edge.strength * 34)
+                painter.setPen(QPen(QColor(*colour, alpha), 0.6))
+                painter.drawLine(
+                    positions[edge.left_index],
+                    positions[edge.right_index],
+                )
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        if self._color_mode == "monochrome":
+            painter.setBrush(QColor(126, 153, 163, 205))
+            for position in positions:
+                painter.drawEllipse(position, 1.55, 1.55)
+        else:
+            for index, position in enumerate(positions):
+                painter.setBrush(QColor(*self._node_color(index), 220))
+                painter.drawEllipse(position, 1.55, 1.55)
+
+        if self._hovered_node_index is not None:
+            position = positions[self._hovered_node_index]
+            painter.setBrush(QColor(246, 246, 248, 235))
+            painter.drawEllipse(position, 4.2, 4.2)
+
     def wheelEvent(self, event: object) -> None:
         if not self._nodes:
             return
@@ -414,6 +502,8 @@ class MusicMapWidget(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
+        self._hover_timer.stop()
+        self._pending_hover_position = None
         position = event.position()
         self._last_pointer_position = position
         self._drag_start_position = position
@@ -438,7 +528,9 @@ class MusicMapWidget(QWidget):
             self.update()
             return
 
-        self._update_hover(position)
+        self._pending_hover_position = position
+        if not self._hover_timer.isActive():
+            self._hover_timer.start()
 
     def mouseReleaseEvent(self, event: object) -> None:
         active_node_index = self._active_node_index
@@ -457,7 +549,9 @@ class MusicMapWidget(QWidget):
         self._drag_start_position = None
 
         if was_panning:
-            self._update_hover(event.position())
+            self._pending_hover_position = event.position()
+            if not self._hover_timer.isActive():
+                self._hover_timer.start()
         self.update()
 
     def mouseDoubleClickEvent(self, _event: object) -> None:
@@ -465,12 +559,16 @@ class MusicMapWidget(QWidget):
         self.update()
 
     def leaveEvent(self, _event: object) -> None:
+        self._hover_timer.stop()
+        self._pending_hover_position = None
         self._hovered_node_index = None
         QToolTip.hideText()
         self.unsetCursor()
         self.update()
 
     def _node_color(self, index: int) -> tuple[int, int, int]:
+        if self._color_mode == "monochrome":
+            return (151, 162, 166)
         return COMMUNITY_COLORS[
             self._nodes[index].community % len(COMMUNITY_COLORS)
         ]
@@ -494,6 +592,12 @@ class MusicMapWidget(QWidget):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.update()
 
+    def _flush_hover(self) -> None:
+        position = self._pending_hover_position
+        self._pending_hover_position = None
+        if position is not None and not self._is_panning:
+            self._update_hover(position)
+
     def _move_node(self, node_index: int, position: QPointF) -> None:
         center = self.rect().center()
         radius_x, radius_y = self._radii()
@@ -507,27 +611,54 @@ class MusicMapWidget(QWidget):
             dtype=np.float32,
         )
         self._points[node_index] = np.clip(point, -1.2, 1.2)
+        self._points_revision += 1
+        self._screen_cache_key = None
 
     def _nearest_node_index(self, position: QPointF) -> int | None:
-        nearest_index: int | None = None
-        nearest_distance = 15.0
-        for index, node_position in enumerate(self._screen_positions()):
-            distance = self._distance(node_position, position)
-            if distance < nearest_distance:
-                nearest_index = index
-                nearest_distance = distance
-        return nearest_index
+        screen_points = self._screen_point_array()
+        if not len(screen_points):
+            return None
 
-    def _screen_positions(self) -> list[QPointF]:
+        delta = screen_points - np.asarray(
+            [position.x(), position.y()],
+            dtype=np.float32,
+        )
+        distances_squared = np.einsum("ij,ij->i", delta, delta)
+        nearest_index = int(np.argmin(distances_squared))
+        return nearest_index if distances_squared[nearest_index] < 225.0 else None
+
+    def _screen_point_array(self) -> np.ndarray:
         center = self.rect().center()
         radius_x, radius_y = self._radii()
-        return [
-            QPointF(
-                center.x() + self._pan.x() + point[0] * radius_x * self._zoom,
-                center.y() + self._pan.y() + point[1] * radius_y * self._zoom,
-            )
-            for point in self._points
-        ]
+        cache_key = (
+            self.width(),
+            self.height(),
+            float(self._zoom),
+            float(self._pan.x()),
+            float(self._pan.y()),
+            self._points_revision,
+        )
+        if cache_key != self._screen_cache_key:
+            self._screen_points_cache = np.empty_like(self._points)
+            if len(self._points):
+                self._screen_points_cache[:, 0] = (
+                    center.x()
+                    + self._pan.x()
+                    + self._points[:, 0] * radius_x * self._zoom
+                )
+                self._screen_points_cache[:, 1] = (
+                    center.y()
+                    + self._pan.y()
+                    + self._points[:, 1] * radius_y * self._zoom
+                )
+            self._screen_cache_key = cache_key
+        return self._screen_points_cache
+
+    def _screen_positions(self) -> tuple[QPointF, ...]:
+        return tuple(
+            QPointF(float(point[0]), float(point[1]))
+            for point in self._screen_point_array()
+        )
 
     def _radii(self) -> tuple[float, float]:
         return (
@@ -540,6 +671,7 @@ class MusicMapWidget(QWidget):
         self._pan = QPointF()
         self._active_node_index = None
         self._hovered_node_index = None
+        self._screen_cache_key = None
 
     @staticmethod
     def _distance(left: QPointF, right: QPointF) -> float:

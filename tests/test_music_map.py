@@ -90,6 +90,35 @@ def test_map_track_percentage_uses_stable_share_of_analyzed_tracks() -> None:
     assert MusicMapWidget.select_tracks_for_percentage(tracks, 100) == tracks
 
 
+@pytest.mark.parametrize("percentage", tuple(range(10, 101, 10)))
+def test_map_track_percentage_uses_expected_number_of_tracks(
+    percentage: int,
+) -> None:
+    tracks = [
+        Track(
+            id=f"track-{index}",
+            title=f"Track {index}",
+            artist="Artist",
+            duration_ms=1,
+            track_embedding=(float(index), 1.0),
+        )
+        for index in range(25)
+    ]
+
+    selected = MusicMapWidget.select_tracks_for_percentage(
+        tracks,
+        percentage,
+    )
+
+    expected_count = (len(tracks) * percentage + 99) // 100
+    assert len(selected) == expected_count
+    assert {track.id for track in selected}.issubset(
+        {track.id for track in tracks}
+    )
+    if percentage == 100:
+        assert selected == tracks
+
+
 def test_map_track_percentage_rejects_invalid_values() -> None:
     with pytest.raises(ValueError, match="between 1 and 100"):
         MusicMapWidget.select_tracks_for_percentage([], 0)

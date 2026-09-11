@@ -206,7 +206,7 @@ from app.ui.dialogs import (
     YouTubeSearchDialog,
 )
 from app.ui.global_hotkeys import GlobalMediaHotkeys
-from app.ui.music_map import MapBuildResult, MusicMapWidget
+from app.ui.music_map import MAP_COLOR_MODES, MapBuildResult, MusicMapWidget
 from app.ui.playback_metrics import reached_completion_threshold
 from app.ui.theme import DARK_THEME
 from app.ui.virtual_track_table import VirtualTrackTable
@@ -504,6 +504,13 @@ class MainWindow(QMainWindow):
                 type=int,
             )
         )
+        self._music_map_color_mode = self._clamp_music_map_color_mode(
+            self._playback_state_settings.value(
+                "appearance/music_map_color_mode",
+                "colorful",
+                type=str,
+            )
+        )
         self._loudness_normalization_enabled = bool(
             self._volume_settings.value(
                 "playback/loudness_normalization",
@@ -706,6 +713,7 @@ class MainWindow(QMainWindow):
         map_layout = QVBoxLayout(self.map_layer)
         map_layout.setContentsMargins(0, 0, 0, 0)
         self.music_map = MusicMapWidget(self.map_layer)
+        self.music_map.set_color_mode(self._music_map_color_mode)
         self.music_map.track_activated.connect(self._select_track_from_map)
         self._map_blur = QGraphicsBlurEffect(self.music_map)
         self._map_blur.setBlurRadius(4.5)
@@ -1254,6 +1262,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(playlist_strip)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("contentSplitter")
+        splitter.setHandleWidth(8)
         splitter.setChildrenCollapsible(False)
 
         library_widget = self._build_library_panel()
@@ -1331,6 +1341,21 @@ class MainWindow(QMainWindow):
             self._set_music_map_track_percentage
         )
         self.map_track_percentage_combo.hide()
+        self.map_color_mode_combo = QComboBox(app_root)
+        self.map_color_mode_combo.setObjectName("mapColorModeCombo")
+        self.map_color_mode_combo.setFixedSize(142, 32)
+        self.map_color_mode_combo.setToolTip(
+            "Choose colorful or monochrome graph rendering"
+        )
+        self.map_color_mode_combo.addItem("Colorful", "colorful")
+        self.map_color_mode_combo.addItem("Monochrome", "monochrome")
+        self.map_color_mode_combo.setCurrentIndex(
+            MAP_COLOR_MODES.index(self._music_map_color_mode)
+        )
+        self.map_color_mode_combo.currentIndexChanged.connect(
+            self._set_music_map_color_mode
+        )
+        self.map_color_mode_combo.hide()
         self.queue_dialog = QueueDialog(self)
         self.queue_dialog.track_play_requested.connect(self._play_queued_track)
         self.setCentralWidget(app_root)
@@ -1594,8 +1619,26 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "map_track_percentage_combo"):
             combo = self.map_track_percentage_combo
+            if hasattr(self, "map_color_mode_combo"):
+                color_combo = self.map_color_mode_combo
+                color_x = max(
+                    16,
+                    root_rect.width() - color_combo.width() - 16,
+                )
+                color_combo.setGeometry(
+                    color_x,
+                    16,
+                    color_combo.width(),
+                    color_combo.height(),
+                )
+            else:
+                color_x = root_rect.width() - 16
             combo.setGeometry(
-                max(16, root_rect.width() - combo.width() - 16),
+                (
+                    max(16, color_x - combo.width() - 8)
+                    if hasattr(self, "map_color_mode_combo")
+                    else max(16, root_rect.width() - combo.width() - 16)
+                ),
                 16,
                 combo.width(),
                 combo.height(),
@@ -1967,11 +2010,13 @@ class MainWindow(QMainWindow):
             self.map_layer.setVisible(mode != "hidden")
             self.map_exit_button.setVisible(mode == "focus")
             self.map_track_percentage_combo.setVisible(mode == "focus")
+            self.map_color_mode_combo.setVisible(mode == "focus")
             if mode == "focus":
                 self.map_layer.raise_()
                 self._player_bar.raise_()
                 self.map_exit_button.raise_()
                 self.map_track_percentage_combo.raise_()
+                self.map_color_mode_combo.raise_()
             else:
                 self.map_layer.lower()
                 self._player_bar.raise_()
@@ -1980,6 +2025,7 @@ class MainWindow(QMainWindow):
         self.map_layer.show()
         self.map_exit_button.setVisible(mode == "focus")
         self.map_track_percentage_combo.setVisible(mode == "focus")
+        self.map_color_mode_combo.setVisible(mode == "focus")
         self._map_opacity_animation.stop()
         self._map_opacity_animation.setStartValue(self._map_opacity.opacity())
         self._map_opacity_animation.setEndValue(target_opacity)
@@ -1999,6 +2045,7 @@ class MainWindow(QMainWindow):
             self._player_bar.raise_()
             self.map_exit_button.raise_()
             self.map_track_percentage_combo.raise_()
+            self.map_color_mode_combo.raise_()
         else:
             self.map_layer.lower()
             self._player_bar.raise_()
@@ -2047,6 +2094,10 @@ class MainWindow(QMainWindow):
     def _clamp_music_map_percentage(value: int) -> int:
         return value if value in MAP_TRACK_PERCENTAGES else 100
 
+    @staticmethod
+    def _clamp_music_map_color_mode(value: str) -> str:
+        return value if value in MAP_COLOR_MODES else "colorful"
+
     def _set_music_map_track_percentage(self, index: int) -> None:
         percentage = self.map_track_percentage_combo.itemData(index)
         if not isinstance(percentage, int):
@@ -2060,6 +2111,24 @@ class MainWindow(QMainWindow):
         self._refresh_music_map(self._music_map_source_tracks)
         if self._music_map_mode == "focus":
             self._ensure_music_map_ready()
+
+    def _set_music_map_color_mode(self, index: int) -> None:
+        mode = self.map_color_mode_combo.itemData(index)
+        if not isinstance(mode, str) or mode not in MAP_COLOR_MODES:
+            return
+
+        self._music_map_color_mode = mode
+        self._playback_state_settings.setValue(
+            "appearance/music_map_color_mode",
+            mode,
+        )
+        self.music_map.set_color_mode(mode)
+        if (
+            self._music_map_mode != "focus"
+            and self.music_map.has_map_data_for(self._music_map_signature)
+        ):
+            self.music_map.capture_snapshot()
+            self._save_music_map_snapshot()
 
     def _ensure_music_map_ready(self) -> None:
         if self.music_map.has_map_data_for(self._music_map_signature):
