@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QApplication,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableView,
@@ -284,6 +285,7 @@ class VirtualTrackTable(QTableView):
     row_queue_requested = Signal(int)
     row_remove_requested = Signal(int)
     row_check_requested = Signal(int)
+    row_move_requested = Signal(int, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -295,8 +297,14 @@ class VirtualTrackTable(QTableView):
         self.add_mode = False
         self.playlist_open = False
         self.show_covers = True
+        self.reorder_enabled = False
         self.search_query = ""
         self.selected_ids: set[str] = set()
+        self._press_position: QPoint | None = None
+        self._press_row = -1
+        self._press_column = -1
+        self._dragging_row = -1
+        self._drop_row: int | None = None
         self._cover_pixmaps: dict[str, QPixmap] = {}
         self._row_text_cache: dict[str, tuple[str, str, str, str]] = {}
         self._text_for_track: Callable[[Track], tuple[str, str, str, str]] = (
@@ -320,18 +328,21 @@ class VirtualTrackTable(QTableView):
         *,
         add_mode: bool,
         playlist_open: bool,
+        reorder_enabled: bool = False,
         show_covers: bool,
         selected_ids: set[str],
         text_for_track: Callable[[Track], tuple[str, str, str, str]],
     ) -> None:
         self.add_mode = add_mode
         self.playlist_open = playlist_open
+        self.reorder_enabled = reorder_enabled and playlist_open and not add_mode
         self.show_covers = show_covers
         self.selected_ids = set(selected_ids)
         self._text_for_track = text_for_track
         self._row_text_cache.clear()
         self.hovered_row = -1
         self.hovered_column = -1
+        self._clear_drag_state()
         self._track_model.set_rows(tracks)
 
     def set_search_query(self, query: str) -> None:
@@ -394,18 +405,70 @@ class VirtualTrackTable(QTableView):
         self._row_text_cache.pop(track.id, None)
         self._track_model.replace_row(row_index, track)
 
+    def paintEvent(self, event: object) -> None:
+        super().paintEvent(event)
+        if self._dragging_row < 0 or self._drop_row is None:
+            return
+
+        indicator_y = self._drop_indicator_y(self._drop_row)
+        if indicator_y is None:
+            return
+
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(QColor("#5DD8B7"), 2.0))
+        left = 8
+        right = max(left, self.viewport().width() - 8)
+        painter.drawLine(left, indicator_y, right, indicator_y)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#B5FBE0"))
+        painter.drawEllipse(QPoint(left, indicator_y), 3, 3)
+        painter.drawEllipse(QPoint(right, indicator_y), 3, 3)
+        painter.end()
+
     def mouseMoveEvent(self, event) -> None:
-        index = self.indexAt(event.position().toPoint())
+        position = event.position().toPoint()
+        if (
+            self._press_row >= 0
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            if (
+                self._dragging_row < 0
+                and self._press_position is not None
+                and (
+                    position - self._press_position
+                ).manhattanLength()
+                >= QApplication.startDragDistance()
+            ):
+                self._dragging_row = self._press_row
+                self._drop_row = self._drop_insertion_row(position)
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self.viewport().update()
+
+            if self._dragging_row >= 0:
+                self._update_drop_indicator(position)
+                return
+
+        index = self.indexAt(position)
         row = index.row() if index.isValid() else -1
         column = index.column() if index.isValid() else -1
         interactive = index.isValid() and (
             column in {0, 8}
         )
-        self.viewport().setCursor(
-            Qt.CursorShape.PointingHandCursor
-            if interactive
-            else Qt.CursorShape.ArrowCursor
-        )
+        if (
+            self.reorder_enabled
+            and not self.add_mode
+            and index.isValid()
+            and column not in {6, 8}
+        ):
+            cursor = Qt.CursorShape.OpenHandCursor
+        else:
+            cursor = (
+                Qt.CursorShape.PointingHandCursor
+                if interactive
+                else Qt.CursorShape.ArrowCursor
+            )
+        self.viewport().setCursor(cursor)
         if (row, column) != (self.hovered_row, self.hovered_column):
             previous = self.hovered_row
             self.hovered_row = row
@@ -440,25 +503,116 @@ class VirtualTrackTable(QTableView):
     def mousePressEvent(self, event) -> None:
         index = self.indexAt(event.position().toPoint())
         if event.button() == Qt.MouseButton.LeftButton and index.isValid():
-            if index.column() == 0:
-                signal = (
-                    self.row_check_requested
-                    if self.add_mode
-                    else self.row_play_requested
-                )
-            else:
-                signal = {
-                    6: self.row_remove_requested,
-                    8: self.row_queue_requested,
-                }.get(index.column())
             if (
-                signal is not None
-                and (index.column() != 6 or self.playlist_open)
+                self.reorder_enabled
+                and not self.add_mode
+                and index.column() not in {6, 8}
             ):
-                signal.emit(index.row())
+                self._press_position = event.position().toPoint()
+                self._press_row = index.row()
+                self._press_column = index.column()
+                self.selectRow(index.row())
+                return
+
+            if self._emit_row_action(index.row(), index.column()):
                 return
             self.row_clicked.emit(index.row())
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._press_row >= 0
+        ):
+            source_row = self._press_row
+            source_column = self._press_column
+            drop_row = self._drop_row
+            was_dragging = self._dragging_row >= 0
+            self._clear_drag_state()
+
+            if was_dragging:
+                if drop_row is None:
+                    return
+                target_row = (
+                    drop_row - 1
+                    if source_row < drop_row
+                    else drop_row
+                )
+                if (
+                    0 <= target_row < self.rowCount()
+                    and target_row != source_row
+                ):
+                    self.row_move_requested.emit(source_row, target_row)
+                return
+
+            if not self._emit_row_action(source_row, source_column):
+                self.row_clicked.emit(source_row)
+            return
+
+        super().mouseReleaseEvent(event)
+
+    def _emit_row_action(self, row: int, column: int) -> bool:
+        if column == 0:
+            signal = (
+                self.row_check_requested
+                if self.add_mode
+                else self.row_play_requested
+            )
+        else:
+            signal = {
+                6: self.row_remove_requested,
+                8: self.row_queue_requested,
+            }.get(column)
+        if (
+            signal is not None
+            and (column != 6 or self.playlist_open)
+        ):
+            signal.emit(row)
+            return True
+        return False
+
+    def _drop_insertion_row(self, position: QPoint) -> int | None:
+        if self.rowCount() <= 0:
+            return None
+
+        index = self.indexAt(position)
+        if index.isValid():
+            rect = self.visualRect(index)
+            return index.row() + int(position.y() >= rect.center().y())
+
+        first_rect = self.visualRect(self.model().index(0, 0))
+        if position.y() < first_rect.top():
+            return 0
+        return self.rowCount()
+
+    def _drop_indicator_y(self, insertion_row: int) -> int | None:
+        if self.rowCount() <= 0:
+            return None
+        if insertion_row <= 0:
+            return self.visualRect(self.model().index(0, 0)).top()
+        if insertion_row >= self.rowCount():
+            return self.visualRect(
+                self.model().index(self.rowCount() - 1, 0)
+            ).bottom()
+        return self.visualRect(
+            self.model().index(insertion_row, 0)
+        ).top()
+
+    def _update_drop_indicator(self, position: QPoint) -> None:
+        drop_row = self._drop_insertion_row(position)
+        if drop_row == self._drop_row:
+            return
+        self._drop_row = drop_row
+        self.viewport().update()
+
+    def _clear_drag_state(self) -> None:
+        self._press_position = None
+        self._press_row = -1
+        self._press_column = -1
+        self._dragging_row = -1
+        self._drop_row = None
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        self.viewport().update()
 
     def mouseDoubleClickEvent(self, event) -> None:
         index = self.indexAt(event.position().toPoint())

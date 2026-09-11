@@ -2295,6 +2295,9 @@ class MainWindow(QMainWindow):
         self.track_table.row_check_requested.connect(self._handle_track_row_clicked)
         self.track_table.row_queue_requested.connect(self._enqueue_track_from_table_row)
         self.track_table.row_remove_requested.connect(self._remove_track_from_table_row)
+        self.track_table.row_move_requested.connect(
+            self._move_playlist_track_from_table
+        )
         self.track_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.track_table.customContextMenuRequested.connect(
             self._show_track_context_menu
@@ -2588,6 +2591,12 @@ class MainWindow(QMainWindow):
             self._visible_tracks,
             add_mode=self._add_tracks_mode,
             playlist_open=self.selected_playlist_id is not None,
+            reorder_enabled=(
+                self.selected_playlist_id is not None
+                and not self._add_tracks_mode
+                and not self._library_search_query
+                and self._library_sort_column is None
+            ),
             show_covers=self._show_track_covers,
             selected_ids=self._add_tracks_selected_ids,
             text_for_track=self._track_table_text,
@@ -4788,6 +4797,7 @@ class MainWindow(QMainWindow):
 
         added_count = len(merged_tracks) - len(target_tracks)
         skipped_count = len(source_tracks) - added_count
+        self._reset_library_sort()
         self.selected_playlist_id = target_playlist.id
         self._load_playlists()
 
@@ -5003,6 +5013,7 @@ class MainWindow(QMainWindow):
                 added_count += 1
 
         self._clear_add_tracks_mode_state()
+        self._reset_library_sort()
         self.selected_playlist_id = playlist.id
         self._load_playlists()
         message = f"Added {added_count} track(s) to {playlist.name}"
@@ -5023,6 +5034,7 @@ class MainWindow(QMainWindow):
         self._clear_add_tracks_mode_state()
 
         if playlist_id is not None and self.store.get_playlist(playlist_id):
+            self._reset_library_sort()
             self.selected_playlist_id = playlist_id
             self._load_playlists()
             return
@@ -5549,6 +5561,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Playlist failed", str(error))
             return
 
+        self._reset_library_sort()
         self.selected_playlist_id = playlist.id
         # New playlists are sorted to the front of the carousel.  Keep the
         # user on the first page so the newly created card is visible instead
@@ -5948,6 +5961,44 @@ class MainWindow(QMainWindow):
         track = self._track_at_table_row(row_index)
         if track is not None:
             self._remove_playlist_track(track.id)
+
+    def _move_playlist_track_from_table(
+        self,
+        source_row: int,
+        target_row: int,
+    ) -> None:
+        """Persist a playlist row move after the table drag is released."""
+
+        playlist_id = self.selected_playlist_id
+        if (
+            playlist_id is None
+            or self._add_tracks_mode
+            or self._library_search_query
+            or self._library_sort_column is not None
+        ):
+            return
+        if not (
+            0 <= source_row < len(self._visible_tracks)
+            and 0 <= target_row < len(self._visible_tracks)
+            and source_row != target_row
+        ):
+            return
+
+        ordered_track_ids = [track.id for track in self._visible_tracks]
+        moved_track_id = ordered_track_ids.pop(source_row)
+        ordered_track_ids.insert(target_row, moved_track_id)
+
+        try:
+            self.playlist_management_service.replace_tracks(
+                playlist_id,
+                ordered_track_ids,
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Playlist failed", str(error))
+            return
+
+        self._load_selected_playlist_tracks()
+        self.statusBar().showMessage("Playlist order updated")
 
     def _handle_track_row_clicked(self, row_index: int) -> None:
         """Toggle track selection when the add-to-playlist mode is active."""
